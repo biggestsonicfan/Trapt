@@ -77,6 +77,7 @@ python order.py --check         # the tables vs. what is on the disc
 | `stage.py` | a whole stage assembled, with a body that can walk it |
 | `stagescript.py` | `B##EVENT.ARC` -- where the player starts, what is placed, who walks in |
 | `pcsx2pad.py` | a PCSX2 `[Pad1]` turned into browser input |
+| `oracle.py` | what a PCSX2 savestate is a picture of -- the cutscene and frame, from the live camera |
 | `ssc.py` | `.SSC` compiled scene-script reader (cutscene bytecode + subtitles) |
 | `sai.py` | `.SAI` skeletal animation reader |
 | `cam.py` | `.CAM` camera-track reader |

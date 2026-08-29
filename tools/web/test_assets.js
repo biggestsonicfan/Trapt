@@ -721,6 +721,28 @@ async function main() {
     check('so it is still on screen 200 frames later', s.mesh.visible, true);
   }
 
+  // The oracle: a PCSX2 savestate is ground truth, but only once you know
+  // which frame of which cutscene it is a picture of.  `oracle.py` recovers
+  // that from the live camera in EE RAM, and slot 08 is a known answer --
+  // e001 at 7422 -- so this is a self-test of the recovery, not of the state.
+  console.log('the savestate oracle, against a known answer');
+  {
+    const got = python(
+      'import json, oracle, os, scene; d = scene.Disc();'
+      + ' paths = [p for p in oracle.all_states() if ".08." in p];'
+      + ' print(json.dumps(None if not paths else'
+      + ' (lambda r: [r["cutscene"], r["frame"], r["residual"]])'
+      + '(oracle.identify(d, paths[0]))))');
+    if (got === null) {
+      console.log('        no slot-08 savestate on this machine -- skipped');
+    } else {
+      check('slot 08 is e001', got[0], 'e001');
+      check('at frame 7422', got[1], 7422);
+      check('and the camera matches to under a thousandth of a unit',
+            got[2] < 1e-3, true);
+    }
+  }
+
   console.log('a whole cutscene assembled, against tools/scene.py');
   for (const cutscene of ['e001', 'e009']) {
     const built = await play.assemble(THREE, disc, cutscene);

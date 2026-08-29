@@ -672,3 +672,66 @@ neither of which names a texture or a model.
 A billboard is not a particle system, so this is not finished: the emitter
 parameters are carried and unused, which is why a spark is one sprite rather
 than a trail of eight.
+
+---
+
+## 8. The oracle
+
+Everything in §7 is "the script's numbers, rendered". None of it has been
+checked against the machine, because a savestate is only ground truth once you
+know which frame of which cutscene it is a picture of — and the game writes
+that down nowhere convenient.
+
+It does write down the **camera**: a live eye/target pair at EE `0x0081B6F0`,
+updated every frame from the `.CAM` track. So the frame can be recovered by
+matching that pair against all 268 tracks on the disc. A camera path is a
+signature; there is no ambiguity and no threshold to tune.
+
+```
+python tools/oracle.py
+
+SLUS-21255 (DCFBB290).01.p2s   not in a cutscene (the camera words are stale)
+SLUS-21255 (DCFBB290).02.p2s   not in a cutscene (the camera words are stale)
+SLUS-21255 (DCFBB290).08.p2s   e001 frame 7422  residual 3.81e-06
+SLUS-21255 (DCFBB290).09.p2s   not in a cutscene (the camera words are stale)
+```
+
+That slot-08 answer is the one §4 arrived at by hand, so a run which
+reproduces it is a self-test of the recovery rather than of the savestate.
+`test_assets.js` asserts it.
+
+A state that is **not** in a cutscene reads as garbage rather than zero — the
+camera words hold whatever was last there, often denormals of order 1e37 — so
+those are reported as such instead of being matched to the nearest track by
+accident.
+
+### 8.1 What is still missing
+
+None of the four savestates on this machine is in a cutscene that has sprite
+effects, so §7 has no hardware reference at all. Getting one means saving
+while an effect is actually up, and `oracle.py --effects` says when:
+
+```
+python tools/oracle.py --effects
+
+scene     texture             from      to at 60fps  bones
+e004      spark.tm2           1172    1202  0:19.53  3
+e004      ef_s014c.tm2        1420    1660  0:23.67
+e008      ef_p_s_00.tm2       1570    1770  0:26.17
+e124      ef_s020a.tm2        1030    1210  0:17.17
+e132      ef_u012.tm2         2230    2410  0:37.17
+```
+
+`e004` at about 19.5 s is the best target: it is the only cutscene that binds
+an effect to a bone, so one capture checks the sprite rect, the keyframes and
+the bone attachment together.
+
+Note the frame counter cannot be written to seek there — doing so soft-resets
+the game ([`FONT.md`](FONT.md)) — so the capture has to be taken by playing
+forward.
+
+### 8.2 Why not the emulator's IPC
+
+PINE takes a single client, so anything holding it locks everything else out,
+and it reads one byte per round trip. A savestate is free, repeatable, and
+works offline. `docs/PS2SHADER.md` makes the same point about the GS state.
