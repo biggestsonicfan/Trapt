@@ -15,9 +15,6 @@
     pointer-events: none; text-shadow: 0 2px 6px #000, 0 0 3px #000; padding: 0 6%; }
   #spk { color: #d8b06a; font-weight: 600; letter-spacing: .05em; font-size: 13px; }
   #txt { font-size: clamp(15px, 2.0vw, 23px); white-space: pre-line; line-height: 1.35; }
-  #bars i { position: absolute; left: 0; right: 0; height: 0; background: #000;
-    display: block; transition: height .3s; pointer-events: none; }
-  #bars i.t { top: 0; } #bars i.b { bottom: 0; }
   #fade { position: absolute; inset: 0; background: #000; opacity: 0;
     pointer-events: none; }
   #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 62px;
@@ -29,6 +26,26 @@
   button.on { background: #3a5a8a; border-color: #4a72ad; }
   #seek { flex: 1; accent-color: #d8b06a; }
   #time { font-variant-numeric: tabular-nums; opacity: .8; min-width: 150px; }
+  #pos { opacity: .55; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #pos a { color: inherit; }
+  /* story mode: the prompt the game would have got from a stage or a screen */
+  #story { position: fixed; inset: 0; display: none; place-content: center;
+    background: #05050799; backdrop-filter: blur(3px); z-index: 8; padding: 24px; }
+  #story.on { display: grid; }
+  #story .panel { width: min(560px, 92vw); background: #131316;
+    border: 1px solid #2e2e36; border-radius: 12px; padding: 20px 22px 18px;
+    box-shadow: 0 20px 60px #000a; }
+  #story h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+  #story p { margin: 0 0 14px; opacity: .6; font-size: 12.5px; }
+  #story button { display: block; width: 100%; text-align: left; margin: 6px 0;
+    padding: 9px 12px; line-height: 1.35; }
+  #story button b { font-weight: 600; }
+  #story button i { display: block; font-style: normal; opacity: .45;
+    font-size: 11.5px; font-family: ui-monospace, monospace; }
+  #storyHud { margin-top: 14px; padding-top: 10px; border-top: 1px solid #26262b;
+    font-size: 11.5px; opacity: .4; display: flex; justify-content: space-between;
+    gap: 10px; }
+  #storyHud a { color: inherit; }
   #err { position: fixed; inset: 0; display: none; place-content: center;
     padding: 40px; white-space: pre-wrap; font-family: ui-monospace, monospace;
     background: #0b0b0d; color: #ff9a9a; z-index: 9; }
@@ -50,21 +67,32 @@
 </head>
 <body>
 <div id="stage">
-  <div id="bars"><i class="t"></i><i class="b"></i></div>
   <div id="fade"></div>
   <div id="hint">drag to orbit &middot; wheel to zoom &middot; space to play</div>
   <div id="subs"><div id="spk"></div><div id="txt"></div></div>
 </div>
 <div id="bar">
+  <button id="prevBtn" hidden title="previous cutscene (,)">&#9664;</button>
   <button id="play">Play</button>
+  <button id="nextBtn" hidden title="next cutscene (.)">&#9654;</button>
+  <button id="autoBtn" hidden title="play the whole story in order">Auto</button>
   <input id="seek" type="range" min="1" value="1" step="1">
   <span id="time"></span>
+  <span id="pos"></span>
   <button id="camBtn" class="on">Scene cam</button>
   <button id="muteBtn">Mute</button>
   <button id="modeBtn" class="on">PS2</button>
+  <button id="subBtn" class="on">Subs PS2</button>
+  <button id="lbBtn" class="on">Letterbox</button>
   <button id="fxBtn">Look</button>
 </div>
 <div id="fx"></div>
+<div id="story"><div class="panel">
+  <h3 id="storyTitle"></h3>
+  <p id="storyText"></p>
+  <div id="storyOpts"></div>
+  <div id="storyHud"></div>
+</div></div>
 <div id="err"></div>
 
 <script>
@@ -229,7 +257,264 @@ function TraptMath(BIN, S) {
            sampleVec, worldMatrices, skinMesh, clipFor, visibleAt };
 }
 // ===8<=== END TRAPT MATH ===8<===
-if (typeof module !== 'undefined') module.exports = { TraptMath };
+
+// ===8<=== TRAPT STORY ===8<===
+// The game's own story machine, over the tables `tools/order.py` reads out of
+// the ELF and `site.py` writes into `order.js` as `window.TRAPT_STORY`.
+//
+// `FUN_00173520` walks a chapter -- opening cutscenes, then per stage a
+// cutscene group, the stage itself and another group -- and four short
+// functions decide where it goes next:
+//
+//   FUN_00173520 state 8  which stage a chapter opens on
+//   FUN_00174250          the next stage inside the chapter, or -1
+//   FUN_001741B0          the next chapter, or -1 (-1 means the finale)
+//   FUN_001726F0          which of the three finale groups closes the run
+//
+// All four read one byte of story flags at `app+0x40E`, and `0042DDD0` says
+// which flag each chapter is allowed to set. The endings are the second
+// machine, `FUN_0032A7C0`: a flow record per chapter and route, walked by
+// `FUN_0032A5D0`, which branches on a second flag field at `app+0x40F`.
+//
+// The viewer has no rooms to play, so everywhere the retail game would learn
+// something from a stage or a screen, this asks the person watching instead.
+// Nothing here is invented: every option is a result code or a flag the ELF
+// actually tests, and it is pure -- no DOM, so `tools/test_order.js` can run
+// it headless.
+function TraptStory(T) {
+  const names = T.names, groups = T.groups, chapters = T.chapters;
+  const has = (n) => !T.have || T.have.indexOf(n) >= 0;
+  const hex = (n) => (n < 16 ? '0' : '') + n.toString(16).toUpperCase();
+  const chapterName = (c) => 'Chapter ' + (c + 1);
+
+  // ---- the four branch rules, transcribed from the ELF ------------------
+  function firstStage(c, f) { return (c === 9 && !(f & 1)) ? 1 : 0; }
+
+  function nextStage(c, s, f, n) {
+    if (c === 13) {
+      if (s === 2) return -1;
+      if (s === 1) return (f & 2) ? -1 : 2;
+      if (s === 0) return 1;
+    } else if (c === 9) {
+      return -1;                       // chapter 10 plays one stage, then out
+    }
+    return s + 1 >= n ? -1 : s + 1;
+  }
+
+  function nextChapter(c, f) {
+    if (c === 9 && (f & 1)) return -1;
+    if (c === 13 && !(f & 2)) return -1;
+    return c + 1 > 14 ? -1 : c + 1;
+  }
+
+  function finaleGroup(f) { return !(f & 2) ? 0x23 : (!(f & 4) ? 0x25 : 0x24); }
+
+  // ---- states ------------------------------------------------------------
+  // A state is plain JSON so it survives the navigation between two pages in
+  // sessionStorage. `g` runs a cutscene group and then becomes `t`.
+  const group = (g, then, note) =>
+    (g === null || g === undefined) ? then : { p: 'g', g: g, i: 0, t: then, n: note };
+  const over = (title, text) => ({ p: 'over', title: title, text: text });
+  const start = () => group(0, { p: 'screen', c: 0, f: 0 }, 'the opening');
+
+  // What each story flag decides, at the chapter that reads it.  Nothing in
+  // the ELF *sets* these -- FUN_00172B50 only clears one when a stage is
+  // failed -- so whatever sets them lives inside a stage, which is exactly the
+  // part the viewer does not have.  Story mode therefore offers the flag at
+  // the chapter screen and lets a failed stage take it away again.
+  const FLAG_NOTE = {
+    0: 'flag 0 picks which of chapter 10’s two stages runs (state 8), and '
+     + 'whether the chapter machine stops there',
+    1: 'flag 1 decides whether chapter 14 plays its third stage, and whether '
+     + 'chapter 15 follows at all (FUN_00174250, FUN_001741B0)',
+    2: 'flag 2 picks which finale closes the run (FUN_001726F0)',
+  };
+
+  function stageResults(c, s, f) {
+    const flag = T.chapterFlags[c];
+    return [
+      { label: 'Allura clears it', detail: 'result 0x1013',
+        next: { p: 'after', c: c, s: s, f: f } },
+      { label: 'Allura fails',
+        detail: flag < 0 ? 'result 0x1003 -- back to the chapter screen'
+                         : 'result 0x1003 -- FUN_00172B50 clears story flag '
+                           + flag + ' (0042DDD0) and goes back to the screen',
+        next: { p: 'screen', c: c, f: flag < 0 ? f : f & ~(1 << flag) } },
+      { label: 'Retry the stage', detail: 'result 0x1012',
+        next: { p: 'play', c: c, s: s, f: f } }];
+  }
+
+  function flowTarget(r, k, ef, c, i) {
+    const step = T.flows[r].steps[i];
+    if (!step || step.kind === 'end')
+      return { st: over('The end', 'The flow has no step ' + i + ', so FUN_0032A5D0 '
+                                  + 'returns -1 and the ending is over.'),
+               what: 'ends the run' };
+    return { st: { p: 'flow', r: r, k: i, ef: ef, c: c },
+             what: step.kind === 'cutscene' ? step.name : 'stage ' + hex(step.stage) };
+  }
+
+  /** Resolve `st` until it produces something the page has to show. */
+  function event(st) {
+    for (let guard = 0; guard < 4096; guard++) {
+      switch (st.p) {
+
+      case 'g': {                                  // a cutscene group, in order
+        const ids = groups[st.g];
+        if (st.i >= ids.length) { st = st.t; break; }
+        const nx = { p: 'g', g: st.g, i: st.i + 1, t: st.t, n: st.n };
+        const name = names[ids[st.i]];
+        if (!has(name)) { st = nx; break; }         // not built into this site
+        return { kind: 'scene', name: name, group: st.g, note: st.n, at: st, next: nx };
+      }
+
+      case 'screen': {                             // FUN_00173050, state 5
+        const c = st.c, f = st.f, r = T.routes[c], flag = T.chapterFlags[c];
+        const play = (fl) => ({ p: 'open', c: c, f: fl });
+        const options = [];
+        if (flag >= 0) {                           // this chapter reads a flag
+          const bit = 1 << flag;
+          options.push(
+            { label: 'Play ' + chapterName(c) + ' — story flag ' + flag + ' set',
+              detail: FLAG_NOTE[flag], next: play(f | bit) },
+            { label: 'Play ' + chapterName(c) + ' — story flag ' + flag + ' clear',
+              detail: 'result 0x100D', next: play(f & ~bit) });
+        } else {
+          options.push({ label: 'Play ' + chapterName(c),
+                         detail: 'result 0x100D', next: play(f) });
+        }
+        options.push(
+          { label: 'End the story here — route 0 (flow ' + hex(r[0]) + ')',
+            detail: 'result 0x100E, app+0x80 bit 0 clear',
+            next: { p: 'flow', r: r[0], k: 0, ef: 0, c: c } },
+          { label: 'End the story here — route 1 (flow ' + hex(r[1]) + ')',
+            detail: 'result 0x100E, app+0x80 bit 0 set',
+            next: { p: 'flow', r: r[1], k: 0, ef: 0, c: c } },
+          { label: 'Stop', detail: 'result 0x1002',
+            next: over('Stopped', 'The chapter machine returned 0 and gave the '
+                                + 'frame back to the application flow.') });
+        return { kind: 'choice', at: st, title: chapterName(c), options: options,
+          text: 'The chapter machine is at state 3. Between chapters the game '
+              + 'puts up a screen and reads its result: 0x100D plays the '
+              + 'chapter, 0x100E hands the run to the ending machine, 0x1002 '
+              + 'leaves.' };
+      }
+
+      case 'open':
+        st = group(chapters[st.c].open,
+                   { p: 'stage', c: st.c, s: firstStage(st.c, st.f), f: st.f },
+                   chapterName(st.c) + ' opening');
+        break;
+
+      case 'stage':
+        st = group(chapters[st.c].stages[st.s].before,
+                   { p: 'play', c: st.c, s: st.s, f: st.f },
+                   'before stage ' + hex(chapters[st.c].stages[st.s].stage));
+        break;
+
+      case 'play': {                               // the stage, states 0xC-0xE
+        const stage = chapters[st.c].stages[st.s].stage;
+        return { kind: 'choice', at: st, stage: stage,
+          title: 'Stage ' + hex(stage),
+          text: 'State 0xC hands over to the in-room game (FUN_0016B870). '
+              + 'There is no room to play here, so pick what the stage would '
+              + 'have returned — FUN_00172B50 reads exactly these codes.',
+          options: stageResults(st.c, st.s, st.f) };
+      }
+
+      case 'after':
+        st = group(chapters[st.c].stages[st.s].after,
+                   { p: 'adv', c: st.c, s: st.s, f: st.f },
+                   'after stage ' + hex(chapters[st.c].stages[st.s].stage));
+        break;
+
+      case 'adv': {                                // FUN_00172960, state 0x11
+        const c = st.c, f = st.f;
+        const ns = nextStage(c, st.s, f, chapters[c].stages.length);
+        if (ns >= 0) { st = { p: 'stage', c: c, s: ns, f: f }; break; }
+        const nc = nextChapter(c, f);
+        if (nc >= 0) { st = { p: 'screen', c: nc, f: f }; break; }
+        if (c === 9) {                             // app+0x7F = 1, then quit
+          const r = T.routes[c];
+          return { kind: 'choice', at: st,
+            title: 'The chapter machine stops here',
+            text: 'With story flag 0 set, FUN_001741B0 has no next chapter and '
+                + 'FUN_00172960 sets app+0x7F, so FUN_001727F0 leaves instead '
+                + 'of reaching the finale. The endings are the other machine.',
+            options: [
+              { label: 'Run chapter 10’s ending — route 0 (flow ' + hex(r[0]) + ')',
+                next: { p: 'flow', r: r[0], k: 0, ef: 0, c: c } },
+              { label: 'Run chapter 10’s ending — route 1 (flow ' + hex(r[1]) + ')',
+                next: { p: 'flow', r: r[1], k: 0, ef: 0, c: c } },
+              { label: 'Stop', next: over('Stopped', 'The run ended at chapter 10.') }] };
+        }
+        st = group(finaleGroup(f),
+                   over('The end', 'FUN_001726F0 chose group ' + hex(finaleGroup(f))
+                                 + ' from the story flags, and the chapter '
+                                 + 'machine is done.'),
+                   'the finale');
+        break;
+      }
+
+      case 'flow': {                               // FUN_0032A7C0, one record
+        const step = T.flows[st.r].steps[st.k];
+        if (!step || step.kind === 'end') { st = over('The end', 'The ending flow ran out.'); break; }
+        const nx = { p: 'flowNext', r: st.r, k: st.k, ef: st.ef, c: st.c };
+        const where = 'ending flow ' + hex(st.r) + ', step ' + st.k;
+        if (step.kind === 'cutscene') {
+          if (!has(step.name)) { st = nx; break; }
+          return { kind: 'scene', name: step.name, note: where, at: st, next: nx };
+        }
+        return { kind: 'choice', at: st, stage: step.stage,
+          title: 'Stage ' + hex(step.stage),
+          text: 'The ending machine plays a room here too (state 2), and '
+              + 'FUN_0032A4C0 reads its result.',
+          options: [
+            { label: 'Allura clears it', detail: 'result 0x1013', next: nx },
+            { label: 'Allura fails', detail: 'result 0x1003 -- the ending aborts',
+              next: over('The ending aborted',
+                         'FUN_0032A4C0 sets the abort flag and the machine winds up.') }] };
+      }
+
+      case 'flowNext': {                           // FUN_0032A5D0
+        const step = T.flows[st.r].steps[st.k];
+        const b = step.branch;
+        if (!b) {
+          const t = flowTarget(st.r, st.k, st.ef, st.c, st.k + 1);
+          st = t.st;
+          break;
+        }
+        const lo = flowTarget(st.r, st.k, st.ef, st.c, b.clear);
+        const hi = flowTarget(st.r, st.k, st.ef, st.c, b.set);
+        return { kind: 'choice', at: st,
+          title: 'The ending branches',
+          text: 'FUN_0032A5D0 tests bit ' + b.flag + ' of app+0x40F, the flag '
+              + 'field the ending clears when it starts. The stages of the '
+              + 'ending are what would have set it.',
+          options: [
+            { label: 'flag ' + b.flag + ' clear — ' + lo.what,
+              detail: 'step ' + b.clear, next: lo.st },
+            { label: 'flag ' + b.flag + ' set — ' + hi.what,
+              detail: 'step ' + b.set, next: hi.st }] };
+      }
+
+      case 'over':
+        return { kind: 'end', at: st, title: st.title, text: st.text };
+
+      default:
+        return { kind: 'end', at: st, title: 'Lost',
+                 text: 'The story machine reached an unknown state: ' + st.p };
+      }
+    }
+    return { kind: 'end', at: st, title: 'Lost', text: 'The story machine looped.' };
+  }
+
+  return { start: start, event: event, firstStage: firstStage,
+           nextStage: nextStage, nextChapter: nextChapter,
+           finaleGroup: finaleGroup, chapterName: chapterName, hex: hex };
+}
+// ===8<=== END TRAPT STORY ===8<===
+if (typeof module !== 'undefined') module.exports = { TraptMath, TraptStory };
 </script>
 
 <script src="three.min.js"></script>
@@ -772,7 +1057,7 @@ function syncAudio(frame, playing, seeked) {
     const want = (frame - bgmStart) / S.fps;
     if (playing && !muted && want >= 0 && frame < bgmStop) {
       bgm.volume = 0.45;
-      if (bgm.paused) { bgm.currentTime = Math.max(0, want); bgm.play().catch(() => {}); }
+      if (bgm.paused) { bgm.currentTime = Math.max(0, want); bgm.play().catch(audioBlocked); }
       else if (seeked || Math.abs(bgm.currentTime - want) > 0.4)
         bgm.currentTime = Math.max(0, want);
     } else if (!bgm.paused) bgm.pause();
@@ -789,21 +1074,212 @@ function syncAudio(frame, playing, seeked) {
     if (i > spoken && frame >= s.frame) {
       spoken = i;
       const a = s.voice && sounds[s.voice];
-      if (a) { a.currentTime = 0; a.play().catch(() => {}); }
+      if (a) { a.currentTime = 0; a.play().catch(audioBlocked); }
     }
   }
 }
 
+// ------------------------------------------------- the game's own subtitles
+// The GS draws dialogue as one textured quad per glyph straight into the
+// 512x224 framebuffer, so this does the same: an orthographic pass over the
+// render target in the framebuffer's own pixels, run after the world and
+// before the post stage.  The letterbox rides along, because on hardware the
+// text is drawn *over* the bar, not under it.
+//
+// Every number comes from `tools/font.py`, which lays a cue out to the same
+// 12.4 fixed-point vertex X the hardware display list carries.  Layout happens
+// in the game's 640x448 UI space and is scaled into the framebuffer by
+// (0.8, 0.5); a 16x16 glyph goes into a 24x24 box, so on screen it is a
+// 19.2 x 12 quad, magnified bilinear exactly as `MMAG=LINEAR` says.
+const FNT = S.font || null;
+const OVL_W = FNT ? FNT.native[0] : RT_W, OVL_H = FNT ? FNT.native[1] : RT_H;
+
+const ovlScene = new THREE.Scene();
+const ovlCam = new THREE.OrthographicCamera(0, OVL_W, 0, OVL_H, -1, 1);
+
+// ----------------------------------------------------------- the letterbox
+// `0x57` (ELF 0x001C6570) drives two black 640-wide sprites in the 640x448 UI
+// space, and the tween at 0x001E43F0 slides them in and out from off-screen:
+// the top bar's y runs H*(t-1) -> 0 and the bottom bar's 448 -> 448-H, over
+// the opcode's own frame count.  So the bars are *not* symmetric -- 50 and 110
+// UI units, which is 25 lines at the top and 55 from y=169 down in the 512x224
+// framebuffer.  That is the band the subtitles sit on, and it is what a PCSX2
+// capture of `e001` at 7422 measures; the viewer used to guess a symmetric 9%,
+// which put the text over the scene instead of over black.
+//
+// It is an overlay, not a viewport: the world is still drawn to the whole
+// 512x224 and the camera never learns about it, so nothing here touches the
+// aspect ratio -- the visible band is a crop, not a squeeze.
+const LB = S.letterbox || { ui: [640, 448], bars: [50, 110], events: [] };
+const LB_TOP = LB.bars[0] * OVL_H / LB.ui[1];
+const LB_BOT = LB.bars[1] * OVL_H / LB.ui[1];
+
+const barGeo = new THREE.BufferGeometry();
+barGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(36), 3));
+const barMesh = new THREE.Mesh(barGeo, new THREE.MeshBasicMaterial({
+  color: 0x000000, depthTest: false, depthWrite: false,
+  side: THREE.DoubleSide }));
+barMesh.frustumCulled = false;
+ovlScene.add(barMesh);
+
+// How far in the bars are at `frame`, 0 (gone) to 1 (seated).  The opcode sets
+// a mode and a frame count and the tween runs from there, so replaying the
+// event list is the whole state machine.
+function barOpen(frame) {
+  let open = 0;
+  for (const [f, kind, n] of LB.events) {
+    if (frame < f) break;
+    const t = Math.min(1, (frame - f) / Math.max(1, n));
+    if (kind === 'in') open = t;
+    else if (kind === 'out') open = 1 - t;
+  }
+  return open;
+}
+
+let barOpened = -1;
+function placeBars(open) {
+  if (open === barOpened) return;
+  barOpened = open;
+  const p = barGeo.attributes.position.array;
+  const q = (i, y0, y1) => {
+    const v = [0, y0, 0, OVL_W, y0, 0, OVL_W, y1, 0,
+               0, y0, 0, OVL_W, y1, 0, 0, y1, 0];
+    for (let k = 0; k < 18; k++) p[i + k] = v[k];
+  };
+  const top = LB_TOP * (open - 1), bot = OVL_H - LB_BOT * open;
+  q(0, top, top + LB_TOP);
+  q(18, bot, bot + LB_BOT);
+  barGeo.attributes.position.needsUpdate = true;
+  barMesh.visible = open > 0;
+}
+
+// The GS takes its sample at a pixel's own integer coordinate, not its centre
+// -- fitting that against a PCSX2 capture is unambiguous, 0.5 leaves a
+// consistent half-pixel of drift.  GL samples at the centre, so the quads move
+// half a *target* pixel to compensate; at Modern resolutions that is a tenth
+// of a native pixel and correctly fades away.
+const GS_A = 255 / 128;                // the CLUT's 0x80 alpha is 1.0
+const ovlMat = FNT ? new THREE.RawShaderMaterial({
+  vertexShader: `
+precision highp float;
+attribute vec3 position; attribute vec2 uv; attribute vec3 tint;
+uniform mat4 modelViewMatrix, projectionMatrix;
+uniform vec2 nudge;
+varying vec2 vUv; varying vec3 vTint;
+void main() {
+  vUv = uv; vTint = tint;
+  gl_Position = projectionMatrix * modelViewMatrix
+              * vec4(position.xy + nudge, 0.0, 1.0);
+}`,
+  fragmentShader: `
+precision highp float;
+uniform sampler2D atlas;
+varying vec2 vUv; varying vec3 vTint;
+void main() {
+  // TFX=MODULATE with TCC=RGBA: C = Ct * Cv >> 7, A = At * Av >> 7, and the
+  // vertex alpha is 0x80.  The atlas is the CLUT already applied, so this
+  // filters palettised colour the way the GS does -- which is what gives a
+  // glyph edge its slightly dark fringe.
+  vec4 t = texture2D(atlas, vUv);
+  gl_FragColor = vec4(t.rgb * vTint, t.a * ${GS_A.toFixed(7)});
+}`,
+  uniforms: { atlas: { value: null }, nudge: { value: new THREE.Vector2(0.5, 0.5) } },
+  transparent: true, depthTest: false, depthWrite: false,
+  side: THREE.DoubleSide,
+}) : null;
+
+let ovlMesh = null, ovlReady = false, ovlCue = undefined;
+if (FNT) {
+  const img = new Image();
+  const t = new THREE.Texture(img);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  t.flipY = false;                     // the atlas is written top-down
+  img.onload = () => { t.needsUpdate = true; ovlReady = true; ovlCue = undefined; };
+  img.src = FNT.atlas;
+  ovlMat.uniforms.atlas.value = t;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([], 2));
+  g.setAttribute('tint', new THREE.Float32BufferAttribute([], 3));
+  ovlMesh = new THREE.Mesh(g, ovlMat);
+  ovlMesh.frustumCulled = false;
+  ovlMesh.visible = false;
+  ovlScene.add(ovlMesh);
+}
+
+// ===8<=== TRAPT SUBS ===8<===
+// `0x60` markup: `%%SC<XX>` sets the pen colour from a fifteen-entry table and
+// saves the old one, `%%RC` puts the saved one back -- one level, not a stack,
+// which is all the game keeps (ELF 0x0020D7B0 writes a single slot).  A line
+// break and the terminator are the literal two-character sequences `\n` and
+// `\0`.  Reads `FNT` (the exported font block) and gives back one
+// `[slot, ui_x, ui_y, [r,g,b]]` per glyph -- the same thing `runs()` in
+// tools/font.py yields, which is checked against it by tools/verify.py.
+function layout(raw) {
+  const out = [];
+  const [bw, bh] = FNT.box, cw = FNT.cell[0];
+  const left = FNT.anchor[0] - bw / 2, top = FNT.anchor[1] - bh / 2;
+  let pen = left, line = 0, tint = FNT.body, saved = FNT.body;
+  for (let i = 0; i < raw.length; ) {
+    if (raw.startsWith('%%SC', i) && i + 6 <= raw.length) {
+      const c = FNT.colours[raw.slice(i + 4, i + 6)];
+      // an unrecognised code takes the same path as `%%RC`
+      if (c) { saved = tint; tint = c; } else { const t = tint; tint = saved; saved = t; }
+      i += 6; continue;
+    }
+    if (raw.startsWith('%%RC', i)) { const t = tint; tint = saved; saved = t; i += 4; continue; }
+    if (raw.startsWith('\\n', i)) { line++; pen = left; i += 2; continue; }
+    if (raw.startsWith('\\0', i) || raw[i] === '\0') break;
+    const g = FNT.glyphs[raw.codePointAt(i)];
+    i++;
+    if (!g) continue;
+    out.push([g[0], pen, top + line * bh, tint]);
+    pen += g[1] * (bw / cw);
+  }
+  return out;
+}
+// ===8<=== END TRAPT SUBS ===8<===
+
+function buildCue(raw) {
+  const runs = raw ? layout(raw) : [];
+  const pos = [], uv = [], tint = [];
+  const [aw, ah] = FNT.size, cols = FNT.cols, pad = FNT.pad;
+  const [cw, ch] = FNT.cell, step = cw + 2 * pad;
+  const kx = OVL_W / FNT.ui[0], ky = OVL_H / FNT.ui[1];
+  const gw = FNT.box[0] * kx, gh = FNT.box[1] * ky;
+  for (const [slot, ux, uy, col] of runs) {
+    const x0 = ux * kx, y0 = uy * ky, x1 = x0 + gw, y1 = y0 + gh;
+    const u0 = ((slot % cols) * step + pad) / aw, u1 = u0 + cw / aw;
+    const v0 = (Math.floor(slot / cols) * step + pad) / ah, v1 = v0 + ch / ah;
+    pos.push(x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y0, 0, x1, y1, 0, x0, y1, 0);
+    uv.push(u0, v0, u1, v0, u1, v1, u0, v0, u1, v1, u0, v1);
+    for (let k = 0; k < 6; k++) tint.push(col[0], col[1], col[2]);
+  }
+  const g = ovlMesh.geometry;
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('tint', new THREE.Float32BufferAttribute(tint, 3));
+  g.setDrawRange(0, pos.length / 3);
+  ovlMesh.visible = pos.length > 0;
+}
+
 // ----------------------------------------------------------------- overlays
 const elSpk = document.getElementById('spk'), elTxt = document.getElementById('txt');
-const barT = document.querySelector('#bars .t'), barB = document.querySelector('#bars .b');
 const elFade = document.getElementById('fade');
 function overlays(frame) {
   let cur = null;
   for (const s of S.subtitles) if (frame >= s.frame && frame < s.end) cur = s;
-  elSpk.textContent = cur ? cur.speaker : '';
-  elTxt.textContent = cur ? cur.lines.join('\n') : '';
-  barT.style.height = barB.style.height = '9%';
+  placeBars(lbOn() ? barOpen(frame) : 0);
+  const how = subMode();
+  const modern = how === 'modern' && cur;
+  elSpk.textContent = modern ? cur.speaker : '';
+  elTxt.textContent = modern ? cur.lines.join('\n') : '';
+  if (ovlMesh) {
+    const raw = (how === 'ps2' && cur && ovlReady) ? cur.raw : '';
+    if (raw !== ovlCue) { ovlCue = raw; buildCue(raw); }
+  }
   let o = 0;
   for (const [f, kind, len] of S.fades) {
     if (frame < f) continue;
@@ -819,6 +1295,158 @@ const seek = document.getElementById('seek');
 seek.max = S.duration;
 const elTime = document.getElementById('time');
 const playBtn = document.getElementById('play');
+
+// ===8<=== PLAYLIST ===8<===
+// ----------------------------------------------------------------- playlist
+// `site.py` writes `order.js` beside the gallery: `window.TRAPT_ORDER` is the
+// story order the game itself plays these in, lifted out of the ELF's chapter
+// and ending tables by `tools/order.py`.  With it the page is one entry in a
+// playlist -- prev/next, and Auto walks the whole game from `e001` to the last
+// ending without stopping.  Without it (a lone `export.py` bundle) nothing
+// here shows up and the player behaves exactly as before.
+const ORDER = Array.isArray(window.TRAPT_ORDER) ? window.TRAPT_ORDER : null;
+const AT = ORDER ? ORDER.indexOf(S.name) : -1;
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const autoBtn = document.getElementById('autoBtn');
+const elPos = document.getElementById('pos');
+// Auto has to survive the navigation between two cutscenes, so it lives in
+// sessionStorage; `?auto=1` is how the gallery's "Play in order" starts it.
+// Story mode drives the same pages, so it wins over Auto when both are asked
+// for.
+let QS = null;
+try { QS = new URLSearchParams(location.search); } catch (e) {}
+const qs = (k) => (QS ? QS.get(k) : null);
+let auto = false;
+try {
+  auto = !qs('story') && (qs('auto') === '1' ||
+                          sessionStorage.getItem('traptAuto') === '1');
+} catch (e) { /* file:// with storage disabled */ }
+
+function advance(step) {
+  if (AT < 0) return false;
+  const i = AT + step;
+  if (i < 0 || i >= ORDER.length) { setAuto(false); return false; }
+  location.href = '../' + ORDER[i] + '/index.html' + (auto ? '?auto=1' : '');
+  return true;
+}
+function setAuto(on) {
+  auto = on;
+  autoBtn.classList.toggle('on', on);
+  autoBtn.textContent = on ? 'Auto on' : 'Auto';
+  try { sessionStorage.setItem('traptAuto', on ? '1' : '0'); } catch (e) {}
+}
+if (AT >= 0) {
+  for (const b of [prevBtn, nextBtn, autoBtn]) b.hidden = false;
+  prevBtn.disabled = AT === 0;
+  nextBtn.disabled = AT === ORDER.length - 1;
+  prevBtn.onclick = () => advance(-1);
+  nextBtn.onclick = () => advance(+1);
+  autoBtn.onclick = () => setAuto(!auto);
+  setAuto(auto);
+  elPos.innerHTML = '<a href="../index.html">all</a> &middot; ' +
+    (AT + 1) + ' / ' + ORDER.length;
+  if (auto) { playing = true; playBtn.textContent = 'Pause'; }
+} else if (ORDER) {
+  elPos.innerHTML = '<a href="../index.html">all</a>';
+}
+
+// ------------------------------------------------------------- story mode
+// The playlist plays every cutscene once, front to back.  Story mode instead
+// runs the game's own machine (`TraptStory`, above) and stops wherever the
+// retail game would have learned something from a stage or a screen: it puts
+// up the same choice and carries on with whichever result you pick.  The state
+// is plain JSON in sessionStorage, because every cutscene is its own page.
+const STORY = window.TRAPT_STORY ? TraptStory(window.TRAPT_STORY) : null;
+const storyMode = !!STORY && ['1', 'new'].indexOf(qs('story')) >= 0;
+const elStory = document.getElementById('story');
+let storyNext = null;                  // where to go when this cutscene ends
+
+function storyLoad() {
+  try {
+    return JSON.parse(sessionStorage.getItem('traptStory'));
+  } catch (e) { return null; }
+}
+function storySave(st) {
+  try { sessionStorage.setItem('traptStory', JSON.stringify(st)); } catch (e) {}
+}
+
+/** Resolve a state: play the scene it wants, or put its prompt on screen. */
+function storyGo(st) {
+  const e = STORY.event(st);
+  if (e.kind === 'scene') {
+    if (e.name === S.name) {           // this page is the scene it asked for
+      elStory.classList.remove('on');
+      storyNext = e.next;
+      storyHud(e);
+      if (!playing) { playing = true; playBtn.textContent = 'Pause'; }
+      return;
+    }
+    storySave(st);                     // the next page re-resolves to the same
+    location.href = '../' + e.name + '/index.html?story=1';
+    return;
+  }
+  storyShow(e);
+}
+
+function storyShow(e) {
+  document.getElementById('storyTitle').textContent = e.title;
+  document.getElementById('storyText').textContent = e.text;
+  const opts = document.getElementById('storyOpts');
+  opts.innerHTML = '';
+  for (const o of (e.options || [{ label: 'Back to the gallery', href: '../index.html' }])) {
+    const b = document.createElement('button');
+    b.innerHTML = '<b></b>' + (o.detail ? '<i></i>' : '');
+    b.querySelector('b').textContent = o.label;
+    if (o.detail) b.querySelector('i').textContent = o.detail;
+    b.onclick = () => { if (o.href) location.href = o.href; else storyGo(o.next); };
+    opts.appendChild(b);
+  }
+  storyHud(e);
+  elStory.classList.add('on');
+}
+
+/** Chapter, story flags and a way out -- shown on every prompt. */
+function storyHud(e) {
+  const at = e.at || {};
+  const bits = [];
+  for (let i = 0; i < 3; i++) if (at.f & (1 << i)) bits.push(i);
+  const where = at.c === undefined ? 'endings'
+              : STORY.chapterName(at.c) + (at.r === undefined ? '' : '');
+  document.getElementById('storyHud').innerHTML =
+    '<span>' + where + (at.f === undefined ? ''
+      : ' &middot; story flags ' + (bits.length ? bits.join(', ') : 'none')) +
+    '</span><a href="../index.html">leave story mode</a>';
+}
+
+if (storyMode) {
+  elPos.innerHTML = '<a href="../index.html">all</a> &middot; story';
+  for (const b of [prevBtn, nextBtn, autoBtn]) b.hidden = true;
+  auto = false;
+  const st = qs('story') === 'new' ? STORY.start()
+                                    : (storyLoad() || STORY.start());
+  storyGo(st);
+}
+
+// Arriving mid-playlist there is no click on *this* page, so the browser may
+// refuse to start the audio.  The picture keeps going either way; say so.
+const elHint = document.getElementById('hint');
+const HINT = elHint.textContent;
+let soundHint = false;
+function audioBlocked() {
+  if (soundHint) return;
+  soundHint = true;
+  elHint.textContent = 'click the page to let the browser play sound';
+  elHint.style.opacity = '.8';
+  addEventListener('pointerdown', () => {
+    soundHint = false;
+    elHint.textContent = HINT;
+    elHint.style.opacity = '';
+  }, { once: true });
+}
+
+// ===8<=== END PLAYLIST ===8<===
+
 const fmt = (f) => {
   const s = f / S.fps;
   return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
@@ -829,7 +1457,11 @@ function tick(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
   if (playing) {
     frame += dt * S.fps;
-    if (frame >= S.duration) { frame = S.duration; playing = false; playBtn.textContent = 'Play'; }
+    if (frame >= S.duration) {
+      frame = S.duration; playing = false; playBtn.textContent = 'Play';
+      if (storyNext) { const nx = storyNext; storyNext = null; storyGo(nx); }
+      else if (auto) advance(+1);
+    }
     seek.value = Math.round(frame);
   }
   for (const inst of drawables) {
@@ -845,6 +1477,9 @@ function tick(now) {
   elTime.textContent = fmt(frame) + ' / ' + fmt(S.duration) + '  f' + Math.round(frame);
   renderer.setRenderTarget(rt);
   renderer.render(world, camera);
+  renderer.autoClear = false;          // the letterbox and text go on top
+  renderer.render(ovlScene, ovlCam);
+  renderer.autoClear = true;
   renderer.setRenderTarget(null);
   renderer.render(postScene, postCam);
 }
@@ -859,6 +1494,8 @@ function resize() {
   camera.updateProjectionMatrix();
   sizeTarget(w, h);
   fitOutput(w, h);
+  if (ovlMat) ovlMat.uniforms.nudge.value.set(0.5 * OVL_W / rt.width,
+                                              0.5 * OVL_H / rt.height);
 }
 addEventListener('resize', resize); resize();
 
@@ -889,6 +1526,8 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); playBtn.click(); }
   if (e.code === 'ArrowRight') reseek(frame + (e.shiftKey ? 300 : 30));
   if (e.code === 'ArrowLeft') reseek(frame - (e.shiftKey ? 300 : 30));
+  if (e.code === 'Period') advance(+1);
+  if (e.code === 'Comma') advance(-1);
 });
 let drag = null;
 renderer.domElement.addEventListener('pointerdown', (e) => {
@@ -953,7 +1592,46 @@ modeBtn.onclick = () => {
   modeBtn.textContent = PS2 ? 'PS2' : 'Modern';
   modeBtn.classList.toggle('on', PS2);
   applyMode();
+  syncSubBtn();
+  syncLbBtn();
 };
+
+// Subtitles are their own choice.  Left alone they follow the video mode --
+// the game's font with the GS emulation, DOM text without it -- but either
+// pairs with either, so the button pins one until the page is reloaded.
+const SUB_MODES = ['ps2', 'modern', 'off'];
+const SUB_LABEL = { ps2: 'Subs PS2', modern: 'Subs modern', off: 'Subs off' };
+const subBtn = document.getElementById('subBtn');
+let subPick = null;                    // null = follow the video mode
+function subMode() {
+  const m = subPick || (PS2 ? 'ps2' : 'modern');
+  return (m === 'ps2' && !ovlMesh) ? 'modern' : m;   // no font in this export
+}
+function syncSubBtn() {
+  const m = subMode();
+  subBtn.textContent = SUB_LABEL[m];
+  subBtn.classList.toggle('on', m !== 'off');
+}
+subBtn.onclick = () => {
+  subPick = SUB_MODES[(SUB_MODES.indexOf(subMode()) + 1) % SUB_MODES.length];
+  ovlCue = undefined;
+  syncSubBtn();
+};
+syncSubBtn();
+
+// The letterbox goes the same way.  It is part of the GS output, so by default
+// it is on with the PS2 emulation and off without it, and the button pins the
+// choice either way.  On means "run the script's own `0x57` track", not "bars
+// forever": a cutscene that opens or closes them mid-scene still does.
+const lbBtn = document.getElementById('lbBtn');
+let lbPick = null;                     // null = follow the video mode
+function lbOn() { return lbPick === null ? PS2 : lbPick; }
+function syncLbBtn() {
+  lbBtn.textContent = lbOn() ? 'Letterbox' : 'Letterbox off';
+  lbBtn.classList.toggle('on', lbOn());
+}
+lbBtn.onclick = () => { lbPick = !lbOn(); syncLbBtn(); };
+syncLbBtn();
 
 document.getElementById('fxBtn').onclick = (e) => {
   fxPanel.classList.toggle('on');

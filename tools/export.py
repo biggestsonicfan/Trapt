@@ -179,6 +179,54 @@ def pack_texture(blob, quality):
     return 'data:%s;base64,%s' % (mime, base64.b64encode(out.getvalue()).decode())
 
 
+# ---------------------------------------------------------------- the font
+
+def pack_font(subtitles):
+    """The glyphs a cutscene's cues need, plus everything to lay them out.
+
+    The atlas is the CLUT already applied, because that is the order the GS
+    works in -- it palettises a texel and *then* filters, so a page that
+    filters palettised RGBA reproduces the dark fringe on a glyph edge that
+    filtering coverage and palettising afterwards would not.
+    """
+    import font as font_mod
+    from PIL import Image
+    fo = font_mod.Font()
+    seen, glyphs = {}, []
+    for s in subtitles:
+        for ch in s.raw:
+            if ch in seen:
+                continue
+            code = font_mod.sjis_of(ch)
+            seen[ch] = code if code is not None and fo.has(code) else None
+            if seen[ch] is not None:
+                glyphs.append(seen[ch])
+    if not glyphs:
+        return None
+    cols = 16
+    pad = 1
+    w, h, rgba, slots = fo.atlas(glyphs, cols=cols, pad=pad)
+    out = io.BytesIO()
+    Image.frombytes('RGBA', (w, h), rgba).save(out, 'PNG', optimize=True)
+    # keyed by Unicode code point so the page needs no Shift-JIS table
+    table = {}
+    for ch, code in seen.items():
+        if code is not None:
+            table[ord(ch)] = [slots[code], fo.advance(code)]
+    return {
+        'atlas': 'data:image/png;base64,%s' % base64.b64encode(out.getvalue()).decode(),
+        'size': [w, h], 'cols': cols, 'cell': list(fo.cell), 'pad': pad,
+        'box': list(fo.box), 'ui': [font_mod.UI_W, font_mod.UI_H],
+        'native': [font_mod.NATIVE_W, font_mod.NATIVE_H],
+        'anchor': [font_mod.SUB_X, font_mod.SUB_Y + font_mod.SUB_ANCHOR_DY],
+        'body': list(font_mod.BODY_COLOUR),
+        # `%%SC<XX>` set-colour codes, already in GS units (ELF 0x0020D7B0)
+        'colours': {k: list(font_mod.gs_colour(v))
+                    for k, v in font_mod.MARKUP_COLOURS.items()},
+        'sample': font_mod.GS_SAMPLE, 'glyphs': table,
+    }
+
+
 # --------------------------------------------------------------------- audio
 
 def encode_audio(adx_blob, bitrate, mono):
@@ -205,8 +253,17 @@ def encode_audio(adx_blob, bitrate, mono):
 # -------------------------------------------------------------------- export
 
 def build(name, outdir, single=False, audio=True, jpeg_quality=88,
-          bitrate='64k', bgm_bitrate='96k', verbose=True):
-    disc = scene_mod.Disc()
+          bitrate='64k', bgm_bitrate='96k', verbose=True, disc=None,
+          three_href=None, order_href=None):
+    """Export one cutscene.  Returns what `site.py` needs for its index.
+
+    `disc` lets a caller building many scenes open GAME.DAT once, and
+    `three_href` points the page at a shared copy of three instead of writing
+    one per bundle -- 149 cutscenes is 149 copies of 600 KB otherwise.
+    `order_href` points it at the shared `order.js`, which turns the page into
+    one entry of the story-order playlist (`tools/order.py`).
+    """
+    disc = disc or scene_mod.Disc()
     sc = scene_mod.load(name, disc)
     buf = Buffer()
     log = (lambda *a: print(*a)) if verbose else (lambda *a: None)
@@ -299,7 +356,9 @@ def build(name, outdir, single=False, audio=True, jpeg_quality=88,
                'label': l.label} for l in sc.lights]
 
     subtitles = [{'frame': s.frame, 'end': s.end, 'speaker': s.speaker,
-                  'lines': s.lines, 'voice': s.voice} for s in sc.subtitles]
+                  'lines': s.lines, 'voice': s.voice, 'raw': s.raw}
+                 for s in sc.subtitles]
+    font = pack_font(sc.subtitles)
 
     sounds = {}
     if audio:
@@ -327,9 +386,13 @@ def build(name, outdir, single=False, audio=True, jpeg_quality=88,
         'duration': int(sc.duration), 'fog': list(sc.fog) if sc.fog else None,
         'models': models, 'clips': clips, 'textures': textures,
         'entities': entities, 'camera': camera, 'lights': lights,
-        'subtitles': subtitles, 'sounds': sounds,
+        'subtitles': subtitles, 'font': font, 'sounds': sounds,
         'bgm': [[f, k, i] for f, k, i in sc.bgm],
         'fades': [[f, k, n] for f, k, n in sc.fades],
+        # `0x57`: the bars are sprites in the same 640x448 UI space the
+        # subtitles use, so they travel with their own units (scene.py).
+        'letterbox': {'ui': list(scene_mod.LETTERBOX_UI), 'bars': list(sc.bars),
+                      'events': [[f, k, n] for f, k, n in sc.letterbox]},
     }
 
     dest = os.path.join(outdir, name)
@@ -356,22 +419,48 @@ def build(name, outdir, single=False, audio=True, jpeg_quality=88,
         os.makedirs(dest, exist_ok=True)
         with open(os.path.join(dest, 'scene.js'), 'w', encoding='utf-8') as f:
             f.write(scene_js)
-        shutil.copyfile(os.path.join(HERE, 'vendor', 'three.min.js'),
-                        os.path.join(dest, 'three.min.js'))
+        page = template.replace('<!--TITLE-->', title)
+        made = [os.path.join(dest, 'index.html'), os.path.join(dest, 'scene.js')]
+        if order_href:
+            page = page.replace(
+                '<script src="scene.js">',
+                '<script src="%s"></script>\n<script src="scene.js">'
+                % order_href)
+        if three_href:
+            page = page.replace('<script src="three.min.js">',
+                                '<script src="%s">' % three_href)
+        else:
+            shutil.copyfile(os.path.join(HERE, 'vendor', 'three.min.js'),
+                            os.path.join(dest, 'three.min.js'))
+            made.insert(1, os.path.join(dest, 'three.min.js'))
         with open(os.path.join(dest, 'index.html'), 'w', encoding='utf-8') as f:
-            f.write(template.replace('<!--TITLE-->', title))
-        made = [os.path.join(dest, x) for x in
-                ('index.html', 'three.min.js', 'scene.js')]
+            f.write(page)
 
-    log('%s: %d models, %d clips, %d textures, %d entities, %d subtitles'
+    log('%s: %d models, %d clips, %d textures, %d entities, %d subtitles, '
+        '%d glyphs'
         % (name, len(models), len(clips), len(textures), len(entities),
-           len(subtitles)))
+           len(subtitles), len(font['glyphs']) if font else 0))
     log('  binary %.1f MB, %d sounds' % (buf.size / 1e6, len(sounds)))
     for path in made:
         log('  %-52s %7.1f MB' % (path, os.path.getsize(path) / 1e6))
     for w in dict.fromkeys(warnings):
         log('  ! %s' % w)
-    return made
+    return {
+        'name': name, 'room': sc.room, 'duration': int(sc.duration), 'fps': FPS,
+        'models': len(models), 'clips': len(clips), 'textures': len(textures),
+        'entities': len(entities), 'subtitles': len(subtitles),
+        'sounds': len(sounds), 'glyphs': len(font['glyphs']) if font else 0,
+        'speakers': list(dict.fromkeys(s.speaker for s in sc.subtitles
+                                       if s.speaker)),
+        'opening': ' '.join(sc.subtitles[0].lines) if sc.subtitles else '',
+        'opening_frame': sc.subtitles[0].frame if sc.subtitles else
+                         int(sc.duration) // 2,
+        'letterbox': len(sc.letterbox),
+        'warnings': list(dict.fromkeys(warnings)),
+        'files': [os.path.relpath(p, outdir).replace(os.sep, '/')
+                  for p in made],
+        'bytes': sum(os.path.getsize(p) for p in made),
+    }
 
 
 def list_cutscenes():

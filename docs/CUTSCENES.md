@@ -120,7 +120,8 @@ The `%c` comes from the 3-byte table at **`0x004825A8` = `"acb"`**, selected by
 bits 15–16 of a progress/settings word — index 0 (`'a'`) on a fresh boot.
 
 Ids are dense and ordered: `e001`–`e027`, `e101`–`e133`, `e230`/`e231`,
-`e322`–`e326`, then `e401_01` … `e430_01`.
+`e322`–`e326`, then `e401_01` … `e430_01`.  That is registry order, and it is
+*not* the order they play in — see §7.
 
 ---
 
@@ -232,7 +233,7 @@ Named so far (from decompiling each handler):
 | `0x53`/`0x54` | `fade_in` / `fade_out` | frames, 0 |
 | `0x55` | `play_anim` | `"x.sai"`, 1 |
 | `0x56` | `scene_ready` | |
-| `0x57` | `letterbox` | on, 1 |
+| `0x57` | `letterbox` | mode (0 in, 1 out), tween frames |
 | `0x59` | `play_voice` | `"m0001_c01f_a"`, `"none"`, 1 |
 | `0x5A`/`0x5B` | `bgm_start` / `bgm_stop` | id, …, fade |
 | `0x60` | `subtitle_show` | text, x, y, `"none"` |
@@ -254,6 +255,14 @@ Two refinements from building the viewer: `0x64`'s first argument is a **kind**
 `rt_inf`, `joyu`, `rt_poi`). Inside a kind-6 block `0xB4` is the light type
 (0 directional, 1 point, 4 ambient), `0xB5` its range and `0x80` its **colour**.
 `0x80` is a tint on a model block too, *not* a scale.
+
+`0x57` is the cutscene letterbox: the handler at `0x001C6570` sets two black
+640-wide sprites to **50 and 110** units of the 640x448 UI space — 25 and 55
+lines of the 512x224 framebuffer — and `0x001E43F0` slides them in from
+off-screen over the second argument's frame count. All 149 cutscenes call
+`(0, 1)` on their first frame and `(1, 1)` on their last, and the dialogue is
+drawn on the lower bar rather than over the picture ([`VIEWER.md`](VIEWER.md)
+§1.5).
 
 Subtitle strings carry inline markup: `%%SCSV` … `%%RC` wraps the speaker name,
 a literal two-character `\n` breaks the line, a literal `\0` ends the string.
@@ -415,6 +424,213 @@ looking for menu transitions.
 
 ---
 
+## 7. The story order — which cutscene plays when
+
+Disc order is *nearly* story order and the names look sequential, but they are
+not the sequence: `e133` plays between `e107` and `e108`, `e132` before `e129`,
+`e005` and `e025` do not exist, and nothing in a filename says where the
+playable stages sit between the scenes. The real order is four tables, read by
+two state machines.
+
+### 7.1 Cutscenes are played in groups, not one at a time
+
+Nothing in the game asks for a single cutscene except the attract loop. The
+unit is a **group**: `FUN_00323BA0(obj, group)` sets one, `FUN_00323AE0` starts
+it and `FUN_00323BC0` walks it, tearing down each RT player (§1.3) and building
+the next, so a run of cutscenes plays back to back without returning to the
+caller.
+
+The group table is at **`0x0045DB50`** — 38 records of 8 bytes, bounds-checked
+against `0x26` in `FUN_00323AE0`:
+
+```
++0x00 u8    count
++0x01 u8[7] cutscene ids
+```
+
+Group `0x00` is `e001 e002 e003`, the opening the attract loop plays. The 38
+groups between them cover cutscene ids **`0x00`–`0x40`** — every `e0xx`,
+`e1xx`, `e2xx` and `e3xx` scene — and, because the tables below reference them
+in ascending order, **group order is story order**.
+
+### 7.2 The chapter machine, `FUN_00173520`
+
+Three tables indexed by the chapter number at `app+0x408` (`FUN_00171BC0`),
+15 chapters:
+
+| addr | record | read in state |
+|---|---|---|
+| `0x0042DD20` | `u8 count; u8 stage[3]` — the chapter's playable stages | 9, `0xC` |
+| `0x0042DD60` | `u8 group` — plays *before* the chapter | 6 |
+| `0x0042DD70` | `u8 [3][2]` — per stage, (before, after) | 9, `0xF` |
+
+`0xFF` means "no cutscene here". Laid against the state machine:
+
+```
+state 3    FUN_00173170  checkpoint the progress block, then put up a screen
+      4,5  FUN_00173050  its result: 0x100D play the chapter, 0x100E hand over
+                         to the ending machine (§7.4), 0x1002 leave
+state 6    FUN_00172F20  group 0042DD60[chapter]        the chapter opening
+      7,8                poll / release; state 8 also seeds the stage index
+state 9    FUN_00172DF0  group 0042DD70[chapter][s][0]  before the stage
+      10,0xB             poll / release
+state 0xC                stage 0042DD21[chapter][s], then FUN_0016C2A0
+      0xD                run it -- FUN_0016B870, the in-room machine (§1.1)
+      0xE  FUN_00172B50  the stage's result: 0x1012 replay it, 0x1013 carry on
+                         to state 0xF, 0x1003 fail back to state 3
+state 0xF                group 0042DD70[chapter][s][1] after the stage
+      0x10,0x11          poll / release, then FUN_00172960 asks what is next
+state 0x12-0x14          a second screen, then FUN_001727F0 sets the chapter
+state 0x15 FUN_001726F0  the finale (§7.3)
+```
+
+### 7.3 Three story flags, and the four rules that read them
+
+The loop above is not a straight line, and the branches are code rather than
+tables. Four short functions decide where it goes, and all four read the same
+byte of **story flags at `app+0x40E`**:
+
+| function | decides | reads |
+|---|---|---|
+| `FUN_00173520` state 8 | which stage the chapter opens on | flag 0 |
+| `FUN_00174250(c, s, flags)` | the next stage in the chapter, or `-1` | flag 1 |
+| `FUN_001741B0(c, flags)` | the next chapter, or `-1` | flags 0, 1 |
+| `FUN_001726F0` | which finale group closes the run | flags 1, 2 |
+
+Concretely, and this is the whole of the main line's branching:
+
+* **Chapter 10** has two stages and plays exactly **one**. State 8 picks
+  `0x11` when flag 0 is already set on entry, `0x10` when it is not, and
+  `FUN_00174250` returns `-1` for this chapter either way. With flag 0 set
+  `FUN_001741B0` also has no next chapter, and `FUN_00172960` sets `app+0x7F`
+  so `FUN_001727F0` **leaves the machine entirely** — that route does not
+  reach the finale at all.
+* **Chapter 14** plays its third stage (`0x18`) only when flag 1 is *clear*,
+  and that is also the case with no chapter 15: it goes straight to the finale.
+  With flag 1 set it plays two stages and chapter 15 follows.
+* **Chapter 15** always ends the run. `FUN_001726F0` then reads flag 2.
+
+So the three finale groups are three *routes*, not three replays:
+
+| reached from | flags | group | cutscenes |
+|---|---|---|---|
+| chapter 14 | flag 1 clear | `0x23` | `e129 e130` |
+| chapter 15 | flag 2 clear | `0x25` | `e322 e323 e324 e325 e326` |
+| chapter 15 | flag 2 set | `0x24` | `e230 e231` |
+
+`FUN_001726F0` records which one it chose in `app+0x3FE`.
+
+**Nothing in the ELF sets these flags.** `FUN_00172B50` only ever *clears* one
+— on a failed stage (`0x1003`), the flag named by the 15-byte table at
+**`0x0042DDD0`**: `-1` for every chapter except 10 → flag 0, 14 → flag 1,
+15 → flag 2. Whatever sets them is inside a stage, i.e. in the part of the
+game the viewer does not have. `python tools/order.py --graph` enumerates
+every chapter against every flag state a run can actually reach it with.
+
+### 7.4 The endings are a second, branching machine
+
+Everything `e4xx_xx` — ids `0x41`–`0x99`, 89 scenes — belongs to a different
+object, built in state `0x18` and ticked by **`FUN_0032A7C0`** (vtable
+`0x00480AE0`).
+
+`FUN_0032A730(this, chapter)` picks its script out of the 15×2 byte table at
+**`0x003872A0`**: two routes per chapter, selected by bit 0 of `app+0x80`. That
+is a record index into **`0x003872C0`**, **30 records of `0x50` bytes**:
+
+```
++0x00  s16 step[16]        -1 end
+                           < 0x4E  a stage id
+                           >= 0x4E cutscene id + 0x4E
++0x20  s8  branch[16][3]   (flag, next_if_clear, next_if_set); flag -1 = i+1
+```
+
+`FUN_0032A5D0` is the walk. With no flag a step falls through to `i+1`;
+otherwise it tests bit `flag` of the 16-bit field at `app+0x40F` — cleared when
+the ending starts, `FUN_0032AB50` — and jumps to one of the two successors. Any
+successor whose step is `-1` ends the ending, which is why a record's tail of
+zero bytes is never entered and needs no terminator.
+
+Flow `0x00`, the first ending of chapter 1, reads:
+
+```
+0: e401_01
+1: stage 1A
+2: e401_02   then flag 0 ? step 6 : step 4
+4: e401_03
+6: e401_04
+```
+
+Thirteen flags (`0`–`12`) are used across the 30 records; the stages
+interleaved with the cutscenes are ids `0x1A`–`0x43`, a second set on top of
+the 26 the chapters use (`0x00`–`0x19`).
+
+### 7.5 What falls out of the four tables
+
+Every one of the 149 cutscenes on the disc is placed, and the main line is
+strictly ascending in group id:
+
+```
+Opening                group 00   e001 e002 e003
+Chapter 1              group 01   e004 e006 e007 e008
+  stage 00
+  before stage 01      group 02   e009
+  stage 01
+  after stage 01       group 03   e010 e011
+Chapter 2              group 04   e012 e013
+  ...
+Chapter 15             group 22   e132
+  stage 19
+Finale                 group 23   e129 e130          (chapter 14, flag 1 clear)
+                       group 25   e322 ... e326      (chapter 15, flag 2 clear)
+                       group 24   e230 e231          (chapter 15, flag 2 set)
+Endings                flow 00-1D                    e401_01 ... e429_04
+```
+
+Two dead ends worth recording:
+
+* **Sixteen registry entries are never played** — no group and no reachable
+  flow step names them: `e404_03`, `e408_01`, `e409_01`–`e409_03`,
+  `e410_01`–`e410_04`, `e419_01`–`e419_03`, `e422_01`, `e424_03`, `e427_01`,
+  `e430_01`. The flow records that would hold them (`07`, `08`, `09`, `12`,
+  `15`, `1A`, `1D`) are a bare stage and a terminator.
+* **Five of those sixteen have no data on the disc at all**: `e409_02`,
+  `e422_01`, `e424_03`, `e427_01`, `e430_01`. Whatever they were, they were cut
+  before the US master; the other eleven ship complete and unreachable.
+
+### 7.6 `tools/order.py`
+
+The tables, decoded straight out of `SLUS_212.55`:
+
+```
+python tools/order.py             # the whole order, as an outline
+python tools/order.py --graph     # every branch point, every flag state
+python tools/order.py --json      # the tables and the order, machine readable
+python tools/order.py --playlist  # just the names, in order
+python tools/order.py --script    # 1492 cues, in story order
+python tools/order.py --check     # registry vs. disc vs. what any table plays
+python tools/order.py --tables    # the JSON that goes into the site's order.js
+python tools/order.py --rules     # the four branch rules, as a test fixture
+```
+
+`tools/site.py` uses it three ways: the gallery is laid out chapter by chapter
+instead of alphabetically; `order.js` hands the same flat list to every player
+page, which is what its prev/next buttons and **Auto** walk; and the same file
+carries the tables unflattened, which is what **story mode** runs
+([`VIEWER.md`](VIEWER.md) §2.2, §2.3).
+
+### 7.7 Running the machine without the game
+
+Story mode in the viewer is `FUN_00173520` and `FUN_0032A7C0` re-implemented
+over these tables, in `player.html`'s `TRAPT STORY` block. Everywhere the
+retail game would have learned something it cannot learn here — a stage's
+result code, the screen at state 5, a story flag set inside a room, the bit
+`FUN_0032A5D0` tests — it puts the same choice to the person watching and
+carries on with the answer. `tools/test_order.js` walks it headless and diffs
+its four branch rules against `order.py --rules` over all 120 (chapter, flag)
+combinations, so the two transcriptions cannot drift.
+
+---
+
 ## Open threads
 
 * ~30 of the 230 opcodes are named; 148 are actually used somewhere on the disc,
@@ -426,5 +642,13 @@ looking for menu transitions.
   `RT_E001.ARC` are the obvious sample set, since each has a matching `.ADX`
   and a known frame from §5.3.
 * `RT_IGS_*.ARC` (8 files) are untouched — "in-game scene"?
+* Eleven `e4xx` cutscenes ship on the disc but no table plays them (§7.5).
+  Either a fifth table reaches them from inside a stage, or they are cut
+  content; the seven stage-only ending flows are where to look.
+* Nothing found so far *sets* a story flag (`app+0x40E`, three of them) or an
+  ending branch flag (`app+0x40F`, thirteen). Both are cleared — by a failed
+  stage and by the start of an ending — and read by the machines in §7.3 and
+  §7.4, so whatever sets them lives inside a stage. That is the one hole left
+  in the story graph.
 * The `%%SCSV` / `%%RC` subtitle markup verbs have not been traced to their
   handler in the text renderer.

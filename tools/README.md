@@ -25,6 +25,41 @@ Sanity-check a result without opening a 3D app:
 python preview.py model.obj out.png [--size 512] [--yaw 70]
 ```
 
+Cutscenes go to a browser instead. One:
+
+```
+python export.py e001 out            # out/e001/{index.html,scene.js,three.min.js}
+python export.py e001 out --single   # one self-contained .html
+```
+
+All of them, into a directory you can deploy as-is (see
+[`../docs/VIEWER.md`](../docs/VIEWER.md) §2.1):
+
+```
+python site.py site --jobs 8 --posters
+python site.py site --resume --serve 8000
+```
+
+To put that somewhere public, see [`../docs/DEPLOY.md`](../docs/DEPLOY.md) —
+`deploy/` has a Dockerfile that bakes the site into `caddy:2-alpine`, a
+compose file, standalone Caddy and nginx configs, and `precompress.py` for the
+`.gz`/`.br` sidecars.
+
+The site is laid out in the order the *game* plays the cutscenes, not
+alphabetically, and its player pages chain: **Auto** plays the whole story from
+`e001` to the last ending without stopping, and **Story mode** runs the game's
+own chapter and ending machines, prompting you wherever the retail game would
+have read a stage's result, a menu or a story flag. Both come out of the ELF
+([`../docs/CUTSCENES.md`](../docs/CUTSCENES.md) §7):
+
+```
+python order.py                 # the story order, as an outline
+python order.py --graph         # every branch point, every flag state
+python order.py --playlist      # just the names, in order
+python order.py --script        # every line of dialogue, in story order
+python order.py --check         # the tables vs. what is on the disc
+```
+
 ## Modules
 
 | file | purpose |
@@ -39,14 +74,18 @@ python preview.py model.obj out.png [--size 512] [--yaw 70]
 | `sai.py` | `.SAI` skeletal animation reader |
 | `cam.py` | `.CAM` camera-track reader |
 | `sli.py` | `.sli` room light-set reader (the room's own lights, incl. the directional's aim) |
+| `font.py` | the PS2 kernel font the game draws subtitles with, read out of the ELF |
 | `adx.py` | CRI `.ADX` audio decoder (sample-exact vs ffmpeg) |
 | `scene.py` | compiles a whole cutscene into one renderable timeline |
+| `order.py` | the story order: the ELF's chapter, group and ending-flow tables |
 | `pose.py` | poses a `.SMI` skeleton with a `.SAI` clip and skins it |
 | `render.py` | numpy software render of one cutscene frame (the correctness gate) |
 | `pdiag.py` | rasterise an exported page with the page's own shader — the gate for texture, blend and lighting bugs |
 | `export.py` | exports a cutscene to a standalone HTML player |
+| `site.py` | runs `export.py` over all 149 cutscenes into one deployable site + gallery |
 | `player.html` | the player template (three.js + a GPU skinning shader) |
-| `verify.py`, `test_player.js` | diff the player's maths against `pose.py` under node |
+| `verify.py`, `test_player.js` | diff the player's maths against `pose.py`, and its subtitle layout against `font.py`, under node |
+| `test_order.js` | run the player's playlist and story-mode blocks headless — prev/next, Auto, and whole playthroughs |
 | `gsstate.py` | decode the GS register state from a savestate's EE memory dump |
 | `vudis.py` | VU0/VU1 microcode disassembler |
 | `gsdump.js`, `pinefast.js` | live GS scan over PINE (batched; the bundled client is 1 byte/round-trip) |

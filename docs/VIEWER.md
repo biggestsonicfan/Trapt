@@ -16,11 +16,15 @@ Open `index.html` straight off disk. Space plays, the slider scrubs, arrow keys
 step (hold shift for 5 s), and dragging the canvas switches to a free orbit
 camera so you can walk around a frozen shot.
 
-Two buttons control the look. **PS2 / Modern** switches the whole
+Four buttons control the look. **PS2 / Modern** switches the whole
 fixed-function emulation on or off in one go — gamma handling, alpha rule,
-texture filtering and output resolution all move together. **Look** opens a
-grading panel that works in either mode. Both are documented in
-[`PS2SHADER.md`](PS2SHADER.md).
+texture filtering and output resolution all move together. **Subs** switches
+the subtitles between the game's own font, drawn into the 512x224 framebuffer
+the way the GS draws it, and plain DOM text; it follows the PS2/Modern button
+until you press it. **Letterbox** runs the script's own `0x57` bars, which is
+what the dialogue is meant to sit on (§1.5); it follows the PS2/Modern button
+too. **Look** opens a grading panel that works in either mode. These are
+documented in [`PS2SHADER.md`](PS2SHADER.md) and [`FONT.md`](FONT.md).
 
 `e001` — the opening — exports in about 24 s to a 18 MB page: 13 models,
 25 animation clips, 67 textures, 45 subtitle cues and 45 audio streams.
@@ -29,9 +33,9 @@ grading panel that works in either mode. Both are documented in
 
 ## 1. What had to be reverse-engineered
 
-Four of the six formats were already done (`AFS`, `RPS`, `.SMI`, `.TM2` in
+Four of the seven pieces were already done (`AFS`, `RPS`, `.SMI`, `.TM2` in
 [`../tools/README.md`](../tools/README.md); `.SSC` in
-[`CUTSCENES.md`](CUTSCENES.md)). Building the viewer needed three more.
+[`CUTSCENES.md`](CUTSCENES.md)). Building the viewer needed four more.
 
 ### 1.1 `.SAI` — skeletal animation (`tools/sai.py`)
 
@@ -111,7 +115,50 @@ sums the room's directional lights and normalises. For `rp03` that gives
 holds exactly that. The viewer had been using an invented
 `(0.35, 0.80, -0.49)`.
 
-### 1.4 `.ADX` — CRI audio (`tools/adx.py`)
+### 1.4 The subtitle font (`tools/font.py`)
+
+The game has no font on the disc: `DATA/FONT/FONT.BIN` is an 18-byte `FJF`
+stub nothing reads. It draws dialogue from the **PS2 kernel font**, a full
+JIS X 0208 face of 16x16 four-bit glyphs baked into the ELF at `0x003885C0`,
+through a 16-entry alpha-ramp CLUT at `0x00388580`, with per-glyph advances in
+a Shift-JIS-keyed range table at `0x004506E0`.
+
+`0x60`'s `(x, y)` is the **centre of the first glyph box** in a 640x448 UI
+space that maps into the GS's 512x224 by `(0.8, 0.5)`; a 16x16 glyph is drawn
+into a 24x24 box, so on screen it is a 19.2 x 12 quad. Inline `%%SC<XX>` /
+`%%RC` markup sets and restores the pen colour from a fifteen-entry table at
+`0x0020D7B0`, which is what draws a speaker's name grey.
+
+Laid out that way, `font.py` reproduces **all 56 glyph quad positions** in the
+reference savestate's display list exactly, and rendering it matches PCSX2
+captures at five frames of `e001` to the resampling noise floor. See
+[`FONT.md`](FONT.md).
+
+### 1.5 The letterbox (`0x57`)
+
+Not cosmetic, and not symmetric. The opcode handler at ELF `0x001C6570` drives
+two black 640-wide sprites in the same 640x448 UI space the subtitles use, and
+re-sets their heights each time it brings them in: **50 at the top and 110 at
+the bottom** — 25 and 55 lines of the 512x224 framebuffer, with the bottom band
+starting at `y=169`. The tween at `0x001E43F0` slides them in from off-screen
+over the opcode's own frame count, so `letterbox(0, n)` opens and
+`letterbox(1, n)` closes. Every one of the 149 cutscenes issues `(0, 1)` on its
+first frame and `(1, 1)` on its last.
+
+That bottom band is why the dialogue anchor looks so low: the text is drawn
+**on** the bar, not over the scene, and the 55 lines are exactly enough to hold
+a three-line cue. The viewer used to draw an invented symmetric 9%, which put
+the subtitles over the picture — the one thing [`FONT.md`](FONT.md) had
+measured on hardware and could not explain. It can now: the capture of `e001`
+at 7422 has 25 black lines at the top and 55 from 169 down, which is the ELF's
+numbers exactly, and `pdiag.py` reproduces both.
+
+It is an **overlay, not a viewport**. The world is still rendered to the whole
+512x224 and the camera never learns about the bars, so the aspect ratio does
+not change — the frame stays 4:3, and the visible band is a crop of it
+(512x144, about 2.07:1 as displayed) rather than a squeeze.
+
+### 1.6 `.ADX` — CRI audio (`tools/adx.py`)
 
 1192 streams, 655 MB: BGM, room ambience and 1048 voice clips. Standard CRI
 ADX, type 3, 18-byte blocks, 4-bit samples, 48 kHz, version 4, unencrypted.
@@ -139,6 +186,7 @@ verified over 19,024,000 samples of stereo BGM.
 GAME.DAT ──afs──> RPS ──arc──> .SMI .TM2 .SSC .SAI .CAM
                                  │
              scene.py  ── runs every .SSC track into one timeline
+                                 │        SLUS_212.55 ──font.py──> glyphs + advances
                                  │
    pose.py   ── .SMI skeleton + .SAI clip -> world matrices -> skinned verts
                                  │
@@ -161,7 +209,126 @@ GAME.DAT ──afs──> RPS ──arc──> .SMI .TM2 .SSC .SAI .CAM
 * **`render.py`** rasterises one frame with numpy. This is not a toy: it is the
   reference the WebGL player is checked against, and it is how every convention
   below was pinned down.
+* **`font.py`** reads the subtitle face out of the executable and lays a cue
+  out the way the game does; `export.py` bakes the glyphs a cutscene needs
+  into one atlas.
 * **`export.py`** writes the page.
+* **`site.py`** runs `export.py` over the whole catalogue and assembles the
+  result into one deployable directory (§2.1).
+
+### 2.1 The whole catalogue (`tools/site.py`)
+
+```
+python tools/site.py site --jobs 8 --posters
+```
+
+writes a directory that drops on any static host, or opens off disk:
+
+```
+site/index.html      the gallery, in story order, generated from manifest.json
+site/script.html     every line of dialogue in the game, in story order
+site/order.js        the playlist -- story order, out of the ELF (order.py)
+site/three.min.js    one copy, shared by every page
+site/manifest.json   what got built, and every warning it raised
+site/e001/index.html the player, pointing at ../three.min.js and ../order.js
+site/e001/scene.js   that cutscene's data
+site/e001/poster.png optional still, rendered by pdiag.py
+```
+
+Three things make it worth having over a shell loop. `export.py` copied
+three.js into every bundle, which is 149 copies of 600 KB — `build()` takes a
+`three_href` now and points the pages at one shared file instead. `Disc()` maps GAME.DAT once
+per worker rather than once per cutscene, so `--jobs` scales nearly linearly.
+And `build()` hands back what the index needs — room, length, cast, opening
+line, warnings — so the gallery is generated from the same run that built the
+pages, not from a second pass over 2 GB of output.
+
+The posters go through `pdiag.py`, which reads the bundle's `scene.js`
+directly (it only looks for `window.TRAPT_SCENE=`), at the first cue's frame —
+so each still carries a line of dialogue sitting on the letterbox.
+
+`--resume` skips what is already built, `--only`/`--skip`/`--limit` select,
+`--no-audio` roughly halves the size, and `--serve PORT` serves the result for
+a look. A failed cutscene is recorded in the manifest and shown on the index;
+it never stops the other 148.
+
+**The whole catalogue builds.** 149 cutscenes, `--jobs 8 --no-audio`, **17.8 s,
+0.79 GB, no failures** — and exactly two warnings in the set, both a texture a
+scene names and the disc does not have (`e106` wants `noIcon.tm2`, `e428_01`
+wants `gdi_rh06_00.tm2`). With audio it is around 2.5 GB and paced by ffmpeg,
+one process per voice clip.
+
+### 2.2 Playing the story in order
+
+Disc order is not story order, and a gallery of 149 ids sorted by name is a
+catalogue rather than a game. `tools/order.py` reads the four ordering tables
+out of the ELF -- the cutscene groups, the three per-chapter tables and the 30
+branching ending records, all documented in
+[`CUTSCENES.md`](CUTSCENES.md) §7 -- and `site.py` uses the result twice:
+
+* the gallery is laid out **chapter by chapter**, each tile captioned with
+  where the game plays it (`before stage 04`, `chapter opening`, `first
+  clear`), and the search box hides an empty chapter's heading with it;
+* `order.js` is written next to it as `window.TRAPT_ORDER`, and every player
+  page loads it. The same file carries `window.TRAPT_STORY` -- the tables
+  unflattened, which is what story mode walks (§2.3).
+
+That is what turns the player into a playlist. With `order.js` present the bar
+grows **prev / next** buttons and an **Auto** toggle, and the position readout
+becomes `all · 12 / 149`. Auto plays the cutscene to its last frame and then
+navigates to the next one, so **Play in order** on the gallery walks the whole
+game from `e001` to the last ending unattended. The flag rides in
+`sessionStorage` plus an `?auto=1` on the URL, because each cutscene is its own
+page; `,` and `.` step by hand.
+
+Two details that matter. A `export.py` bundle with no `order.js` is unchanged
+-- `window.TRAPT_ORDER` is absent, the buttons stay hidden and nothing
+navigates -- so the standalone single-file export still works exactly as it
+did. And a page reached by auto-advance has had no click of its own, so the
+browser may refuse to start its audio; the picture runs regardless and the
+hint line asks for a click.
+
+`site.py` also writes **`script.html`**: all 1492 subtitle cues, in story
+order, each scene linking to its own player page. It is the game's whole spoken
+script as one document.
+
+### 2.3 Story mode — the game's own machine, with you in the gaps
+
+**Play in order** is a list. Story mode is the game: `player.html` carries a
+re-implementation of `FUN_00173520` (chapters) and `FUN_0032A7C0` (endings)
+over the same tables, in its `TRAPT STORY` block, and runs a real playthrough
+— chapter opening, the cutscenes before a stage, the stage, the cutscenes
+after it, the next stage or the next chapter, and one of the three finales or
+one of the thirty ending flows.
+
+The viewer has no rooms to play, and three story flags at `app+0x40E` are set
+by something inside those rooms that has not been found
+([`CUTSCENES.md`](CUTSCENES.md) §7.3). So everywhere the retail game would
+learn something the viewer cannot, it **asks**:
+
+| where the game would look | what you are asked |
+|---|---|
+| the screen at state 5 (`FUN_00173050`) | play this chapter (`0x100D`), take one of its two ending routes (`0x100E`), or stop (`0x1002`) |
+| the same screen, on a chapter that reads a flag | enter chapter 10 / 14 / 15 with its story flag set or clear |
+| a stage's result (`FUN_00172B50`) | cleared (`0x1013`), failed (`0x1003`, which clears the chapter's flag and drops you back to the screen), or retry (`0x1012`) |
+| `FUN_0032A5D0` inside an ending | which way bit *n* of `app+0x40F` went, with the cutscene each side leads to |
+
+Nothing is invented: every option on those panels is a result code or a flag
+the ELF actually tests, and each one prints the code it stands for. The panel
+also shows the chapter and the live story flags, so a run is legible as it
+goes — and the branches are real, so the choices land you on different
+cutscenes and different endings.
+
+Start it from **Story mode** on the gallery. The run's state is JSON in
+`sessionStorage` (each cutscene is a separate page, so it has to survive the
+navigation) and `?story=1` is what marks a page as part of a run; a plain click
+from the gallery is still a plain page.
+
+Three runs worth trying, all confirmed by `tools/test_order.js`: clear
+everything and never take a flag, and you get 14 chapters and `e129 e130`;
+carry flag 1 into chapter 14 and flag 2 into chapter 15, and the run is longer
+and ends `e230 e231`; set flag 0 at chapter 10 and the game plays stage `0x11`
+and then stops dead, which is exactly what `FUN_001741B0` and `app+0x7F` do.
 
 ### Three conventions that will bite
 
@@ -265,6 +432,7 @@ vertex normal on **100.0%** of character triangle area (`c01f_a_h`,
 | camera | baked one sample per frame, so the page interpolates nothing |
 | textures | PNG, or JPEG when a texture is fully opaque |
 | audio | decoded by `adx.py`, compressed to Ogg Vorbis by ffmpeg |
+| font | only the glyphs the cutscene's cues use, CLUT already applied, one padded 16x16 cell each — 51 glyphs and 4.6 kB for `e001` |
 
 Everything is base64 inside `scene.js`, loaded by a plain `<script src>` — no
 `fetch`, so it works from `file://` with no server.
@@ -279,19 +447,38 @@ The browser cannot be run here, so the player's maths is checked headlessly.
 python tools/verify.py e001 1 1040 4400 7860 11800
 ```
 
-`tools/test_player.js` extracts the `TRAPT MATH` block **verbatim out of
-`player.html`** — so it exercises the code the page actually ships — poses
-every entity at a frame under node, and `verify.py` diffs the bone matrices and
-skinned vertices against `pose.py`.
+`tools/test_player.js` extracts the `TRAPT MATH` and `TRAPT SUBS` blocks
+**verbatim out of `player.html`** — so it exercises the code the page actually
+ships — poses every entity at a frame and lays out every subtitle cue under
+node, and `verify.py` diffs the bone matrices and skinned vertices against
+`pose.py` and the glyph placements against `font.py`.
 
 Result across five frames of `e001` and one of `e118`: worst bone-matrix delta
 **6.4e-4**, worst vertex delta **1.5e-3**, on ~5700 bone values and ~9200
 vertex values per frame. That residual is the s16 quaternion quantisation and
-nothing else.
+nothing else. The subtitle side comes back at **5e-7** over 1941 glyph
+placements, which is the harness's own rounding; the font's own gates -- the
+layout against the hardware display list and the raster against a PCSX2
+capture -- are in [`FONT.md`](FONT.md).
 
 The vertex shader is the one thing node cannot execute, so `test_player.js`
 proves its convention algebraically instead: it builds `mat4` from rows the way
 GLSL does and asserts the result equals the CPU row-vector product.
+
+The playlist and story mode are checked the same way, by
+`tools/test_order.js`. It lifts the `PLAYLIST` block verbatim out of
+`player.html` and runs it against a stub DOM -- prev and next at both ends of
+the list, Auto arriving with `?auto=1`, Auto switching itself off at the last
+cutscene, a bundle with no `order.js` doing nothing at all -- and then the
+`TRAPT STORY` block, which is pure, against the real tables from
+`order.py --tables`. That half walks whole playthroughs and asserts on what
+they played: the straight run's 14 chapters and `e129 e130`, the flag-1 route
+through chapter 15 to `e230 e231`, chapter 10 stopping the machine, a failed
+stage taking its story flag away, an ending flow branching both ways, and a
+partial site skipping the cutscenes it does not have. Its four branch rules
+are diffed against `order.py --rules` over all 120 (chapter, flag) rows, so
+the Python and the JavaScript transcription of the ELF cannot drift apart.
+**63 checks, `node tools/test_order.js`.**
 
 `export.py` has been smoke-tested over 18 cutscenes spanning `e001`–`e429_04`
 (rooms `rh`, `rp`, `rc`, `rt`; 721–11891 frames; 3–19 actors) with no failures.
