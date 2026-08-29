@@ -1,0 +1,60 @@
+# trapt.robkrum.com -- the ISO-driven page, on the droplet that already runs
+# Forgejo and decomp.me.
+#
+# This is the alternative to docker-compose.droplet.yml.  That one serves the
+# 0.9 GB exported site; this one serves ~780 KB of code and no game data at
+# all -- the visitor supplies their own disc and everything is decoded in the
+# browser.  Both use the compose project name `trapt` and the container name
+# `trapt`, so bringing one up replaces the other rather than colliding with it.
+#
+# On the droplet:
+#
+#     git clone https://code.robkrum.com/rob/Trapt.git ~/Trapt
+#     python3 ~/Trapt/deploy/build-web.py /srv/trapt-web --prune
+#     cd ~/Trapt/deploy
+#     docker compose -f docker-compose.web.yml up -d
+#
+# Then one block in ~/forgejo/Caddyfile:
+#
+#     trapt.robkrum.com {
+#         reverse_proxy trapt:8080
+#     }
+#
+#     docker compose -f ~/forgejo/docker-compose.yml exec caddy \
+#       caddy reload --config /etc/caddy/Caddyfile
+#
+# Updating is `git pull` and re-running build-web.py; the container reads the
+# directory on every request and needs no restart.  --prune drops the previous
+# build's hashed filenames, which are otherwise dead files nothing links to.
+#
+# `proxy` is declared `external: true` in ~/forgejo/docker-compose.yml, so it
+# already exists and is not owned by that stack -- it is how decompme-nginx is
+# reached, and joining it disturbs nothing.  No port is published: Caddy is the
+# only thing that needs to reach this.
+name: trapt
+
+services:
+  trapt:
+    image: caddy:2-alpine
+    container_name: trapt
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./Caddyfile.web:/etc/caddy/Caddyfile:ro
+      - ${TRAPT_WEB:-/srv/trapt-web}:/srv/trapt-web:ro
+    networks:
+      - proxy
+    restart: unless-stopped
+    # A ceiling, not a reservation.  Caddy serving a directory this small sits
+    # nearer 20 MB; the box has 1 GB across Forgejo, Caddy and decomp.me and is
+    # already into swap.
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/index.html"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+networks:
+  proxy:
+    external: true
+    name: ${NET:-proxy}

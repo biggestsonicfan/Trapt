@@ -58,6 +58,11 @@ jobs:
       - name: every tool compiles
         run: python3 -m compileall -q tools deploy
 
+      - name: the served tree still builds
+        run: |
+          python3 deploy/build-web.py "$RUNNER_TEMP/trapt-web" --prune
+          test -s "$RUNNER_TEMP/trapt-web/index.html"
+
       - name: the docs point at files that exist
         run: |
           python3 - <<'EOF'

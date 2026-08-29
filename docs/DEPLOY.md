@@ -1,8 +1,17 @@
 # Serving the cutscene site at `trapt.robkrum.com`
 
-`tools/site.py` writes a directory of plain files — no build step, no runtime,
-nothing server-side. Anything that serves static files will do; the only
-things that need deciding are where the ~0.9 GB lives and who terminates TLS.
+There are two different sites in this repository, and they have very different
+hosting problems.
+
+**The ISO page** ([`tools/web/pick.html`](../tools/web/pick.html)) is ~780 KB
+of code and no game data — the visitor supplies their own disc and the browser
+decodes it. That is what `trapt.robkrum.com` serves; skip to §3.1.
+
+**The exported site** (`tools/site.py`) is a directory of plain files with all
+149 cutscenes already decoded — no build step, no runtime, nothing
+server-side. Anything that serves static files will do; the only things that
+need deciding are where the ~0.9 GB lives and who terminates TLS. Sections 1,
+2 and 4 are about that one.
 
 ```
 452 files, 0.89 GB          largest single file 18.2 MB (e001/scene.js)
@@ -14,9 +23,11 @@ things that need deciding are where the ~0.9 GB lives and who terminates TLS.
 cloudflare.com`) with the apex proxied, so whichever route you pick, the DNS
 half is one record in that zone.
 
-> The site is the complete asset set of a commercial game — models, textures,
-> the whole voice track and script. That is a redistribution question worth
-> settling before it is public; it is not a technical one.
+> The **exported** site is the complete asset set of a commercial game —
+> models, textures, the whole voice track and script. That is a
+> redistribution question worth settling before it is public, and it is not a
+> technical one. The ISO page raises none of it: it ships no assets, and a
+> visitor without their own disc sees nothing.
 
 ---
 
@@ -95,16 +106,57 @@ trapt.robkrum.com {
 }
 ```
 
+`proxy` is declared `external: true` in your compose file, so it already exists
+and is not owned by the Forgejo stack — it is how `decompme-nginx` is reached,
+and joining it disturbs nothing.
+
+There are two different things that could sit behind that block.
+
+### 3.1 The ISO page — what `trapt.robkrum.com` serves
+
+[`tools/web/pick.html`](../tools/web/pick.html) ships **no game data**. The
+visitor supplies their own disc and the browser does what `export.py` does
+([`BROWSER.md`](BROWSER.md)). That is ~780 KB of code, and it makes the
+redistribution question at the top of this file go away.
+
+`deploy/build-web.py` turns the checkout into a servable tree: `pick.html`
+becomes `index.html`, the 21 scripts it names are copied out (the test suites
+and `stub_three.js` are not), `../vendor/three.min.js` lands under `vendor/`,
+and every script filename gets a content hash.
+
 ```sh
-# on the droplet, joined to the `proxy` network Caddy is already on
-TRAPT_SITE=/srv/trapt-site docker compose -f docker-compose.droplet.yml up -d
+git clone https://code.robkrum.com/rob/Trapt.git ~/Trapt
+python3 ~/Trapt/deploy/build-web.py /srv/trapt-web --prune
+cd ~/Trapt/deploy
+docker compose -f docker-compose.web.yml up -d
 docker compose -f ~/forgejo/docker-compose.yml exec caddy \
   caddy reload --config /etc/caddy/Caddyfile
 ```
 
-`proxy` is declared `external: true` in your compose file, so it already exists
-and is not owned by the Forgejo stack — it is how `decompme-nginx` is reached,
-and joining it disturbs nothing.
+The hashing is what makes the cache policy in `deploy/Caddyfile.web` safe:
+nothing in `tools/web/` is versioned, so without it the only correct policy is
+revalidate-everything. With it, scripts are `immutable` for a year and
+`index.html` — the one file that names them — is the only thing revalidated. A
+deploy changes the names of exactly the files whose bytes changed.
+
+`index.html` also carries a `Content-Security-Policy` meta tag that the build
+writes, with a sha256 pinning the page's single inline script. `default-src`
+is `'none'`; `blob:` and `data:` are allowed for images and media because the
+page makes object URLs for decoded ADX and canvas textures. No network origin
+appears in it at all, which is accurate — the page never fetches anything.
+
+Updating is `git pull` and re-running the build; the container reads the
+directory per request and needs no restart. `--prune` removes the previous
+build's hashed filenames, one file at a time and naming each.
+
+### 3.2 The exported site
+
+`deploy/docker-compose.droplet.yml` serves the 0.9 GB export from `site.py`
+instead — every model, texture, voice line and subtitle, pre-decoded.
+
+```sh
+TRAPT_SITE=/srv/trapt-site docker compose -f docker-compose.droplet.yml up -d
+```
 
 `deploy/docker-compose.droplet.yml` is the **bind-mounted** shape, not the
 baked image, and `deploy/deploy-droplet.sh` rsyncs the site up **without** the
@@ -114,6 +166,9 @@ buy nothing because Cloudflare caches the compressed response at the edge, so
 the origin compresses almost nothing. The container is capped at
 `mem_limit: 128m`, which is a ceiling and not a reservation — Caddy serving
 static files sits nearer 20 MB.
+
+Both files use the compose project name `trapt` and the container name
+`trapt`, so bringing one up replaces the other rather than colliding with it.
 
 > An earlier draft of this file said 25 GB, inferred from the droplet's size
 > rather than measured. The box reports 48 GB with 18 GB free, so disk was

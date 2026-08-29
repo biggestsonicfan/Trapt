@@ -1,0 +1,47 @@
+# In-container config for the ISO-driven page: plain HTTP on 8080, no
+# certificates.  Something in front terminates TLS -- Cloudflare, or the Caddy
+# already running on the droplet.
+#
+# The tree this serves comes from deploy/build-web.py, which content-hashes
+# every script filename.  That is what makes the two cache rules below safe:
+# a script's name changes whenever its bytes do, so scripts can be immutable
+# and index.html -- the only file that names them -- is the only one that has
+# to be revalidated.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	root * /srv/trapt-web
+	encode zstd gzip
+
+	file_server
+
+	# Names the hashed scripts, so it must never be served stale.  no-cache
+	# means revalidate, not "do not store": Cloudflare and the browser keep it
+	# and a 304 costs nothing.
+	@index path / /index.html
+	header @index Cache-Control "no-cache"
+
+	# Content-hashed, so a changed file is a changed URL.
+	@hashed path *.js
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	# index.html carries its own Content-Security-Policy in a meta tag, hash
+	# pinned to its one inline script by the build.  frame-ancestors cannot be
+	# set from a meta tag, so it goes here.
+	header {
+		Content-Security-Policy "frame-ancestors 'none'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
