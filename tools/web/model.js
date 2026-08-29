@@ -75,6 +75,9 @@ function build(THREE, model, posed, texFor) {
 
     const mesh = new THREE.Mesh(g, mat);
     mesh.name = 'mesh' + i;
+    // Meshes with no triangles are skipped, so the child index is not the SMI
+    // mesh index -- posing has to write back through this.
+    mesh.userData = { meshIndex: i };
     mesh.renderOrder = mt.blend ? 1 : 0;
     group.add(mesh);
   });

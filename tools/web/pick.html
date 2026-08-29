@@ -49,6 +49,13 @@
   #view.grabbing canvas { cursor: grabbing; }
   #vinfo { position: absolute; left: 10px; bottom: 8px; font: 11.5px ui-monospace,
     monospace; opacity: .5; pointer-events: none; }
+  #transport { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+  #transport button { background: #232329; color: inherit; border: 1px solid #34343c;
+    border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
+  #transport input { flex: 1; accent-color: #4a72ad; }
+  #fnum { font: 12px ui-monospace, monospace; opacity: .5; min-width: 92px;
+    text-align: right; }
+  #clips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
   #models { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .note { font-size: 12.5px; opacity: .5; border-left: 2px solid #2e2e36;
     padding-left: 12px; margin-top: 30px; }
@@ -87,6 +94,7 @@
 <script src="arc.js"></script>
 <script src="tm2.js"></script>
 <script src="smi.js"></script>
+<script src="sai.js"></script>
 <script src="../vendor/three.min.js"></script>
 <script src="model.js"></script>
 <script>
@@ -99,6 +107,7 @@ const detail = document.getElementById('detail');
 let DISC = null;
 let CUR = null;      // the archive currently open
 let V = null;        // the three.js viewer, created once
+let M = null;        // the model on screen, and its clip
 
 function row(label, value, cls) {
   const d = document.createElement('div');
@@ -164,14 +173,19 @@ async function openCutscene(name, path, el) {
   detail.innerHTML =
       '<h2>' + name + '</h2><div id="members">reading…</div>'
     + '<div id="view"><div id="vinfo"></div></div>'
-    + '<div id="models"></div><div id="tex"></div>';
+    + '<div id="transport"></div>'
+    + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
 
   const t0 = performance.now();
   const blob = await DISC.read(path);
   const read = performance.now() - t0;
   const ents = TraptArc.entries(blob);
 
-  CUR = { blob: blob, byName: new Map(), tex: new Map() };
+  CUR = { name: name, blob: blob, byName: new Map(), tex: new Map(),
+          // e001 keeps 3 clips inside the archive and streams 29 more loose in
+          // the AFS beside it; both are offered.
+          loose: DISC.glob('DATA/RT/' + name.toUpperCase() + '/')
+                     .filter((p) => p.endsWith('.SAI')) };
   for (const e of ents) CUR.byName.set(e.name.toLowerCase(), e);
 
   const byExt = {};
@@ -208,10 +222,10 @@ async function openCutscene(name, path, el) {
     + ' ms · ' + ents.length + ' members ('
     + Object.entries(byExt).sort((a, b) => b[1] - a[1])
         .map(([k, v]) => v + ' ' + k).join(', ')
-    + ') · ' + pictures + ' textures, ' + (pixels / 1e6).toFixed(1)
+    + ') · ' + CUR.loose.length + ' loose .sai beside it · '
+    + pictures + ' textures, ' + (pixels / 1e6).toFixed(1)
     + ' Mpx decoded in ' + decode.toFixed(0) + ' ms';
 
-  // --- the models in it
   const models = document.getElementById('models');
   const smis = ents.filter((e) => e.name.toLowerCase().endsWith('.smi'));
   for (const e of smis) {
@@ -228,7 +242,6 @@ async function openCutscene(name, path, el) {
 
 const sub = (e) => CUR.blob.subarray(e.offset, e.offset + e.size);
 
-/** Decode a texture out of the archive that is open, once. */
 function textureFor(fileName) {
   const key = fileName.toLowerCase();
   if (CUR.tex.has(key)) return CUR.tex.get(key);
@@ -242,6 +255,11 @@ function textureFor(fileName) {
   }
   CUR.tex.set(key, t);
   return t;
+}
+
+/** `c01f_a_h.smi` -> `c01f_a`: clips are named for the rig, not the variant. */
+function stemOf(fileName) {
+  return fileName.toLowerCase().replace(/\.smi$/, '').replace(/_(h|k|hl)$/, '');
 }
 
 // --------------------------------------------------------------- three.js
@@ -259,6 +277,7 @@ function ensureViewer() {
     V.scene.add(V.key);
     V.orbit = { yaw: 0.6, pitch: 0.25, dist: 10, target: [0, 0, 0] };
     V.group = null;
+    V.last = performance.now();
     tick();
   }
   host.appendChild(V.renderer.domElement);
@@ -328,16 +347,142 @@ function showModel(entry, chip) {
 
   let tris = 0, verts = 0;
   for (const me of model.meshes) { tris += me.tris.length; verts += me.vcount; }
+  M = { entry: entry, model: model, tris: tris, verts: verts,
+        clip: null, clipName: null, frame: 0, playing: false, ms: 0 };
+  info();
+  listClips(entry);
+}
+
+/** Clips whose name matches this rig, from the archive and from the AFS. */
+function listClips(entry) {
+  const clips = document.getElementById('clips');
+  clips.innerHTML = '';
+  const stem = stemOf(entry.name);
+
+  const add = (label, get) => {
+    const chip = document.createElement('div');
+    chip.className = 'cut';
+    chip.textContent = label;
+    chip.onclick = () => playClip(label, get, chip);
+    clips.appendChild(chip);
+    return chip;
+  };
+
+  const rest = document.createElement('div');
+  rest.className = 'cut on';
+  rest.textContent = 'bind pose';
+  rest.onclick = () => {
+    for (const c of clips.querySelectorAll('.cut.on')) c.classList.remove('on');
+    rest.classList.add('on');
+    M.clip = null; M.clipName = null; M.playing = false;
+    applyPose(TraptSmi.bindPose(M.model));
+    transport();
+    info();
+  };
+  clips.appendChild(rest);
+
+  for (const [name, e] of CUR.byName)
+    if (name.endsWith('.sai') && name.startsWith(stem))
+      add(name.replace(/\.sai$/, ''), () => sub(e));
+  for (const p of CUR.loose) {
+    const base = p.split('/').pop().toLowerCase();
+    if (base.startsWith(stem))
+      add(base.replace(/\.sai$/, ''), () => DISC.read(p));
+  }
+  if (clips.children.length === 1) {
+    const none = document.createElement('div');
+    none.className = 'cut absent';
+    none.textContent = 'no clips for this rig';
+    clips.appendChild(none);
+  }
+}
+
+async function playClip(label, get, chip) {
+  const clips = document.getElementById('clips');
+  for (const c of clips.querySelectorAll('.cut.on')) c.classList.remove('on');
+  chip.classList.add('on');
+  let clip;
+  try {
+    clip = TraptSai.parse(await get());
+  } catch (err) {
+    document.getElementById('vinfo').textContent = label + ': ' + err.message;
+    return;
+  }
+  M.clip = clip; M.clipName = label; M.frame = 0; M.playing = true;
+  transport();
+  info();
+}
+
+function transport() {
+  const t = document.getElementById('transport');
+  if (!M || !M.clip) { t.innerHTML = ''; return; }
+  t.innerHTML = '<button id="playBtn"></button>'
+              + '<input id="seek" type="range" min="0" step="1">'
+              + '<span id="fnum"></span>';
+  const btn = document.getElementById('playBtn');
+  const seek = document.getElementById('seek');
+  seek.max = M.clip.duration;
+  seek.value = M.frame;
+  btn.textContent = M.playing ? 'Pause' : 'Play';
+  btn.onclick = () => {
+    M.playing = !M.playing;
+    btn.textContent = M.playing ? 'Pause' : 'Play';
+  };
+  seek.oninput = () => { M.frame = +seek.value; M.playing = false;
+                         btn.textContent = 'Play'; };
+}
+
+/** Write skinned positions back into the geometry three.js already has. */
+function applyPose(posed) {
+  if (!V.group) return;
+  for (const child of V.group.children) {
+    const pn = posed[child.userData.meshIndex];
+    if (!pn) continue;
+    child.geometry.attributes.position.array.set(pn.positions);
+    child.geometry.attributes.position.needsUpdate = true;
+    if (pn.normals && child.geometry.attributes.normal) {
+      child.geometry.attributes.normal.array.set(pn.normals);
+      child.geometry.attributes.normal.needsUpdate = true;
+    }
+  }
+}
+
+function info() {
+  if (!M) return;
   document.getElementById('vinfo').textContent =
-    entry.name + ' · ' + model.nodes.length + ' bones, ' + model.meshes.length
-    + ' meshes, ' + verts.toLocaleString() + ' verts, ' + tris.toLocaleString()
-    + ' tris, ' + model.materials.length + ' materials · built in '
-    + (performance.now() - t0).toFixed(0) + ' ms · drag to orbit, wheel to zoom';
+    M.entry.name + ' · ' + M.model.nodes.length + ' bones, '
+    + M.model.meshes.length + ' meshes, ' + M.verts.toLocaleString() + ' verts, '
+    + M.tris.toLocaleString() + ' tris'
+    + (M.clip ? ' · ' + M.clipName + ': ' + M.clip.nodes.length + ' animated nodes, '
+                + M.clip.duration + ' frames, skin ' + M.ms.toFixed(1) + ' ms/frame'
+              : ' · bind pose')
+    + ' · drag to orbit, wheel to zoom';
 }
 
 function tick() {
   requestAnimationFrame(tick);
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - V.last) / 1000);
+  V.last = now;
   if (!V || !V.group) return;
+
+  if (M && M.clip && M.playing) {
+    M.frame += dt * 60;                       // the game runs these at 60 fps
+    if (M.frame > M.clip.duration) M.frame = 0;
+    const seek = document.getElementById('seek');
+    if (seek) seek.value = Math.round(M.frame);
+  }
+  if (M && M.clip) {
+    const t0 = performance.now();
+    applyPose(TraptSai.skin(M.model,
+      TraptSai.worldMatrices(M.model, M.clip, M.frame)));
+    M.ms = M.ms * 0.9 + (performance.now() - t0) * 0.1;
+    const fnum = document.getElementById('fnum');
+    if (fnum) fnum.textContent = Math.round(M.frame) + ' / ' + M.clip.duration;
+    if (V.frameTick === undefined) V.frameTick = 0;
+    if ((V.frameTick = (V.frameTick + 1) % 30) === 0) info();
+  }
+
   const o = V.orbit;
   const cp = Math.cos(o.pitch);
   V.camera.position.set(

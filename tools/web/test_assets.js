@@ -22,6 +22,7 @@ const arc = require('./arc.js');
 const tm2 = require('./tm2.js');
 const smi = require('./smi.js');
 const model_ = require('./model.js');
+const saiMod = require('./sai.js');
 
 const ISO = process.argv[2]
   || 'E:/Seagate/OpenSuseBack/Emulators/PS2EMU/Trapt (USA).iso';
@@ -235,6 +236,115 @@ async function main() {
   // in ways that only show up as a blank canvas: an index past the end of the
   // position array, a UV array of the wrong length, a material that should be
   // alpha-tested and is not.  A stub THREE catches all of that.
+  // ----------------------------------------------------------- animation
+  // A clip only carries the channels it animates, so most of the risk is in
+  // the fallbacks: a rotation-only clip takes translation and *scale* from the
+  // bind matrix, and scale there means the length of each bind row, not 1.
+  // Get that wrong and the rig stretches in a way that still looks plausible.
+  //
+  // Clips come from two places and both are exercised here: e001 streams 29
+  // of them loose in the AFS next to its archive, and keeps three inside it.
+  const CLIPS = [
+    { arc: 'DATA/RT/COSTUME/RT_C01F_A_HL.ARC', model: 'c01f_a_h.smi',
+      clip: 'DATA/RT/E001/C01F_A_E001_1.SAI', loose: true },
+    { arc: 'DATA/RT/E001/RT_E001.ARC', model: 'c12f_a_h.smi',
+      clip: 'DATA/RT/E001/C12F_A_E001_2.SAI', loose: true },
+    { arc: 'DATA/RT/E001/RT_E001.ARC', model: 'rp03d0.smi',
+      clip: 'rp03d0_e001.sai', loose: false },
+  ];
+  console.log('SAI clips and posed skinning, against tools/pose.py');
+  const PY_POSE = [
+    'import arc, json, scene, sai, smi, pose',
+    'd = scene.Disc()',
+    "want = json.loads(r'''" + JSON.stringify(CLIPS) + "''')",
+    'out = {}',
+    'for spec in want:',
+    '    blob = d.read(spec["arc"])',
+    '    mem = {n.lower(): (o, s) for n, o, s in arc.entries(blob)}',
+    '    o, s = mem[spec["model"]]; m = smi.parse(blob[o:o+s])',
+    '    if spec["loose"]:',
+    '        c = sai.parse(d.read(spec["clip"]))',
+    '    else:',
+    '        o, s = mem[spec["clip"]]; c = sai.parse(blob[o:o+s])',
+    '    frames = [0, 1, c.duration // 3, c.duration // 2, c.duration]',
+    '    per = {}',
+    '    for f in frames:',
+    '        posed = pose.skin(m, pose.world_matrices(m, c, f))',
+    '        per[str(f)] = [round(v, 3) for pn in posed for p in pn[0] for v in p]',
+    '    out[spec["clip"]] = {"nodes": len(c.nodes), "duration": c.duration,',
+    '                         "channels": sorted([n.name + ":" + "".join(',
+    '                             str(k) for k in sorted(n.channels)) for n in c.nodes]),',
+    '                         "frames": frames, "P": per}',
+    'print(json.dumps(out))',
+  ].join('\n');
+  const pyPose = python(PY_POSE);
+
+  for (const spec of CLIPS) {
+    const blob = await disc.read(spec.arc);
+    const mem = new Map(arc.entries(blob).map((e) => [e.name.toLowerCase(), e]));
+    const em = mem.get(spec.model);
+    const model = smi.parse(blob.subarray(em.offset, em.offset + em.size));
+    let clipBytes;
+    if (spec.loose) {
+      clipBytes = await disc.read(spec.clip);
+    } else {
+      const ec = mem.get(spec.clip);
+      clipBytes = blob.subarray(ec.offset, ec.offset + ec.size);
+    }
+    const clip = saiMod.parse(clipBytes);
+    const w = pyPose[spec.clip];
+    const label = spec.clip.split('/').pop();
+
+    check(label + ': nodes and duration',
+          [clip.nodes.length, clip.duration], [w.nodes, w.duration]);
+    check(label + ': same channels on every node',
+          clip.nodes.map((n) => n.name + ':'
+            + Object.keys(n.channels).sort().join('')).sort(), w.channels);
+
+    let worst = 0;
+    for (const f of w.frames) {
+      const posed = saiMod.skin(model, saiMod.worldMatrices(model, clip, f));
+      const P = [];
+      for (const pn of posed) for (const c of pn.positions) P.push(c);
+      const want2 = w.P[String(f)];
+      if (P.length !== want2.length) { worst = Infinity; break; }
+      for (let i = 0; i < P.length; i++)
+        worst = Math.max(worst, Math.abs(P[i] - want2[i]));
+    }
+    check(label + ': ' + spec.model + ' skinned identically at '
+          + w.frames.length + ' frames', worst < 1e-3, true);
+    console.log('        %d nodes, %d frames, worst delta %s',
+                clip.nodes.length, clip.duration, worst.toExponential(1));
+
+    // A posed frame has to actually differ from the bind pose, or the whole
+    // comparison above could be passing on an animation that does nothing.
+    const bind = smi.bindPose(model);
+    const mid = saiMod.skin(model,
+      saiMod.worldMatrices(model, clip, Math.max(1, clip.duration >> 1)));
+    let moved = 0;
+    for (let i = 0; i < bind.length; i++)
+      for (let k = 0; k < bind[i].positions.length; k++)
+        moved = Math.max(moved, Math.abs(bind[i].positions[k] - mid[i].positions[k]));
+    check(label + ': the clip actually moves the rig', moved > 0.01, true);
+  }
+
+  // Interpolation is where a port diverges quietly: a slerp taking the long
+  // way round, or a binary search off by one at a key boundary.
+  {
+    const idq = [0, 0, 0, 1];
+    const m = saiMod.quatToMatrix([0.7071067811865476, 0, 0, 0.7071067811865476]);
+    check('quatToMatrix round-trips through matrixToQuat',
+          saiMod.matrixToQuat(m).map((v) => +v.toFixed(6)),
+          [0.707107, 0, 0, 0.707107]);
+    check('slerp endpoints are exact',
+          [saiMod.slerp(idq, idq, 0.5), saiMod.slerp(idq, [0, 0, 0, -1], 0)],
+          [[0, 0, 0, 1], [0, 0, 0, 1]]);
+    const u = saiMod.slerp(idq,
+      [0, 0.7071067811865476, 0, 0.7071067811865476], 0.5);
+    check('slerp stays unit length',
+          Math.abs(Math.hypot(u[0], u[1], u[2], u[3]) - 1) < 1e-9, true);
+  }
+
   console.log('the three.js bridge, against a stub THREE');
   const THREE = stubThree();
   {
