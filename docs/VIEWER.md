@@ -719,6 +719,36 @@ That slot-08 answer is the one §4 arrived at by hand, so a run which
 reproduces it is a self-test of the recovery rather than of the savestate.
 `test_assets.js` asserts it.
 
+### 8.1 There is more than one camera slot
+
+Every story cutscene used to come back "not in a cutscene". The reason was not
+that the camera moves onto the heap, as assumed for a while: `0x0081B6F0` is
+the **attract loop's** slot, and a story cutscene writes 0x40 further on, at
+`0x0081B730`, leaving the first one full of `0x7c` filler.
+
+That was found by searching rather than guessing. A `.p2s` holds all 32 MB of
+EE RAM, so take every 16-byte-aligned offset whose first three floats fall in
+the bounding box of a cutscene's eye positions *and* whose next vector, 0x10
+on, falls in the box of its targets. For e004 that leaves 3783 candidates out
+of two million in 0.1 s, and matching all of them against all 3349 frames at
+once takes another 0.7 s:
+
+```
+0x0081B730  frame 2129  residual 1.9e-06   <- one slot over
+0x011A4360  frame 1420  residual 8.1e+00   <- and nothing else is close
+```
+
+Both slots are now tried and the residual picks the winner, so the same run
+identifies attract-loop and story captures alike. Two guards came with it: a
+slot whose eye equals its target is a cleared one, not a shot -- the zeroed
+slot matched `e105` at a residual of 14 if you let it -- and a match over
+`MATCH_MAX` (1.0 world unit) is no match, since a right answer is 1e-06 and
+the nearest wrong one seen is 8.
+
+The live `--watch` path reads every slot too, for the same reason: during a
+story cutscene the attract slot can still hold a stale but plausible camera,
+and taking the first one would wait for ever.
+
 A state that is **not** in a cutscene reads as garbage rather than zero — the
 camera words hold whatever was last there, often denormals of order 1e37 — so
 those are reported as such instead of being matched to the nearest track by

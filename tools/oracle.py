@@ -40,6 +40,12 @@ import zipfile
 # forward, right and down at 0x10 steps -- see docs/VIEWER.md 4.
 CAM_EYE = 0x0081B6F0
 CAM_TARGET = 0x0081B700
+# There is more than one of these.  The attract loop's camera is at CAM_EYE;
+# a story cutscene's is 0x40 further on, and the first address reads as `0x7c`
+# filler while it plays -- which is why every story capture used to come back
+# "not in a cutscene".  Both are static, 0x10 apart within a slot, so try each
+# and let the residual say which one was live.
+CAM_SLOTS = (0x0081B6F0, 0x0081B730)
 EE_MASK = 0x01FFFFFF
 
 STATE_DIR = os.path.join(os.path.expanduser('~'), 'OneDrive', 'Documents',
@@ -49,6 +55,10 @@ ALT_STATE_DIR = os.path.join(os.path.expanduser('~'), 'Documents', 'PCSX2',
 
 # Anything outside this is not a coordinate in any room on the disc.
 SANE = 100000.0
+
+# A right answer sits at 1e-06 and the nearest wrong one seen is 8 world
+# units, so this separates them without being tuned to either.
+MATCH_MAX = 1.0
 
 # Frame stride for the first pass of the search.  A camera path is smooth
 # over sixteen frames, so this cannot land in the wrong basin.
@@ -72,16 +82,31 @@ class State:
     def vec4(self, addr):
         return struct.unpack_from('<4f', self.ee, addr & EE_MASK)
 
-    @property
-    def camera(self):
-        """`(eye, target)` as 3-vectors, or None when the state is not in one."""
-        eye = self.vec4(CAM_EYE)
-        target = self.vec4(CAM_TARGET)
+    def camera_at(self, addr):
+        """`(eye, target)` for one camera slot, or None if it holds rubbish."""
+        eye = self.vec4(addr)
+        target = self.vec4(addr + 0x10)
         for v in (eye, target):
             for c in v[:3]:
                 if not (-SANE < c < SANE):
                     return None
+        # A camera looking at itself is a cleared slot, not a shot.  The zero
+        # one matches some cutscene or other at a residual of 14 if you let it.
+        if _dist(eye[:3], target[:3]) < 1e-6:
+            return None
         return eye[:3], target[:3]
+
+    @property
+    def cameras(self):
+        """Every slot that holds something that could be a camera."""
+        return [(a, c) for a in CAM_SLOTS
+                for c in [self.camera_at(a)] if c is not None]
+
+    @property
+    def camera(self):
+        """`(eye, target)` as 3-vectors, or None when the state is not in one."""
+        got = self.cameras
+        return got[0][1] if got else None
 
     def screenshot(self, out_path):
         with open(out_path, 'wb') as f:
@@ -161,14 +186,17 @@ def match(disc, eye, target, names=None):
 def identify(disc, path, names=None):
     """`{path, camera, cutscene, frame, residual}` for one savestate."""
     st = State(path)
-    out = {'path': path, 'state': st, 'camera': st.camera,
+    out = {'path': path, 'state': st, 'camera': None, 'slot': None,
            'cutscene': None, 'frame': None, 'residual': None}
-    if out['camera'] is None:
-        return out
-    eye, target = out['camera']
-    got = match(disc, eye, target, names)
-    if got:
-        out['cutscene'], out['frame'], out['residual'] = got
+    # Try every slot and let the residual pick: which one is live depends on
+    # whether this is the attract loop or the story, and a stale slot can
+    # still hold a plausible-looking camera from whatever ran last.
+    for addr, cam in st.cameras:
+        got = match(disc, cam[0], cam[1], names)
+        if got and got[2] <= MATCH_MAX and (out['residual'] is None
+                                            or got[2] < out['residual']):
+            out['camera'], out['slot'] = cam, addr
+            out['cutscene'], out['frame'], out['residual'] = got
     return out
 
 
@@ -225,15 +253,27 @@ class Pine:
             out += got[:n * 8]
         return out[:length]
 
-    def camera(self):
-        b = self.read(CAM_EYE, 0x20)
+    def camera_at(self, addr):
+        b = self.read(addr, 0x20)
         eye = struct.unpack_from('<3f', b, 0)
         target = struct.unpack_from('<3f', b, 0x10)
         for v in (eye, target):
             for c in v:
                 if not (-SANE < c < SANE):
                     return None
+        if _dist(eye, target) < 1e-6:
+            return None
         return eye, target
+
+    @property
+    def cameras(self):
+        """Every slot that currently holds something camera-shaped."""
+        return [(a, c) for a in CAM_SLOTS
+                for c in [self.camera_at(a)] if c is not None]
+
+    def camera(self):
+        got = self.cameras
+        return got[0][1] if got else None
 
     def save_state(self, slot):
         self._send(struct.pack('<BB', self.SAVESTATE, slot & 0xFF))
@@ -271,20 +311,24 @@ def watch(disc, name, slot=5, lo=None, hi=None, timeout=600.0):
     deadline = time.time() + timeout
     try:
         while time.time() < deadline:
-            live = pine.camera()
-            if live is None:
+            # Every slot, not just the first: during a story cutscene the
+            # attract loop's slot can still hold a stale but plausible camera,
+            # and taking that one would wait here for ever.
+            live = pine.cameras
+            if not live:
                 time.sleep(0.15)
                 continue
-            eye, target = live
             best = None
-            for f in range(1, n + 1, COARSE):
-                s = track.sample(f)
-                if not s or not s.get('position') or not s.get('target'):
-                    continue
-                r = _dist(s['position'], eye) + _dist(s['target'], target)
-                if best is None or r < best[1]:
-                    best = (f, r)
-            if best and best[1] < 1.0:
+            for _addr, (eye, target) in live:
+                for f in range(1, n + 1, COARSE):
+                    s = track.sample(f)
+                    if not s or not s.get('position') or not s.get('target'):
+                        continue
+                    r = _dist(s['position'], eye) + _dist(s['target'], target)
+                    if best is None or r < best[1]:
+                        best = (f, r, eye, target)
+            if best and best[1] < MATCH_MAX:
+                eye, target = best[2], best[3]
                 f0 = max(1, best[0] - COARSE)
                 for f in range(f0, min(n, best[0] + COARSE) + 1):
                     s = track.sample(f)
@@ -292,7 +336,7 @@ def watch(disc, name, slot=5, lo=None, hi=None, timeout=600.0):
                         continue
                     r = _dist(s['position'], eye) + _dist(s['target'], target)
                     if r < best[1]:
-                        best = (f, r)
+                        best = (f, r, eye, target)
                 frame = best[0]
                 if (lo is None or frame >= lo) and (hi is None or frame <= hi):
                     pine.save_state(slot)
