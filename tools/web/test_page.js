@@ -101,6 +101,17 @@ check('only native is pillarboxed to 4:3',
 check('and the projection follows the same switch',
       fn('resize').includes('TraptGs.cameraAspect('));
 
+console.log('the renderer does not require being on screen');
+// A poster is rendered from the gallery, where nothing has been opened and
+// there is no #view to attach a canvas to.  ensureViewer() has to build the
+// renderer and its passes anyway, and only attach when there is a host.
+const ev = fn('ensureViewer');
+check('ensureViewer guards the host before touching it',
+      /if \(host\) \{[\s\S]*?appendChild/.test(ev),
+      'host is null on the gallery, before any cutscene is opened');
+check('and still creates the post and subtitle passes',
+      ev.indexOf('ensurePost()') < ev.indexOf('if (host)'));
+
 console.log('fullscreen takes the viewer, not the document');
 const tf = fn('toggleFullscreen');
 check('it requests on #view so the overlays travel with it',

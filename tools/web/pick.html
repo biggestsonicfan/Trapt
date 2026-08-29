@@ -414,11 +414,16 @@ function ensureViewer() {
     V.last = performance.now();
     tick();
   }
-  host.appendChild(V.renderer.domElement);
+  // The renderer exists whether or not it is on screen: a poster is drawn
+  // into the render target from the gallery, where nothing has been opened
+  // yet and there is no `#view` to attach a canvas to.
   ensurePost();                        // V.look has to exist before setPs2
   ensureSubsPass();
-  bindOrbit(host);
-  resize();
+  if (host) {
+    host.appendChild(V.renderer.domElement);
+    bindOrbit(host);
+    resize();
+  }
 }
 
 function resize() {

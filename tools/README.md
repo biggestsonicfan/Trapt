@@ -86,6 +86,7 @@ python order.py --check         # the tables vs. what is on the disc
 | `player.html` | the player template (three.js + a GPU skinning shader) |
 | `verify.py`, `test_player.js` | diff the player's maths against `pose.py`, and its subtitle layout against `font.py`, under node |
 | `test_order.js` | run the player's playlist and story-mode blocks headless — prev/next, Auto, and whole playthroughs |
+| `web/` | the same formats in the browser, reading the visitor's own ISO — see [`../docs/BROWSER.md`](../docs/BROWSER.md) |
 | `gsstate.py` | decode the GS register state from a savestate's EE memory dump |
 | `vudis.py` | VU0/VU1 microcode disassembler |
 | `gsdump.js`, `pinefast.js` | live GS scan over PINE (batched; the bundled client is 1 byte/round-trip) |
@@ -235,6 +236,21 @@ Stock Sony TIM2 — `'TIM2'`, u8 version, u8 format, u16 picture count, then
 * alpha is 0..128 (`0x80` = opaque) and must be rescaled to 0..255;
 * a 256-entry CSM1 CLUT is stored swizzled — within each block of 32 entries,
   entries 8..15 and 16..23 swap.
+
+## Tests
+
+```
+node tools/web/test_all.js              # everything the disc allows
+node tools/web/test_all.js --no-disc    # only what CI can run
+```
+
+390 checks with a disc present, 114 without. Nothing here can be *built*
+without the disc, and most suites are parity diffs against the Python over
+real game data, so they skip themselves (exit 2) when there is no image. The
+three that do not need one are the ones that have caught shipped bugs: module
+loading under a browser's shared global scope, the GS shaders in
+`web/gs.js` still matching `player.html`, and `web/pick.html`'s
+initialisation order. `.forgejo/workflows/ci.yml` runs those.
 
 ## Verification
 
