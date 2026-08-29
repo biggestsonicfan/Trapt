@@ -127,6 +127,8 @@
 <script src="sli.js"></script>
 <script src="gs.js"></script>
 <script src="font.js"></script>
+<script src="adx.js"></script>
+<script src="audio.js"></script>
 <script src="model.js"></script>
 <script src="play.js"></script>
 <script>
@@ -741,8 +743,25 @@ async function playScene(name) {
   V.orbit.dist = Math.max(size.x, size.y, size.z) * 1.4 || 10;
 
   S = { built: built, frame: 1, playing: true, ms: 0, load: load,
-        name: name, sceneCam: true };
+        name: name, sceneCam: true, seeked: true, ctx: null, audio: null };
   sceneTransport();
+  sceneInfo();
+
+  // Audio decodes straight from ADX to PCM -- no re-encode, so a voice clip
+  // is about a millisecond and the whole BGM about a tenth of a second.
+  try {
+    S.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    S.audio = TraptAudio.create(S.ctx, DISC);
+    vinfo.textContent = name + ': loading audio…';
+    await S.audio.loadBgm(name, built.scene);
+    await S.audio.preloadVoices(built.scene, (i, total) => {
+      vinfo.textContent = name + ': voice ' + i + ' of ' + total + '…';
+    });
+    for (const w of S.audio.warnings) built.warnings.push(w);
+  } catch (err) {
+    S.audio = null;
+    built.warnings.push('audio: ' + err.message);
+  }
   sceneInfo();
 }
 
@@ -753,11 +772,24 @@ function sceneTransport() {
               + '<button id="camBtn"></button>'
               + '<button id="ps2Btn"></button>'
               + '<button id="subsBtn"></button>'
+              + '<button id="muteBtn"></button>'
               + '<button id="lookBtn">Look</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
   document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
   document.getElementById('subsBtn').onclick = () => setSubsPs2(!V.subsPs2);
+  const mb = document.getElementById('muteBtn');
+  const syncMute = () => {
+    mb.textContent = S && S.audio && S.audio.muted ? 'Muted' : 'Sound';
+    mb.classList.toggle('on', !!(S && S.audio && !S.audio.muted));
+  };
+  mb.onclick = () => {
+    if (!S || !S.audio) return;
+    S.audio.setMuted(!S.audio.muted);
+    if (!S.audio.muted && S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
+    syncMute();
+  };
+  syncMute();
   document.getElementById('lookBtn').onclick = (e) => {
     const panel = document.getElementById('look');
     buildLookPanel();
@@ -775,6 +807,9 @@ function sceneTransport() {
   btn.onclick = () => {
     S.playing = !S.playing;
     btn.textContent = S.playing ? 'Pause' : 'Play';
+    // A tab's AudioContext starts suspended until a real click; this is it.
+    if (S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
+    if (!S.playing && S.audio) S.audio.stopAll();
   };
   cam.textContent = S.sceneCam ? 'Scene cam' : 'Free cam';
   cam.onclick = () => {
@@ -784,6 +819,7 @@ function sceneTransport() {
   seek.oninput = () => {
     S.frame = +seek.value;
     S.playing = false;
+    S.seeked = true;
     document.getElementById('playBtn').textContent = 'Play';
   };
 }
@@ -796,6 +832,8 @@ function sceneInfo() {
     + s.entities.length + ' entities, ' + s.subtitles.length + ' cues, '
     + s.duration + ' frames · assembled in ' + S.load.toFixed(0) + ' ms · '
     + 'pose ' + S.ms.toFixed(1) + ' ms/frame'
+    + (S.audio ? ' · ' + S.audio.voiceCount + ' voice clips'
+                 + (S.audio.bgm ? ' + BGM' : '') : '')
     + (S.built.warnings.length ? ' · ' + S.built.warnings.length + ' warnings' : '')
     + ' · drag to orbit (switches to free cam)';
 }
@@ -847,6 +885,11 @@ function applySceneFrame() {
     V.subsPs2 ? '0' : (r.letterbox * 110 / 448 * 100) + '%';
   document.getElementById('fade').style.opacity = r.fade.toFixed(3);
 
+  if (S.audio) {
+    S.audio.sync(S.built.scene, S.frame, S.playing, S.seeked);
+    S.seeked = false;
+  }
+
   const fnum = document.getElementById('fnum');
   if (fnum) fnum.textContent = Math.round(S.frame) + ' / ' + S.built.scene.duration;
   const seek = document.getElementById('seek');
@@ -863,7 +906,7 @@ function tick() {
   if (S) {
     if (S.playing) {
       S.frame += dt * 60;                     // the game runs these at 60 fps
-      if (S.frame > S.built.scene.duration) S.frame = 1;
+      if (S.frame > S.built.scene.duration) { S.frame = 1; S.seeked = true; }
     }
     applySceneFrame();
     if (V.sceneTick === undefined) V.sceneTick = 0;
