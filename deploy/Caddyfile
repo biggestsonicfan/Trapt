@@ -1,0 +1,38 @@
+# trapt.robkrum.com -- self-hosted origin, automatic TLS.
+#
+#   caddy run --config deploy/Caddyfile
+#
+# Caddy gets a certificate on its own, so this works whether or not the DNS
+# record is proxied through Cloudflare.  If it *is* proxied (orange cloud),
+# set Cloudflare's SSL mode to "Full (strict)" so it trusts this certificate
+# rather than terminating at the edge with a self-signed origin.
+#
+# `precompressed` serves the .gz/.br sidecars that deploy/precompress.py
+# writes, which matters here: a cutscene bundle is 6-18 MB of base64 and
+# compresses to about 55% of that.
+
+trapt.robkrum.com {
+	root * /srv/trapt-site
+	encode zstd gzip
+
+	file_server {
+		precompressed br gzip
+	}
+
+	# The pages that change on every build revalidate; the bundles do not.
+	@volatile path /index.html / /script.html /order.js /manifest.json
+	header @volatile Cache-Control "public, max-age=300, must-revalidate"
+
+	@bundle path *.js *.png
+	header @bundle Cache-Control "public, max-age=604800"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/trapt.log
+	}
+}

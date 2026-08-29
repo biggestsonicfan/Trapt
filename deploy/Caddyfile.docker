@@ -1,0 +1,39 @@
+# In-container config: plain HTTP on 8080, no certificates.
+# The Caddyfile next to this one is the standalone variant that gets its own
+# certificate; this one assumes something in front (Cloudflare, a reverse
+# proxy) is terminating TLS.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	root * /srv/trapt-site
+	encode zstd gzip
+
+	# serves the .gz/.br sidecars from deploy/precompress.py when they exist;
+	# a cutscene bundle is 6-18 MB of base64 and compresses to about 55%
+	file_server {
+		precompressed br gzip
+	}
+
+	# rebuilt every time the site is built, and small
+	@volatile path / /index.html /script.html /order.js /manifest.json
+	header @volatile Cache-Control "public, max-age=300, must-revalidate"
+
+	# one cutscene's data, or the shared three.js: big and stable
+	@bundle path *.js *.png
+	header @bundle Cache-Control "public, max-age=604800"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

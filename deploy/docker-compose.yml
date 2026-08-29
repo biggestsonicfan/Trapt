@@ -1,0 +1,43 @@
+# Two ways to run the same server.  Pick one:
+#
+#   docker compose up -d trapt          # site baked into the image (~1 GB)
+#   docker compose up -d trapt-mounted  # tiny image, site bind-mounted
+#
+# Set TRAPT_SITE to wherever tools/site.py wrote the site, e.g.
+#   TRAPT_SITE='E:/Seagate/OpenSuseBack/Emulators/PS2EMU/trapt-site'
+# (a .env file next to this one works too).
+#
+# Both services publish 8080 on the loopback, so run one or the other.
+name: trapt
+
+services:
+
+  # One artifact: `docker save` it, ship it, run it anywhere.  Rebuilding is
+  # the price of a content change, and that is ~0.9 GB of layer each time.
+  trapt:
+    image: trapt-site:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        site: ${TRAPT_SITE:?set TRAPT_SITE to the built site directory}
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  # 50 MB image, content updated by rsyncing into the volume -- no rebuild.
+  # Better when the site changes more often than the server does.
+  trapt-mounted:
+    image: caddy:2-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - ${TRAPT_SITE:?set TRAPT_SITE to the built site directory}:/srv/trapt-site:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/index.html"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
