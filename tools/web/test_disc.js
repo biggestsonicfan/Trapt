@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const vm = require('vm');
 
 const iso = require('./iso.js');
 const discMod = require('./disc.js');
@@ -116,6 +117,43 @@ async function main() {
   try { await discMod.open(notAnIso); } catch (e) { threw = e.message; }
   check('blank image refused',
         threw.startsWith('not an ISO 9660 image'), true);
+
+  // `require` gives every file its own scope, so node cannot see a collision
+  // between two files that a browser loads into one shared global scope.  It
+  // missed exactly that: iso.js and disc.js both declared `u32` and `api` at
+  // top level, so the second <script> died with a redeclaration SyntaxError
+  // before it could set window.TraptDisc, and only the real page showed it.
+  console.log('loaded the way a browser loads them: two scripts, one global scope');
+  const sandbox = { console, Blob, atob, performance };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  let loadErr = '';
+  try {
+    for (const f of ['iso.js', 'disc.js'])            // two <script> tags
+      vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'),
+                      sandbox, { filename: f });
+  } catch (e) {
+    loadErr = e.message;
+  }
+  check('both scripts load without a collision', loadErr, '');
+  check('window.TraptIso is defined', typeof sandbox.window.TraptIso, 'object');
+  check('window.TraptDisc is defined', typeof sandbox.window.TraptDisc, 'object');
+  check('no require/module leaked into the page path',
+        [typeof sandbox.require, typeof sandbox.module], ['undefined', 'undefined']);
+
+  // And the browser's own read path: a Blob, sliced, exactly as <input type=file>
+  // hands it over.  fs.openAsBlob does not read the file in.
+  console.log('the browser read path, over a real Blob');
+  const blob = await fs.openAsBlob(ISO);
+  const viaBlob = await sandbox.window.TraptDisc.open(
+    sandbox.window.TraptIso.blobSource(blob));
+  check('opens the disc through window.TraptDisc', viaBlob.iso.volume.id, 'TRAPT');
+  check('same filename table', viaBlob.toc.size, discMod.TOC_N);
+  const b1 = await viaBlob.read('DATA/RT/E001/RT_E001.ARC');
+  check('same bytes as the fd path',
+        crypto.createHash('sha256').update(b1).digest('hex').slice(0, 16),
+        pyHashes['DATA/RT/E001/RT_E001.ARC'][1]);
 
   source.close();
   console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);

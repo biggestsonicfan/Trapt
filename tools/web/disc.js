@@ -17,6 +17,9 @@
  * pairs.  The TOC maps an AFS id to the name the game asks for, which is why
  * a disc entry can be found by path at all.
  */
+// Wrapped: classic <script> tags share one global scope, and both this
+// file and its sibling declare `u32` and `api` at top level.
+(function () {
 'use strict';
 
 const isoMod = (typeof require !== 'undefined') ? require('./iso.js') : window.TraptIso;
@@ -115,3 +118,4 @@ async function open(source) {
 const api = { open, Disc, TOC_VA, TOC_N, ELF_PATH, GAMEDAT_PATH };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptDisc = api;
+})();

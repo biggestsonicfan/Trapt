@@ -14,6 +14,9 @@
  * 2048-byte-sector ISO 9660 with no Joliet or Rock Ridge, so names arrive as
  * `FOO.BAR;1` and get their version suffix trimmed.
  */
+// Wrapped: classic <script> tags share one global scope, and both this
+// file and its sibling declare `u32` and `api` at top level.
+(function () {
 'use strict';
 
 const SECTOR = 2048;
@@ -145,3 +148,4 @@ async function readFile(iso, path) {
 const api = { SECTOR, open, readFile, readDir, blobSource, fdSource };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptIso = api;
+})();
