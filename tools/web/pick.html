@@ -9,10 +9,12 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; background: #0b0b0d; color: #e8e6e3;
     font: 14px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
   h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  h2 { font-size: 12px; font-weight: 600; letter-spacing: .12em; opacity: .45;
+    text-transform: uppercase; margin: 30px 0 10px; }
   p { opacity: .7; margin: 0 0 16px; }
-  .drop { border: 1px dashed #3a3a44; border-radius: 12px; padding: 34px 24px;
+  .drop { border: 1px dashed #3a3a44; border-radius: 12px; padding: 30px 24px;
     text-align: center; background: #121216; transition: border-color .15s, background .15s; }
   .drop.over { border-color: #4a72ad; background: #161a22; }
   .drop input { display: none; }
@@ -20,55 +22,71 @@
     border-radius: 6px; padding: 9px 16px; cursor: pointer; font-weight: 600; }
   label.btn:hover { filter: brightness(1.15); }
   .hint { font-size: 12.5px; opacity: .45; margin-top: 12px; }
-  #out { margin-top: 24px; display: none; }
-  #out.on { display: block; }
-  .row { display: flex; gap: 12px; padding: 6px 0; border-top: 1px solid #1e1e24;
-    font-variant-numeric: tabular-nums; }
-  .row b { flex: 0 0 190px; font-weight: 400; opacity: .5; }
-  .bad { color: #ff9a9a; }
-  .good { color: #9ad7a0; }
+  #stage { display: none; }
+  #stage.on { display: block; }
+  .row { display: flex; gap: 12px; padding: 5px 0; border-top: 1px solid #1e1e24;
+    font-variant-numeric: tabular-nums; font-size: 13px; }
+  .row b { flex: 0 0 200px; font-weight: 400; opacity: .5; }
+  .bad { color: #ff9a9a; } .good { color: #9ad7a0; }
   code { font-family: ui-monospace, monospace; font-size: 12.5px; }
-  #files { max-height: 220px; overflow: auto; background: #101014; border-radius: 8px;
-    padding: 10px 12px; margin-top: 10px; font-family: ui-monospace, monospace;
-    font-size: 12px; opacity: .75; }
-  .note { font-size: 12.5px; opacity: .55; border-left: 2px solid #2e2e36;
-    padding-left: 12px; margin-top: 26px; }
+  #list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cut { background: #17171c; border: 1px solid #26262b; border-radius: 6px;
+    padding: 4px 9px; font: 12px ui-monospace, monospace; cursor: pointer; }
+  .cut:hover { border-color: #4a72ad; }
+  .cut.on { background: #3a5a8a; border-color: #4a72ad; }
+  .cut.absent { opacity: .3; cursor: not-allowed; }
+  #members { font: 12px ui-monospace, monospace; opacity: .6; margin-bottom: 6px; }
+  #tex { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  figure { margin: 0; background: #121216; border: 1px solid #22222a; border-radius: 8px;
+    padding: 8px; text-align: center; }
+  figure canvas { max-width: 100%; height: auto; image-rendering: pixelated;
+    background: repeating-conic-gradient(#1a1a20 0% 25%, #141419 0% 50%) 50%/14px 14px; }
+  figcaption { font: 11px ui-monospace, monospace; opacity: .5; margin-top: 6px;
+    word-break: break-all; }
+  .note { font-size: 12.5px; opacity: .5; border-left: 2px solid #2e2e36;
+    padding-left: 12px; margin-top: 30px; }
 </style>
 </head>
 <body>
 <main>
   <h1>Supply your Trapt disc</h1>
   <p>This page reads the game out of your own copy. Nothing is uploaded — the
-     file never leaves your machine, and only the few kilobytes actually needed
-     are read out of it.</p>
+     file never leaves your machine, and only the parts actually needed are
+     read out of it.</p>
 
   <div class="drop" id="drop">
     <label class="btn">Choose Trapt (USA).iso<input type="file" id="file" accept=".iso,.bin,.img"></label>
     <div class="hint">or drop it here &middot; SLUS-21255, 1.76 GB</div>
   </div>
 
-  <div id="out">
+  <div id="stage">
     <div id="rows"></div>
-    <div id="files"></div>
+    <h2 id="listHead">Cutscenes on the disc</h2>
+    <div id="list"></div>
+    <div id="detail"></div>
   </div>
 
   <div class="note">
     Reads the ISO 9660 directory, the filename table baked into
     <code>SLUS_212.55</code> at <code>0x0036A0F0</code>, and the AFS index at
-    the front of <code>DATA/GAME.DAT</code> — about 100 KB in total out of
-    1.76 GB. Everything after that is a ranged read of just the cutscene you
-    ask for.
+    the front of <code>DATA/GAME.DAT</code> — about 100 KB out of 1.76 GB.
+    Opening a cutscene reads only that cutscene's archive and decodes its
+    <code>.TM2</code> textures here, in the page.
   </div>
 </main>
 
 <script src="iso.js"></script>
 <script src="disc.js"></script>
+<script src="arc.js"></script>
+<script src="tm2.js"></script>
 <script>
 'use strict';
 const drop = document.getElementById('drop');
-const out = document.getElementById('out');
+const stage = document.getElementById('stage');
 const rows = document.getElementById('rows');
-const filesEl = document.getElementById('files');
+const list = document.getElementById('list');
+const detail = document.getElementById('detail');
+let DISC = null;
 
 function row(label, value, cls) {
   const d = document.createElement('div');
@@ -92,36 +110,90 @@ document.getElementById('file').addEventListener('change', (e) => {
 });
 
 async function load(file) {
-  out.className = 'on';
-  rows.innerHTML = '';
-  filesEl.textContent = '';
+  stage.className = 'on';
+  rows.innerHTML = ''; list.innerHTML = ''; detail.innerHTML = '';
   row('file', file.name + '  (' + (file.size / 1e9).toFixed(2) + ' GB)');
   const t0 = performance.now();
   try {
-    const disc = await TraptDisc.open(TraptIso.blobSource(file));
-    row('volume', disc.iso.volume.id + '  /  ' + disc.iso.volume.system, 'good');
-    row('files in the AFS', disc.entries.length.toLocaleString());
-    row('names in the ELF table', disc.toc.size.toLocaleString());
-
-    // Everything below is read live out of the disc that was just picked.
-    const names = [];
-    for (let i = 0; i < 154; i++)
-      names.push(disc.elfStr(disc.elfU32(0x00386920 + i * 4)));
-    row('cutscenes in the registry', names.length + '  (' + names[0] + ' … '
-        + names[names.length - 1] + ')', 'good');
-
-    const cutscenes = disc.glob('DATA/RT/E').filter((n) => n.endsWith('.ARC'));
-    row('cutscene archives on disc', cutscenes.length);
-
-    const master = await disc.read('DATA/RT/E001/RT_E001.ARC');
-    row('read DATA/RT/E001/RT_E001.ARC',
-        master.length.toLocaleString() + ' bytes in '
-        + (performance.now() - t0).toFixed(0) + ' ms', 'good');
-
-    filesEl.textContent = names.join('  ');
+    DISC = await TraptDisc.open(TraptIso.blobSource(file));
   } catch (err) {
     row('problem', err.message, 'bad');
+    return;
   }
+  row('volume', DISC.iso.volume.id + ' / ' + DISC.iso.volume.system, 'good');
+  row('files in the AFS', DISC.entries.length.toLocaleString());
+  row('opened in', (performance.now() - t0).toFixed(0) + ' ms  '
+      + '(about 100 KB read)', 'good');
+
+  // The cutscene registry, read out of the ELF that was just picked.
+  const names = [];
+  for (let i = 0; i < 154; i++)
+    names.push(DISC.elfStr(DISC.elfU32(0x00386920 + i * 4)));
+  row('cutscene registry', names.length + ' entries, ' + names[0] + ' … '
+      + names[names.length - 1]);
+
+  for (const n of names) {
+    const path = 'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC';
+    const el = document.createElement('div');
+    el.className = 'cut' + (DISC.has(path) ? '' : ' absent');
+    el.textContent = n;
+    if (DISC.has(path)) el.onclick = () => openCutscene(n, path, el);
+    else el.title = 'in the registry, but no data on this disc';
+    list.appendChild(el);
+  }
+  document.getElementById('listHead').textContent =
+    'Cutscenes on the disc — ' + list.querySelectorAll('.cut:not(.absent)').length
+    + ' of ' + names.length + ' have data; click one to extract it';
+}
+
+async function openCutscene(name, path, el) {
+  for (const c of list.querySelectorAll('.cut.on')) c.classList.remove('on');
+  el.classList.add('on');
+  detail.innerHTML = '<h2>' + name + '</h2><div id="members">reading…</div>'
+                   + '<div id="tex"></div>';
+  const members = document.getElementById('members');
+  const tex = document.getElementById('tex');
+
+  const t0 = performance.now();
+  const blob = await DISC.read(path);
+  const read = performance.now() - t0;
+
+  const ents = TraptArc.entries(blob);
+  const byExt = {};
+  for (const e of ents) {
+    const ext = (e.name.split('.').pop() || '').toLowerCase();
+    byExt[ext] = (byExt[ext] || 0) + 1;
+  }
+  const t1 = performance.now();
+  let pictures = 0, pixels = 0;
+  for (const e of ents) {
+    if (!e.name.toLowerCase().endsWith('.tm2')) continue;
+    let pics;
+    try {
+      pics = TraptTm2.decode(blob.subarray(e.offset, e.offset + e.size));
+    } catch (err) { continue; }
+    for (const p of pics) {
+      pictures++; pixels += p.width * p.height;
+      const fig = document.createElement('figure');
+      const cv = document.createElement('canvas');
+      cv.width = p.width; cv.height = p.height;
+      cv.getContext('2d').putImageData(
+        new ImageData(new Uint8ClampedArray(p.rgba), p.width, p.height), 0, 0);
+      const cap = document.createElement('figcaption');
+      cap.textContent = e.name + '  ' + p.width + '×' + p.height;
+      fig.appendChild(cv); fig.appendChild(cap);
+      tex.appendChild(fig);
+    }
+  }
+  const decode = performance.now() - t1;
+
+  members.textContent =
+    (blob.length / 1e6).toFixed(1) + ' MB archive read in ' + read.toFixed(0)
+    + ' ms · ' + ents.length + ' members ('
+    + Object.entries(byExt).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => v + ' ' + k).join(', ')
+    + ') · ' + pictures + ' textures, '
+    + (pixels / 1e6).toFixed(1) + ' Mpx decoded in ' + decode.toFixed(0) + ' ms';
 }
 </script>
 </body>
