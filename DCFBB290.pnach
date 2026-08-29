@@ -1,0 +1,181 @@
+gametitle=Trapt (SLUS-21255)
+comment=Debug script switch + Story Mode room override. Enable only ONE of the three.
+
+// ===========================================================================
+//  BACKGROUND
+//
+//  Room event scripts are set up by two functions, both reached from the
+//  in-game scene state machine FUN_0016B870 (state 0 -> FUN_0016B610):
+//      FUN_001DC420 @ 0x001DC420   loads  "data/script/<name>.arc"
+//      FUN_001DC110 @ 0x001DC110   runs   script "<name>"
+//  Each builds "b%03devent" from the room id, then calls the override at
+//  0x00224E50, which rewrites the name to "<room>debug" when g_debugRoom
+//  (0x00482998) holds a valid room. IsMainRoom @ 0x002940E0 accepts only:
+//      rh01..rh10 = 01..0A     rp01..rp06 = 15..1A     rc01..rc06 = 29..2E
+//  Name built as sprintf("r%c%02d", "hpcg?t"[id/20], id%20).
+// ===========================================================================
+
+
+// ---------------------------------------------------------------------------
+// 1) Fixed room. Pins g_debugRoom to one id, used in EVERY room you enter.
+// ---------------------------------------------------------------------------
+
+[Debug script - fixed room (rc01)]
+author=reversed from SLUS-21255
+description=Loads DATA/SCRIPT/RC01DEBUG.ARC in place of the room's event script. Change the last byte to pick another room.
+patch=1,EE,00482998,word,00000029
+
+
+// ---------------------------------------------------------------------------
+// 2) Follow the current room. Writes the id each event-script loader was
+//    handed into g_debugRoom, one instruction before it calls the override.
+//      001DC444  00000000 -> AF8588A8   sw a1, -0x7758(gp)   ; FUN_001DC420
+//      001DC344  00000000 -> AF9388A8   sw s3, -0x7758(gp)   ; FUN_001DC110
+//    Both slots are NOPs in the delay slot of "bne v0,zero" in the room-id ->
+//    event-number mapping, so they run on every path.
+//    Known gap: rooms with id >= 68 (rt## practice rooms) branch around them.
+// ---------------------------------------------------------------------------
+
+[Debug room - follow current room]
+author=reversed from SLUS-21255
+description=Every main room loads its own *DEBUG.ARC script, starting with the first room you enter.
+patch=1,EE,001DC444,word,AF8588A8
+patch=1,EE,001DC344,word,AF9388A8
+
+
+// ---------------------------------------------------------------------------
+// 3) STORY MODE -> DEBUG ROOM.  Self-contained; do not combine with 1 or 2.
+//
+//    The story driver is FUN_00173520 (chapter/sub progression, cutscene
+//    tables, room sequence; one of three drivers that feed FUN_0016B870).
+//    Two of its states pick the room from a byte table at 0x0042DD21,
+//    indexed by chapter*4 + sub, and hand it to SetRoomId @ 0x00171BB0:
+//
+//      state 9  FUN_00172DF0  chapter start   -> 0x00172E68  lb a1,0x0(v0)
+//      state C  FUN_00173520  room setup      -> 0x00173874  lb a1,0x0(v0)
+//
+//    State 9 also fetches a pre-room cutscene id from 0x0042DD70 and plays it
+//    unless the id is -1:
+//      0x00172E98  lb s0,0x0(v1)   then  0x00172E9C  beq v0,s0 (v0 = -1)
+//
+//    So: replace both table reads with a constant room id, force the cutscene
+//    id to -1, and set g_debugRoom to the same room.
+//
+//      00172E68  80450000 -> 24050029   li a1, 0x29     ; chapter-start room
+//      00173874  80450000 -> 24050029   li a1, 0x29     ; room-setup room
+//      00172E98  80700000 -> 2410FFFF   li s0, -1       ; skip pre-room cutscene
+//      00482998  ........ -> 00000029   g_debugRoom = rc01
+//
+//    TO PICK A DIFFERENT ROOM change the last byte in ALL FOUR lines to the
+//    same id (see the valid list at the top). e.g. rh01 -> 24050001 / 00000001.
+//
+//    Static ELF offsets: 0x00072EE8, 0x000738F4, 0x00072F18.
+//
+//    Expect rough edges: chapter/sub state still advances normally, so the
+//    post-room cutscene table is keyed to a chapter that no longer matches the
+//    room you played. This is a debug jump, not a supported flow -- if it
+//    soft-locks when the room ends, reset. The menu still reads "Story Mode";
+//    only what it does changes.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 4) FORCE-LOAD DATA/COMMON/DEBUG.ARC.  Orthogonal - combine with any of 1-3.
+//
+//    Nothing on the disc loads DEBUG.ARC: no ELF code reference, and all 315
+//    scripts were scanned with zero hits. So it can only be loaded by making
+//    the game ask for something else and handing it DEBUG.ARC instead.
+//
+//    GAME.DAT is a CRI AFS archive (3773 entries). The ELF holds a parallel
+//    TOC at 0x0036A0F0, 12 bytes per entry: { char *name, u32 size, u32 id }.
+//    Verified against the disc: AFS entry = TOC.id (0 size mismatches across
+//    all 3773; mapping by array position gives 31, so it is definitely id).
+//    FUN_001ABA90 takes the read length from TOC+4, so both fields must move.
+//
+//    Victim: DATA/COMMON/FREE.ARC, TOC index 1102, entry @0x0036D45C.
+//    Boot loader at 0x0016B400 loads three archives back to back:
+//      free.arc (0x0016B400), common.arc (0x0016B420), occupation.arc (0x0016B440)
+//    FREE.ARC holds 6 TIM2 textures only - ef_a007_00..04, sp_go01 - so the
+//    fallout is a few missing effect textures. Textures degrade far more
+//    gracefully than meshes.
+//
+//    NOT occupation.arc: it holds cube.smi + ef_s012.smi, which FUN_00260050
+//    feeds to FUN_00263710 via the table at 0x0037E200 (3x cube, 8x ef_s012)
+//    while indexing the trap array at iRam004829E0 (stride 0xED4). The string
+//    'trapcol' sits next to them in the pool - this is trap placement/collision
+//    geometry, i.e. core gameplay, with no guarantee of a null check.
+//    NOT env.tm2: same TIM2 header and identical 17472 size, looked perfect,
+//    but its path string has no code references at all so it never loads.
+//
+//      0036D460  size 143296 (0x22FC0) -> 75904 (0x12880)  DEBUG.ARC size
+//      0036D464  id   1102   (0x44E)   -> 1096  (0x448)    DEBUG.ARC id
+//
+//    Result: the engine loads DEBUG.ARC and registers its 7 members by their
+//    own names - cone.smi, cylinder.smi, sphere.smi, dummy_model.smi,
+//    dummy_model.tm2, dummy_motion.sai, dummy.tm2.
+//
+//    EXPECT: those 6 effect textures are gone, so some effect renders wrong or
+//    not at all. And loading is NOT drawing - no code in the retail build
+//    instantiates a debug cone, so none will appear on screen by itself. This
+//    puts the assets in memory and proves the path; making them visible needs
+//    a draw call that does not exist in this build.
+//
+//    VERIFY: with this on, search EE RAM for ASCII "sphere.smi"
+//    (73 70 68 65 72 65 2E 73 6D 69). A hit outside the ELF string pool
+//    (i.e. above 0x00500000) means DEBUG.ARC is resident. Without the patch
+//    that search returns nothing.
+// ---------------------------------------------------------------------------
+
+[Force-load DEBUG.ARC over FREE.ARC]
+author=reversed from SLUS-21255
+description=Repoints the FREE.ARC TOC entry at DEBUG.ARC so the engine loads the debug primitives at boot. Costs 6 effect textures. Loading is not drawing - see comments.
+patch=1,EE,0036D460,word,00012880
+patch=1,EE,0036D464,word,00000448
+
+
+// ---------------------------------------------------------------------------
+// 5) TEST ROOMS.  Same hijack as cheat 3, different room id.
+//
+//    The orphaned room-select table lists three TEST entries, and all three
+//    room archives really are on the disc:
+//      rt03 "TEST 3"  id 103  DATA/ROOM/RT03_ALL.ARC  1,189,440 B  +COL +SMI
+//      rt97 "TEST 97" id 197  DATA/ROOM/RT97_ALL.ARC    100,800 B  no COL/SMI
+//      rt98 "TEST 98" id 198  DATA/ROOM/RT98_ALL.ARC    100,800 B  no COL/SMI
+//
+//    None has an event script - the loader would ask for b335/b429/b430event
+//    and B*EVENT only spans B010..B309. FUN_001ABA90 bails on a failed lookup,
+//    so expect "no script runs", not a crash.
+//
+//    rt03 names correctly as-is: 103/20=5 -> 't', 103%20=3 -> "rt03".
+//
+//    rt97/rt98 do NOT. FormatRoomName clamps id/20 > 5 to index 6
+//    (0x002941B4 sltiu v0,v1,6 / 0x002941CC addiu v1,zero,6), and byte 6 of
+//    the prefix table at 0x004824F8 is "hpcg?t\0\0" - a NUL. sprintf then
+//    writes 'r','\0','9','7', so the C string is just "r" and the path
+//    becomes "data/room/r", which never resolves. The dev build must have had
+//    't' there. Patching that one byte restores "rt97"/"rt98".
+// ---------------------------------------------------------------------------
+
+[Test room rt03 (TEST 3) via Story Mode]
+author=reversed from SLUS-21255
+description=Story Mode loads DATA/ROOM/RT03_ALL.ARC instead of the story room. Full room with collision and shadow meshes; no event script will run.
+patch=1,EE,00172E68,word,24050067
+patch=1,EE,00173874,word,24050067
+patch=1,EE,00172E98,word,2410FFFF
+
+
+[Test room rt97 (TEST 97) via Story Mode]
+author=reversed from SLUS-21255
+description=Fixes the prefix-table NUL so rt97/rt98 can be named at all, then loads RT97_ALL.ARC. Bare test room - no collision data, so expect to fall through the floor. Change 240500C5 to 240500C6 for rt98.
+patch=1,EE,004824FE,byte,74
+patch=1,EE,00172E68,word,240500C5
+patch=1,EE,00173874,word,240500C5
+patch=1,EE,00172E98,word,2410FFFF
+
+
+[Story Mode -> debug room (rc01)]
+author=reversed from SLUS-21255
+description=Story Mode drops you straight into rc01 with RC01DEBUG.ARC running, skipping the pre-room cutscene. Change all four values together to pick another room.
+patch=1,EE,00172E68,word,24050029
+patch=1,EE,00173874,word,24050029
+patch=1,EE,00172E98,word,2410FFFF
+patch=1,EE,00482998,word,00000029

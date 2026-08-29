@@ -1,0 +1,967 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!--TITLE--></title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0b0b0d; color: #e8e6e3;
+    font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; }
+  #stage { position: fixed; inset: 0 0 62px 0; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #subs { position: absolute; left: 0; right: 0; bottom: 8%; text-align: center;
+    pointer-events: none; text-shadow: 0 2px 6px #000, 0 0 3px #000; padding: 0 6%; }
+  #spk { color: #d8b06a; font-weight: 600; letter-spacing: .05em; font-size: 13px; }
+  #txt { font-size: clamp(15px, 2.0vw, 23px); white-space: pre-line; line-height: 1.35; }
+  #bars i { position: absolute; left: 0; right: 0; height: 0; background: #000;
+    display: block; transition: height .3s; pointer-events: none; }
+  #bars i.t { top: 0; } #bars i.b { bottom: 0; }
+  #fade { position: absolute; inset: 0; background: #000; opacity: 0;
+    pointer-events: none; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 62px;
+    display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    background: #131316; border-top: 1px solid #26262b; }
+  button { background: #232329; color: #e8e6e3; border: 1px solid #34343c;
+    border-radius: 6px; padding: 6px 11px; font: inherit; cursor: pointer; }
+  button:hover { background: #2c2c34; }
+  button.on { background: #3a5a8a; border-color: #4a72ad; }
+  #seek { flex: 1; accent-color: #d8b06a; }
+  #time { font-variant-numeric: tabular-nums; opacity: .8; min-width: 150px; }
+  #err { position: fixed; inset: 0; display: none; place-content: center;
+    padding: 40px; white-space: pre-wrap; font-family: ui-monospace, monospace;
+    background: #0b0b0d; color: #ff9a9a; z-index: 9; }
+  #hint { position: absolute; top: 10px; left: 12px; opacity: .4; font-size: 12px;
+    pointer-events: none; }
+  #fx { position: fixed; right: 12px; bottom: 74px; width: 260px; display: none;
+    background: #16161a; border: 1px solid #2e2e36; border-radius: 8px;
+    padding: 10px 12px; box-shadow: 0 8px 30px #0009; }
+  #fx.on { display: block; }
+  #fx h4 { margin: 2px 0 8px; font-size: 12px; letter-spacing: .08em;
+    text-transform: uppercase; opacity: .6; font-weight: 600; }
+  #fx label { display: flex; align-items: center; gap: 8px; margin: 5px 0;
+    font-size: 12px; }
+  #fx label span { flex: 0 0 88px; opacity: .75; }
+  #fx input[type=range] { flex: 1; accent-color: #d8b06a; }
+  #fx label b { flex: 0 0 40px; text-align: right; font-weight: 400;
+    font-variant-numeric: tabular-nums; opacity: .6; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bars"><i class="t"></i><i class="b"></i></div>
+  <div id="fade"></div>
+  <div id="hint">drag to orbit &middot; wheel to zoom &middot; space to play</div>
+  <div id="subs"><div id="spk"></div><div id="txt"></div></div>
+</div>
+<div id="bar">
+  <button id="play">Play</button>
+  <input id="seek" type="range" min="1" value="1" step="1">
+  <span id="time"></span>
+  <button id="camBtn" class="on">Scene cam</button>
+  <button id="muteBtn">Mute</button>
+  <button id="modeBtn" class="on">PS2</button>
+  <button id="fxBtn">Look</button>
+</div>
+<div id="fx"></div>
+<div id="err"></div>
+
+<script>
+// ===8<=== TRAPT MATH ===8<===
+// Pure maths, no DOM and no three.js, so tools/test_player.js can extract this
+// exact block and check it against the Python renderer.
+//
+// .SMI matrices are row-major and multiply on the right (v' = v * M), so a
+// child's world matrix is `local * parent`.  Uploaded verbatim into a GLSL
+// mat4 the array is read column-major, i.e. transposed -- which is precisely
+// what makes `G * v` in the shader reproduce the row-vector product.
+function TraptMath(BIN, S) {
+  const Q15 = 1 / 32767, NRM = 1 / 4096;
+  const f32 = ([o, n]) => n ? new Float32Array(BIN, o, n) : new Float32Array(0);
+  const u16 = ([o, n]) => n ? new Uint16Array(BIN, o, n) : new Uint16Array(0);
+  const i16 = ([o, n]) => n ? new Int16Array(BIN, o, n) : new Int16Array(0);
+  const u8  = ([o, n]) => n ? new Uint8Array(BIN, o, n) : new Uint8Array(0);
+
+  for (const key in S.clips) {
+    const c = S.clips[key];
+    for (const nm in c.nodes) {
+      const ch = c.nodes[nm];
+      for (const k of ['r', 't', 's']) if (ch[k]) {
+        ch[k]._t = u16(ch[k].t);
+        ch[k]._v = ch[k].q ? i16(ch[k].v) : f32(ch[k].v);
+        ch[k]._s = ch[k].q ? Q15 : 1;
+      }
+    }
+  }
+
+  function mul(a, b, out) {
+    out = out || new Float32Array(16);
+    for (let r = 0; r < 4; r++) {
+      const a0 = a[r*4], a1 = a[r*4+1], a2 = a[r*4+2], a3 = a[r*4+3];
+      for (let c = 0; c < 4; c++)
+        out[r*4+c] = a0*b[c] + a1*b[4+c] + a2*b[8+c] + a3*b[12+c];
+    }
+    return out;
+  }
+  function quatToRows(q, s, t, out) {
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    const sx = s[0], sy = s[1], sz = s[2];
+    out[0]  = (1-2*(y*y+z*z))*sx; out[1] = (2*(x*y+z*w))*sx;   out[2]  = (2*(x*z-y*w))*sx;   out[3]  = 0;
+    out[4]  = (2*(x*y-z*w))*sy;   out[5] = (1-2*(x*x+z*z))*sy; out[6]  = (2*(y*z+x*w))*sy;   out[7]  = 0;
+    out[8]  = (2*(x*z+y*w))*sz;   out[9] = (2*(y*z-x*w))*sz;   out[10] = (1-2*(x*x+y*y))*sz; out[11] = 0;
+    out[12] = t[0]; out[13] = t[1]; out[14] = t[2]; out[15] = 1;
+    return out;
+  }
+  function quatFromRows(m, out) {
+    const tr = m[0] + m[5] + m[10];
+    let x, y, z, w, s;
+    if (tr > 0) { s = Math.sqrt(tr + 1) * 2; w = 0.25*s; x = (m[6]-m[9])/s; y = (m[8]-m[2])/s; z = (m[1]-m[4])/s; }
+    else if (m[0] > m[5] && m[0] > m[10]) { s = Math.sqrt(1+m[0]-m[5]-m[10])*2; x = 0.25*s; y = (m[4]+m[1])/s; z = (m[8]+m[2])/s; w = (m[6]-m[9])/s; }
+    else if (m[5] > m[10]) { s = Math.sqrt(1+m[5]-m[0]-m[10])*2; x = (m[4]+m[1])/s; y = 0.25*s; z = (m[9]+m[6])/s; w = (m[8]-m[2])/s; }
+    else { s = Math.sqrt(1+m[10]-m[0]-m[5])*2; x = (m[8]+m[2])/s; y = (m[9]+m[6])/s; z = 0.25*s; w = (m[1]-m[4])/s; }
+    const l = Math.hypot(x, y, z, w) || 1;
+    out[0] = x/l; out[1] = y/l; out[2] = z/l; out[3] = w/l; return out;
+  }
+  const rowLen = (m, r) => Math.hypot(m[r*4], m[r*4+1], m[r*4+2]);
+
+  function findKey(T, t) {              // last index with T[i] <= t
+    let lo = 0, hi = T.length - 1;
+    if (t <= T[0]) return -1;
+    if (t >= T[hi]) return hi;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (T[mid] <= t) lo = mid; else hi = mid; }
+    return lo;
+  }
+  function sampleQuat(ch, t, out) {
+    const T = ch._t, V = ch._v, n = T.length, q = ch._s;
+    if (!n) return null;
+    const i = findKey(T, t);
+    if (i < 0)      { for (let k = 0; k < 4; k++) out[k] = V[k]*q; return out; }
+    if (i >= n - 1) { for (let k = 0; k < 4; k++) out[k] = V[i*4+k]*q; return out; }
+    const span = T[i+1] - T[i], f = span ? (t - T[i]) / span : 0;
+    let ax = V[i*4]*q, ay = V[i*4+1]*q, az = V[i*4+2]*q, aw = V[i*4+3]*q;
+    let bx = V[i*4+4]*q, by = V[i*4+5]*q, bz = V[i*4+6]*q, bw = V[i*4+7]*q;
+    let d = ax*bx + ay*by + az*bz + aw*bw;
+    if (d < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; d = -d; }
+    let wa = 1 - f, wb = f;
+    if (d < 0.9995) { const th = Math.acos(Math.min(1, d)), sn = Math.sin(th);
+      wa = Math.sin(wa*th)/sn; wb = Math.sin(wb*th)/sn; }
+    out[0] = ax*wa + bx*wb; out[1] = ay*wa + by*wb;
+    out[2] = az*wa + bz*wb; out[3] = aw*wa + bw*wb;
+    const l = Math.hypot(out[0], out[1], out[2], out[3]) || 1;
+    out[0] /= l; out[1] /= l; out[2] /= l; out[3] /= l;
+    return out;
+  }
+  function sampleVec(ch, t, out) {
+    const T = ch._t, V = ch._v, n = T.length;
+    if (!n) return null;
+    const i = findKey(T, t);
+    if (i < 0)      { out[0] = V[0]; out[1] = V[1]; out[2] = V[2]; return out; }
+    if (i >= n - 1) { out[0] = V[i*4]; out[1] = V[i*4+1]; out[2] = V[i*4+2]; return out; }
+    const span = T[i+1] - T[i], f = span ? (t - T[i]) / span : 0;
+    for (let k = 0; k < 3; k++) out[k] = V[i*4+k] + (V[i*4+4+k] - V[i*4+k]) * f;
+    return out;
+  }
+
+  const _q = new Float32Array(4), _t = new Float32Array(3), _s = new Float32Array(3);
+  function worldMatrices(md, clip, t, W) {
+    const nodes = md.nodes, n = nodes.length;
+    W = W || Array.from({ length: n }, () => new Float32Array(16));
+    const locals = new Array(n), done = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const bind = nodes[i].m;
+      const a = clip && clip.nodes[nodes[i].name];
+      if (!a) { locals[i] = bind; continue; }
+      if (a.r) sampleQuat(a.r, t, _q); else quatFromRows(bind, _q);
+      if (a.t) sampleVec(a.t, t, _t);
+      else { _t[0] = bind[12]; _t[1] = bind[13]; _t[2] = bind[14]; }
+      if (a.s) sampleVec(a.s, t, _s);
+      else { _s[0] = rowLen(bind, 0); _s[1] = rowLen(bind, 1); _s[2] = rowLen(bind, 2); }
+      locals[i] = quatToRows(_q, _s, _t, new Float32Array(16));
+    }
+    const solve = (i, depth) => {
+      if (done[i]) return W[i];
+      done[i] = 1;
+      const p = nodes[i].parent;
+      if (p < 0 || p >= n || p === i || depth > 96) W[i].set(locals[i]);
+      else mul(locals[i], solve(p, depth + 1), W[i]);
+      return W[i];
+    };
+    for (let i = 0; i < n; i++) solve(i, 0);
+    return W;
+  }
+
+  /** CPU reference for one mesh -- the shader does exactly this on the GPU. */
+  function skinMesh(me, W, offset) {
+    const lp0 = f32(me.lp0), b = u16(me.b), out = new Float32Array(me.count * 3);
+    const lp1 = me.two ? f32(me.lp1) : null;
+    const ox = offset ? offset[0] : 0, oy = offset ? offset[1] : 0,
+          oz = offset ? offset[2] : 0;
+    for (let v = 0; v < me.count; v++) {
+      let x = 0, y = 0, z = 0;
+      for (let k = 0; k < (me.two ? 2 : 1); k++) {
+        const src = k ? lp1 : lp0;
+        const M = W[b[v*2+k]] || W[0];
+        const px = src[v*4], py = src[v*4+1], pz = src[v*4+2], pw = src[v*4+3];
+        x += px*M[0] + py*M[4] + pz*M[8]  + pw*M[12];
+        y += px*M[1] + py*M[5] + pz*M[9]  + pw*M[13];
+        z += px*M[2] + py*M[6] + pz*M[10] + pw*M[14];
+      }
+      out[v*3] = x + ox; out[v*3+1] = y + oy; out[v*3+2] = z + oz;
+    }
+    return out;
+  }
+
+  function clipFor(ent, frame) {
+    let cur = null;
+    for (const [start, key] of ent.clips) if (start <= frame) cur = [start, key];
+    return cur;
+  }
+  function visibleAt(ent, frame) {
+    // `end` is the frame SSC 0x67 destroyed the track's current object.
+    if (ent.end != null && frame >= ent.end) return false;
+    let v = true;
+    for (const [f, on] of ent.visibility) if (f <= frame) v = !!on;
+    return v;
+  }
+
+  return { f32, u16, i16, u8, NRM, mul, quatToRows, quatFromRows, sampleQuat,
+           sampleVec, worldMatrices, skinMesh, clipFor, visibleAt };
+}
+// ===8<=== END TRAPT MATH ===8<===
+if (typeof module !== 'undefined') module.exports = { TraptMath };
+</script>
+
+<script src="three.min.js"></script>
+<script src="scene.js"></script>
+<script>
+(function () {
+'use strict';
+const fail = (m) => { const e = document.getElementById('err');
+  e.style.display = 'grid'; e.textContent = m; console.error(m); };
+if (typeof THREE === 'undefined') return fail('three.min.js did not load.');
+const S = window.TRAPT_SCENE;
+if (!S) return fail('scene.js did not load.');
+
+const BIN = (function (b64) {
+  const bin = atob(b64), n = bin.length, out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+})(window.TRAPT_BIN);
+
+const M = TraptMath(BIN, S);
+const { f32, u16, i16, u8 } = M;
+
+// ------------------------------------------------------------------- three
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x06060a, 1);
+stage.appendChild(renderer.domElement);
+const world = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 1, 8000);
+
+// PS2 mode reproduces the GS fixed function; Modern bypasses all of it --
+// sRGB-correct sampling, linear-space lighting, tonemapping, mipmaps and full
+// canvas resolution.  Neither is "better"; one is the hardware, one is what
+// the same assets look like rendered normally.
+let PS2 = true;
+const allTextures = [];
+const texCache = {};
+function texture(name) {
+  if (!name) return null;
+  const key = name.toLowerCase();
+  if (key in texCache) return texCache[key];
+  const uri = S.textures[key];
+  if (!uri) return (texCache[key] = null);
+  const img = new Image();
+  const t = new THREE.Texture(img);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  // TEX1 reports MXL=0 with MMAG=MMIN=LINEAR on 681 of 768 samplers: bilinear,
+  // no mipmaps at all.  Mipmapping looks tidier but is not what the hardware
+  // does, and it removes the shimmer that defines the look -- so mips are
+  // generated but only *used* in Modern mode (applyTexMode below).
+  t.generateMipmaps = true;
+  t.minFilter = PS2 ? THREE.LinearFilter : THREE.LinearMipmapLinearFilter;
+  t.anisotropy = PS2 ? 1 : renderer.capabilities.getMaxAnisotropy();
+  allTextures.push(t);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  t.flipY = false;                    // .SMI V already runs top-down
+  img.onload = () => { t.needsUpdate = true; };
+  img.src = uri;
+  return (texCache[key] = t);
+}
+
+const VERT = `
+precision highp float;
+#define NRM 0.000244140625            // 1/4096, the .SMI normal fixed point
+attribute vec4 lp0; attribute vec4 lp1;
+attribute vec3 n0;  attribute vec3 n1;
+attribute vec2 bidx; attribute vec2 uv0; attribute vec4 vcol;
+uniform mat4 modelViewMatrix, projectionMatrix;
+uniform sampler2D boneTex; uniform float boneW; uniform float two;
+uniform vec3 offset;
+varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
+mat4 boneAt(float i) {
+  float o = i * 4.0;
+  return mat4(texture2D(boneTex, vec2((o+0.5)/boneW, 0.5)),
+              texture2D(boneTex, vec2((o+1.5)/boneW, 0.5)),
+              texture2D(boneTex, vec2((o+2.5)/boneW, 0.5)),
+              texture2D(boneTex, vec2((o+3.5)/boneW, 0.5)));
+}
+void main() {
+  mat4 B0 = boneAt(bidx.x);
+  vec4 p = B0 * lp0;                  // w carries the blend weight
+  vec3 n = mat3(B0) * (n0 * NRM);
+  if (two > 0.5) {
+    mat4 B1 = boneAt(bidx.y);
+    p += B1 * lp1;
+    n += mat3(B1) * (n1 * NRM);
+  }
+  vec3 w = p.xyz + offset;
+  vP = w; vN = n; vUv = uv0; vC = vcol;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(w, 1.0);
+}`;
+
+const FRAG = `
+precision highp float;
+// The GS has no programmable fragment stage.  This reproduces the fixed
+// function the game actually configures, read out of a savestate's display
+// list (docs/PS2SHADER.md):
+//   TEX0  TFX=MODULATE TCC=RGBA      -> C = (Ct * Cv) >> 7,  A = (At * Av) >> 7
+//   TEST  ATE=1 ATST=GEQUAL AREF=120 -> discard below 120/128
+//         or ATST=NEVER AFAIL=FB_ONLY-> draw blended, never write Z
+//   ALPHA (Cs-Cd)*As>>7 + Cd         -> ordinary lerp, As in 0..128
+//   COLCLAMP=1                       -> clamp, do not wrap
+// The ">>7" is the whole trick: 0x80 is 1.0 on the GS, so a vertex colour of
+// 128 is neutral and 255 is a 2x brightener.
+#define GS_ONE 1.9921875              // 255/128: byte-normalised -> GS units
+uniform sampler2D map; uniform float hasMap;
+uniform vec4 diffuse; uniform vec3 tint;
+uniform vec3 ambient, dirColour, dirDir;
+uniform vec3 pt0c, pt0p, pt1c, pt1p; uniform vec2 pt0r, pt1r;
+uniform vec3 fogColour; uniform vec2 fogRange; uniform float fogOn;
+uniform vec3 eye; uniform float exposure;
+uniform float lit;             // 1 = shade from normals, 0 = baked vertex colour
+uniform float alphaRef;        // AREF / 128
+uniform float aTest;           // material arms TEST ATE=1 (.SMI +0x42 & 0x60)
+uniform float blendOn;         // material goes through the ALPHA blend unit
+uniform float ps2;             // 0 = bypass the GS emulation entirely
+varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
+vec3 point(vec3 c, vec3 pos, vec2 rng, vec3 n) {
+  vec3 d = pos - vP;
+  float att = 1.0 - smoothstep(rng.x, max(rng.y, rng.x + 0.001), length(d));
+  return c * max(dot(n, normalize(d)), 0.0) * att;
+}
+void main() {
+  // The .SMI material colour is authoring leftover, not a modulate factor.
+  // Ten materials in e001 alone pair (0,0,0) with a perfectly good texture --
+  // multiplying rendered the door, the whole rp11_rt prop set and gf16_rt
+  // pure black.  A texture replaces the colour; diffuse is only for the
+  // handful of materials that carry no texture at all.
+  vec4 base = diffuse;
+  if (hasMap > 0.5) base = texture2D(map, vUv);
+
+  // MODULATE folds the vertex alpha in before anything tests it:
+  // A = (At * Av) >> 7.  It is 0x80 = 1.0 nearly everywhere, but rp11's lamp
+  // glow ships 0x38 = 0.44 and is 2.3x too hot without it.
+  base.a *= clamp(vC.a * GS_ONE, 0.0, 1.0);
+
+  // GS alpha test.  Opaque materials use GEQUAL AREF=120/128 with AFAIL=KEEP,
+  // so a failing fragment is dropped outright.  Blended materials instead use
+  // ATST=NEVER with AFAIL=FB_ONLY, which draws every fragment and simply never
+  // writes Z -- that half is depthWrite:false on the JS side, so they must not
+  // discard here at all.
+  // Modern mode uses an ordinary half-coverage cutout instead of the GS's
+  // 120/128; the hardware threshold only makes sense alongside the FB_ONLY
+  // depth trick it is paired with.
+  // Only materials that arm the test get cut.  Several textures carry an
+  // unrelated image in their alpha channel -- the plaza's grass ground is 92%
+  // alpha-zero because what sits in its alpha is a strip of grass-blade
+  // silhouettes for another material on the same page.  Testing everything
+  // against alpha deleted the lawn and punched holes around the doorway.
+  if (blendOn < 0.5 && aTest > 0.5
+      && base.a < (ps2 > 0.5 ? alphaRef : 0.5)) discard;
+
+  // Do NOT flip on gl_FrontFacing.  .SMI index winding is a clean global
+  // reversal: measured against the ADC strip decode, (b-a)x(c-a) opposes the
+  // authored normal on 100.0% of character triangle area.  Under WebGL's
+  // default CCW-front rule every visible surface therefore reports *back*, so
+  // the flip inverted the normal across 65-87% of submitted area and cut mean
+  // N.L from 0.78 to 0.13 -- which is what the old additive lift was
+  // compensating for.  (Rooms cannot be measured this way and do not need to
+  // be: environment meshes carry no normals at all, only baked vertex
+  // colours, and take the lit == 0 path below.)  vN is already outward.
+  vec3 n = normalize(vN);
+
+  // Environment geometry ships baked vertex colours and no normals at all;
+  // characters ship normals and no colours.  Lighting the room dynamically is
+  // simply wrong -- rp03.smi carries 17120 pre-lit vertices averaging 0.4 and
+  // peaking at exactly 128, which is why the real frame is so much darker than
+  // a dynamically lit one.
+  vec3 Cv = (lit > 0.5)
+      ? (ambient
+         + dirColour * max(dot(n, dirDir), 0.0)
+         + point(pt0c, pt0p, pt0r, n)
+         + point(pt1c, pt1p, pt1r, n)) * exposure
+      : vC.rgb * GS_ONE;
+
+  vec3 col;
+  if (ps2 > 0.5) {
+    // GS: 8-bit throughout, no colour management, COLCLAMP=1 at the end
+    col = clamp(base.rgb * Cv * tint, 0.0, 1.0);
+    if (fogOn > 0.5)
+      col = mix(col, fogColour,
+                smoothstep(fogRange.x, fogRange.y, length(vP - eye)) * 0.85);
+  } else {
+    // Modern: decode sRGB, light in linear, tonemap, re-encode.  The textures
+    // are 8-bit sRGB art either way -- the difference is that the PS2 multiplies
+    // them directly in gamma space and clips, which crushes highlights.
+    vec3 alb = pow(base.rgb, vec3(2.2));
+    col = alb * Cv * tint;
+    if (fogOn > 0.5)
+      col = mix(col, pow(fogColour, vec3(2.2)),
+                smoothstep(fogRange.x, fogRange.y, length(vP - eye)) * 0.85);
+    col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);  // ACES
+    col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
+  }
+  gl_FragColor = vec4(col, blendOn > 0.5 ? base.a : 1.0);
+}`;
+
+// The rig's own numbers, no correction.  This was 1.35, fitted to compensate
+// for two lights that were in the wrong place: a directional aimed at a guess,
+// and `joyu` left at its raw offset instead of on the camera.  With both taken
+// from the data, 1.0 minimises the error against the hardware frame and 1.35
+// is 40% worse.  (Before that it was an additive `+ 0.34` inside the shader,
+// which lifts the floor instead of scaling it -- 42% of every pixel.)
+const EXPOSURE = 1.0;
+
+// light rig read straight out of the map track's `0x64` kind-6 blocks.  These
+// two are fallbacks for a scene that records none -- the scene's own values
+// REPLACE them.  Adding instead put e001's ambient at 0.30 against the 0.20
+// its `rt_amb` block actually asks for.
+const amb = new THREE.Vector3(0.10, 0.10, 0.10);
+const dirC = new THREE.Vector3(0.35, 0.35, 0.35);
+const pts = [];
+let haveAmb = false;
+// A directional light's aim is not in the script -- it comes from the room's
+// `.sli`, which `export.py` resolves.  This stays only as a last resort.
+const dirD = new THREE.Vector3(0.35, 0.80, -0.49).normalize();
+for (const l of (S.lights || [])) {
+  const c = new THREE.Vector3().fromArray(l.colour);
+  // several ambient blocks in one scene do sum; the fallback does not join in
+  if (l.kind === 'ambient') { haveAmb ? amb.add(c) : amb.copy(c); haveAmb = true; }
+  else if (l.kind === 'directional') {
+    dirC.copy(c);
+    if (l.direction) dirD.fromArray(l.direction).normalize();
+  } else pts.push({ c, p: new THREE.Vector3().fromArray(l.position),
+                    r: new THREE.Vector2().fromArray(l.range),
+                    // `joyu` (女優, "actress") rides the camera; its position
+                    // is an offset in camera space, resolved every frame
+                    cam: l.parent === 'camera',
+                    off: new THREE.Vector3().fromArray(l.position) });
+}
+while (pts.length < 2)
+  pts.push({ c: new THREE.Vector3(), p: new THREE.Vector3(), r: new THREE.Vector2(0, 1),
+             cam: false, off: new THREE.Vector3() });
+const fogCol = S.fog ? new THREE.Color(S.fog[2], S.fog[3], S.fog[4]) : new THREE.Color();
+if (S.fog) world.fog = new THREE.Fog(fogCol.getHex(), S.fog[0], S.fog[1]);
+
+// AREF is 120 of 128 on the opaque pass -- 0.9375.  tm2.py already maps PS2
+// alpha 0..0x80 onto 0..255, so the normalised threshold is the same number.
+const AREF_OPAQUE = 120 / 128;
+
+function makeMaterial(mat, tintArr, isLit) {
+  const tex = texture(mat.tex);
+  const d = mat.diffuse;
+  const add = mat.mode === 'add';
+  const blend = add || mat.mode === 'blend';
+  return new THREE.RawShaderMaterial({
+    vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide,
+    transparent: blend,
+    depthWrite: !blend,               // TEST ATST=NEVER + AFAIL=FB_ONLY
+    depthTest: true,
+    blending: blend ? THREE.CustomBlending : THREE.NoBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,   // ALPHA = (Cs-Cd)*As>>7 + Cd, or
+    blendDst: add ? THREE.OneFactor   // Cs*As>>7 + Cd when additive
+                  : THREE.OneMinusSrcAlphaFactor,
+    uniforms: {
+      map: { value: tex }, hasMap: { value: tex ? 1 : 0 },
+      diffuse: { value: new THREE.Vector4(d[0]/255, d[1]/255, d[2]/255, 1.0) },
+      tint: { value: new THREE.Vector3().fromArray(tintArr || [1, 1, 1]) },
+      boneTex: { value: null }, boneW: { value: 4 }, two: { value: 0 },
+      offset: { value: new THREE.Vector3() },
+      ambient: { value: amb }, dirColour: { value: dirC }, dirDir: { value: dirD },
+      pt0c: { value: pts[0].c }, pt0p: { value: pts[0].p }, pt0r: { value: pts[0].r },
+      pt1c: { value: pts[1].c }, pt1p: { value: pts[1].p }, pt1r: { value: pts[1].r },
+      fogColour: { value: fogCol },
+      fogRange: { value: new THREE.Vector2(S.fog ? S.fog[0] : 0, S.fog ? S.fog[1] : 1e9) },
+      fogOn: { value: S.fog ? 1 : 0 }, eye: { value: new THREE.Vector3() },
+      exposure: { value: EXPOSURE },
+      lit: { value: isLit ? 1 : 0 },
+      alphaRef: { value: AREF_OPAQUE },
+      aTest: { value: mat.atest === 0 ? 0 : 1 },
+      blendOn: { value: blend ? 1 : 0 },
+      ps2: { value: PS2 ? 1 : 0 },
+    },
+  });
+}
+
+// -------------------------------------------------------------- build scene
+const drawables = [];
+const allMaterials = [];
+for (const ent of S.entities) {
+  const inst = { ent, models: [], posed: false, offset: ent.position || [0, 0, 0] };
+  for (const key of ent.models) {
+    const md = S.models[key];
+    if (!md) continue;
+    const nbone = md.nodes.length;
+    const boneData = new Float32Array(nbone * 16);
+    const boneTex = new THREE.DataTexture(boneData, nbone * 4, 1,
+                                          THREE.RGBAFormat, THREE.FloatType);
+    boneTex.magFilter = boneTex.minFilter = THREE.NearestFilter;
+    boneTex.needsUpdate = true;
+    const group = new THREE.Group();
+    group.matrixAutoUpdate = false;
+    for (const me of md.meshes) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('lp0', new THREE.BufferAttribute(f32(me.lp0), 4));
+      g.setAttribute('n0', new THREE.BufferAttribute(i16(me.n0), 3));
+      g.setAttribute('uv0', new THREE.BufferAttribute(f32(me.uv), 2));
+      g.setAttribute('bidx', new THREE.BufferAttribute(u16(me.b), 2));
+      // baked vertex colours where a mesh has them, neutral 128 (GS 1.0)
+      // everywhere else, so one shader serves both halves of the split
+      g.setAttribute('vcol', new THREE.BufferAttribute(
+        me.col ? u8(me.col) : new Uint8Array(me.count * 4).fill(128), 4, true));
+      if (me.two) {
+        g.setAttribute('lp1', new THREE.BufferAttribute(f32(me.lp1), 4));
+        g.setAttribute('n1', new THREE.BufferAttribute(i16(me.n1), 3));
+      } else {
+        g.setAttribute('lp1', new THREE.BufferAttribute(new Float32Array(me.count * 4), 4));
+        g.setAttribute('n1', new THREE.BufferAttribute(new Int16Array(me.count * 3), 3));
+      }
+      g.setIndex(new THREE.BufferAttribute(u16(me.idx), 1));
+      const mat = makeMaterial(
+        md.materials[me.material] ||
+          { tex: null, diffuse: [200, 200, 200, 255], mode: 'opaque' },
+        ent.tint, me.lit);
+      mat.uniforms.boneTex.value = boneTex;
+      mat.uniforms.boneW.value = nbone * 4;
+      mat.uniforms.two.value = me.two ? 1 : 0;
+      mat.uniforms.offset.value.fromArray(inst.offset);
+      allMaterials.push(mat);
+      const mesh = new THREE.Mesh(g, mat);
+      mesh.frustumCulled = false;
+      group.add(mesh);
+    }
+    world.add(group);
+    inst.models.push({ md, group, boneData, boneTex, nbone,
+                       W: Array.from({ length: nbone }, () => new Float32Array(16)) });
+  }
+  drawables.push(inst);
+}
+
+function poseInstance(inst, frame) {
+  const cur = M.clipFor(inst.ent, frame);
+  const clip = cur ? S.clips[cur[1]] : null;
+  const t = cur ? frame - cur[0] : 0;
+  for (const m of inst.models) {
+    M.worldMatrices(m.md, clip, t, m.W);
+    for (let i = 0; i < m.nbone; i++) m.boneData.set(m.W[i], i * 16);
+    m.boneTex.needsUpdate = true;
+  }
+  inst.posed = !cur;                 // a static entity only needs posing once
+}
+
+// -------------------------------------------------------------- output stage
+// The GS renders this game into a 512x224 PSMCT32 buffer -- SCISSOR_1 says
+// X=0..511 Y=0..223 and FRAME_1 says FBW=512 -- and the video hardware scales
+// that to a 4:3 screen.  Rendering at canvas resolution and calling it done
+// throws away the single most recognisable property of the image, so the world
+// goes through a native-size target and a post pass puts it on screen.
+const RT_W = 512, RT_H = 224;
+const rt = new THREE.WebGLRenderTarget(RT_W, RT_H, {
+  minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter,
+  format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
+  depthBuffer: true, stencilBuffer: false,
+});
+
+const POST_V = `
+precision highp float;
+attribute vec3 position; attribute vec2 uv;
+uniform mat4 modelViewMatrix, projectionMatrix;
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+
+const POST_F = `
+precision highp float;
+uniform sampler2D tex;
+uniform vec2 fit;            // letterbox scale, keeps the 4:3 output shape
+uniform vec2 texel;          // 1 / render-target size
+uniform float sharp;         // 0 = bilinear upscale, 1 = crisp texel edges
+uniform float bits;          // colour depth: 8 = off, 5 = PSMCT16-ish
+uniform float dither;        // GS ordered dither strength
+uniform float exposure2, contrast, saturation, warmth, vignette, scanline;
+varying vec2 vUv;
+
+// The GS dither matrix (DIMX) is a 4x4 of values in -4..3 applied before the
+// framebuffer write.  This game ships DTHE=0 so it is off on hardware; it is
+// here as a knob because it is the classic PS2 banding remedy.
+float dimx(vec2 p) {
+  int x = int(mod(p.x, 4.0)), y = int(mod(p.y, 4.0));
+  float m[16];
+  m[0]=-4.0; m[1]= 0.0; m[2]=-3.0; m[3]= 1.0;
+  m[4]= 2.0; m[5]=-2.0; m[6]= 3.0; m[7]=-1.0;
+  m[8]=-3.0; m[9]= 1.0; m[10]=-4.0; m[11]=0.0;
+  m[12]=3.0; m[13]=-1.0; m[14]=2.0; m[15]=-2.0;
+  int i = y * 4 + x;
+  for (int k = 0; k < 16; k++) if (k == i) return m[k];
+  return 0.0;
+}
+
+void main() {
+  vec2 uv = (vUv - 0.5) / fit + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
+  }
+  // sharp-bilinear: ease within each texel so the upscale keeps hard pixel
+  // edges without the stair-stepping of pure nearest.  Derivative-free, so it
+  // needs no GLSL ES extension.
+  vec2 t = uv / texel;
+  vec2 snapped = (floor(t) + smoothstep(0.0, 1.0, fract(t))) * texel;
+  vec3 c = texture2D(tex, mix(uv, snapped, sharp)).rgb;
+
+  c = c * exposure2;
+  c = (c - 0.5) * contrast + 0.5;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, saturation);
+  c *= vec3(1.0 + warmth * 0.12, 1.0, 1.0 - warmth * 0.12);
+
+  if (bits < 7.5) {
+    float steps = pow(2.0, bits) - 1.0;
+    c += dimx(gl_FragCoord.xy) / 255.0 * dither;
+    c = floor(c * steps + 0.5) / steps;
+  }
+  if (scanline > 0.0) {
+    float s = 1.0 - scanline * 0.5 * (1.0 - cos(uv.y * 3.14159 * 2.0 * ${RT_H}.0));
+    c *= s;
+  }
+  if (vignette > 0.0) {
+    vec2 d = (vUv - 0.5) * 2.0;
+    c *= mix(1.0, 1.0 - vignette, clamp(dot(d, d) * 0.55, 0.0, 1.0));
+  }
+  gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+
+const FX = {
+  native: 1, sharp: 1, bits: 8, dither: 0,
+  exposure2: 1, contrast: 1, saturation: 1, warmth: 0, vignette: 0, scanline: 0,
+};
+const postMat = new THREE.RawShaderMaterial({
+  vertexShader: POST_V, fragmentShader: POST_F,
+  depthTest: false, depthWrite: false,
+  uniforms: {
+    tex: { value: rt.texture },
+    fit: { value: new THREE.Vector2(1, 1) },
+    texel: { value: new THREE.Vector2(1 / RT_W, 1 / RT_H) },
+    sharp: { value: FX.sharp }, bits: { value: FX.bits },
+    dither: { value: FX.dither }, exposure2: { value: FX.exposure2 },
+    contrast: { value: FX.contrast }, saturation: { value: FX.saturation },
+    warmth: { value: FX.warmth }, vignette: { value: FX.vignette },
+    scanline: { value: FX.scanline },
+  },
+});
+const postScene = new THREE.Scene();
+const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
+
+// The PS2 output is 4:3 regardless of the 512x224 buffer shape, so the target
+// is stretched to 4:3 and letterboxed into whatever the canvas happens to be.
+const OUT_ASPECT = 4 / 3;
+function fitOutput(w, h) {
+  const f = postMat.uniforms.fit.value;
+  if (!FX.native) { f.set(1, 1); return; }     // full-res: fill, no letterbox
+  const a = w / h;
+  if (a > OUT_ASPECT) { f.set(OUT_ASPECT / a, 1); } else { f.set(1, a / OUT_ASPECT); }
+}
+
+// The post pass runs in both modes.  In PS2 mode the target is the GS's own
+// 512x224; in Modern mode it matches the canvas, so with the Look panel at its
+// defaults the pass is a straight copy and bypass really is bypass.
+function sizeTarget(w, h) {
+  const tw = FX.native ? RT_W : Math.max(1, Math.round(w * renderer.getPixelRatio()));
+  const th = FX.native ? RT_H : Math.max(1, Math.round(h * renderer.getPixelRatio()));
+  // A render target's texture is owned by three; `needsUpdate` on it would try
+  // to re-upload image data it does not have.  Changing the filter means
+  // disposing so the target is rebuilt on the next render.
+  const wantMag = FX.native ? THREE.NearestFilter : THREE.LinearFilter;
+  if (rt.width !== tw || rt.height !== th || rt.texture.magFilter !== wantMag) {
+    rt.texture.magFilter = wantMag;
+    rt.dispose();
+    rt.setSize(tw, th);
+  }
+  postMat.uniforms.texel.value.set(1 / tw, 1 / th);
+}
+
+// ------------------------------------------------------------------- camera
+const camPos = S.camera ? f32(S.camera.position) : null;
+const camTgt = S.camera ? f32(S.camera.target) : null;
+const camFov = S.camera ? f32(S.camera.fov) : null;
+const camRoll = S.camera ? f32(S.camera.roll) : null;
+let sceneCam = true;
+const orbit = { yaw: 0.5, pitch: 0.18, dist: 90, target: new THREE.Vector3(0, 12, -20) };
+
+function applyCamera(frame) {
+  if (sceneCam && camPos) {
+    const i = Math.max(0, Math.min(S.camera.frames - 1, Math.round(frame) - 1));
+    camera.position.set(camPos[i*3], camPos[i*3+1], camPos[i*3+2]);
+    camera.fov = camFov[i] || 40;
+    camera.up.set(0, 1, 0);
+    camera.lookAt(camTgt[i*3], camTgt[i*3+1], camTgt[i*3+2]);
+    if (camRoll[i]) camera.rotateZ(camRoll[i]);
+  } else {
+    const cp = Math.cos(orbit.pitch), sp = Math.sin(orbit.pitch);
+    camera.position.set(orbit.target.x + orbit.dist * cp * Math.sin(orbit.yaw),
+                        orbit.target.y + orbit.dist * sp,
+                        orbit.target.z + orbit.dist * cp * Math.cos(orbit.yaw));
+    camera.fov = 45;
+    camera.up.set(0, 1, 0);
+    camera.lookAt(orbit.target);
+  }
+  camera.updateProjectionMatrix();
+  placeCameraLights();
+}
+
+// ELF 0x001D44B0 rebuilds a parented light every frame as
+// `camera_rotation * offset + eye`.  The offset's x runs along -right:
+// measured against a PCSX2 frame, `joyu`'s (10, -5, 0) at e001 7422 lands at
+// (4.140, 5.258, -37.819), which `eye - 10*R - 5*U` reproduces to 5e-5.
+const _lr = new THREE.Vector3(), _lu = new THREE.Vector3(), _lf = new THREE.Vector3();
+function placeCameraLights() {
+  let any = false;
+  for (const l of pts) if (l.cam) any = true;
+  if (!any) return;
+  camera.updateMatrixWorld();
+  const e = camera.matrixWorld.elements;
+  _lr.set(e[0], e[1], e[2]);
+  _lu.set(e[4], e[5], e[6]);
+  _lf.set(-e[8], -e[9], -e[10]);          // three's camera looks down its -Z
+  for (const l of pts) {
+    if (!l.cam) continue;
+    l.p.copy(camera.position)
+       .addScaledVector(_lr, -l.off.x)
+       .addScaledVector(_lu, l.off.y)
+       .addScaledVector(_lf, l.off.z);
+  }
+}
+
+// -------------------------------------------------------------------- audio
+const sounds = {};
+for (const k in S.sounds) {
+  const a = new Audio(); a.src = S.sounds[k]; a.preload = 'auto'; sounds[k] = a;
+}
+const bgm = sounds['@bgm'] || null;
+const bgmStart = (S.bgm.find(b => b[1] === 'start') || [1])[0];
+const bgmStop = (S.bgm.find(b => b[1] === 'stop') || [1e9])[0];
+let muted = false, spoken = -1;
+
+function syncAudio(frame, playing, seeked) {
+  if (bgm) {
+    const want = (frame - bgmStart) / S.fps;
+    if (playing && !muted && want >= 0 && frame < bgmStop) {
+      bgm.volume = 0.45;
+      if (bgm.paused) { bgm.currentTime = Math.max(0, want); bgm.play().catch(() => {}); }
+      else if (seeked || Math.abs(bgm.currentTime - want) > 0.4)
+        bgm.currentTime = Math.max(0, want);
+    } else if (!bgm.paused) bgm.pause();
+  }
+  if (seeked) {
+    for (const k in sounds) if (k !== '@bgm') { sounds[k].pause(); sounds[k].currentTime = 0; }
+    spoken = -1;
+    for (let i = 0; i < S.subtitles.length; i++)
+      if (S.subtitles[i].frame <= frame) spoken = i;
+  }
+  if (!playing || muted) return;
+  for (let i = 0; i < S.subtitles.length; i++) {
+    const s = S.subtitles[i];
+    if (i > spoken && frame >= s.frame) {
+      spoken = i;
+      const a = s.voice && sounds[s.voice];
+      if (a) { a.currentTime = 0; a.play().catch(() => {}); }
+    }
+  }
+}
+
+// ----------------------------------------------------------------- overlays
+const elSpk = document.getElementById('spk'), elTxt = document.getElementById('txt');
+const barT = document.querySelector('#bars .t'), barB = document.querySelector('#bars .b');
+const elFade = document.getElementById('fade');
+function overlays(frame) {
+  let cur = null;
+  for (const s of S.subtitles) if (frame >= s.frame && frame < s.end) cur = s;
+  elSpk.textContent = cur ? cur.speaker : '';
+  elTxt.textContent = cur ? cur.lines.join('\n') : '';
+  barT.style.height = barB.style.height = '9%';
+  let o = 0;
+  for (const [f, kind, len] of S.fades) {
+    if (frame < f) continue;
+    const k = Math.min(1, (frame - f) / Math.max(1, len));
+    o = (kind === 'out') ? k : 1 - k;
+  }
+  elFade.style.opacity = o.toFixed(3);
+}
+
+// --------------------------------------------------------------------- loop
+let frame = 1, playing = false, last = performance.now(), seeked = true;
+const seek = document.getElementById('seek');
+seek.max = S.duration;
+const elTime = document.getElementById('time');
+const playBtn = document.getElementById('play');
+const fmt = (f) => {
+  const s = f / S.fps;
+  return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+};
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (playing) {
+    frame += dt * S.fps;
+    if (frame >= S.duration) { frame = S.duration; playing = false; playBtn.textContent = 'Play'; }
+    seek.value = Math.round(frame);
+  }
+  for (const inst of drawables) {
+    const on = frame >= inst.ent.start && M.visibleAt(inst.ent, frame);
+    for (const m of inst.models) m.group.visible = on;
+    if (on && !inst.posed) poseInstance(inst, frame);
+  }
+  applyCamera(frame);
+  for (const mat of allMaterials) mat.uniforms.eye.value.copy(camera.position);
+  overlays(frame);
+  syncAudio(frame, playing, seeked);
+  seeked = false;
+  elTime.textContent = fmt(frame) + ' / ' + fmt(S.duration) + '  f' + Math.round(frame);
+  renderer.setRenderTarget(rt);
+  renderer.render(world, camera);
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCam);
+}
+
+// -------------------------------------------------------------------- input
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  // the scene camera is authored for a 4:3 screen; in native mode keep that
+  // and letterbox, otherwise fill the canvas
+  camera.aspect = FX.native ? OUT_ASPECT : w / h;
+  camera.updateProjectionMatrix();
+  sizeTarget(w, h);
+  fitOutput(w, h);
+}
+addEventListener('resize', resize); resize();
+
+function reseek(v) {
+  frame = Math.max(1, Math.min(S.duration, v));
+  seek.value = Math.round(frame); seeked = true;
+  for (const i of drawables) i.posed = false;
+}
+playBtn.onclick = () => {
+  playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Play';
+  if (!playing && bgm) bgm.pause();
+};
+seek.oninput = () => reseek(+seek.value);
+const camBtn = document.getElementById('camBtn');
+camBtn.onclick = () => {
+  sceneCam = !sceneCam;
+  camBtn.classList.toggle('on', sceneCam);
+  camBtn.textContent = sceneCam ? 'Scene cam' : 'Free cam';
+};
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.onclick = () => {
+  muted = !muted;
+  muteBtn.classList.toggle('on', muted);
+  muteBtn.textContent = muted ? 'Muted' : 'Mute';
+  if (muted) for (const k in sounds) sounds[k].pause();
+};
+addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); playBtn.click(); }
+  if (e.code === 'ArrowRight') reseek(frame + (e.shiftKey ? 300 : 30));
+  if (e.code === 'ArrowLeft') reseek(frame - (e.shiftKey ? 300 : 30));
+});
+let drag = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  drag = { x: e.clientX, y: e.clientY };
+  if (sceneCam) camBtn.click();
+});
+addEventListener('pointerup', () => { drag = null; });
+addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  orbit.yaw -= (e.clientX - drag.x) * 0.006;
+  orbit.pitch = Math.max(-1.2, Math.min(1.2, orbit.pitch + (e.clientY - drag.y) * 0.005));
+  drag = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  orbit.dist = Math.max(4, Math.min(800, orbit.dist * (1 + Math.sign(e.deltaY) * 0.12)));
+}, { passive: false });
+
+// ----------------------------------------------------------------- look panel
+const fxPanel = document.getElementById('fx');
+const SLIDERS = [
+  ['native', 'Native 512x224', 0, 1, 1],
+  ['sharp', 'Sharp upscale', 0, 1, 0.01],
+  ['bits', 'Colour bits', 3, 8, 1],
+  ['dither', 'GS dither', 0, 3, 0.1],
+  ['exposure2', 'Exposure', 0.2, 3, 0.01],
+  ['contrast', 'Contrast', 0.5, 2, 0.01],
+  ['saturation', 'Saturation', 0, 2, 0.01],
+  ['warmth', 'Warmth', -1, 1, 0.01],
+  ['vignette', 'Vignette', 0, 1, 0.01],
+  ['scanline', 'Scanlines', 0, 1, 0.01],
+];
+fxPanel.innerHTML = '<h4>Look</h4>' + SLIDERS.map(([k, label, lo, hi, st]) =>
+  '<label><span>' + label + '</span><input data-k="' + k + '" type="range" min="' + lo +
+  '" max="' + hi + '" step="' + st + '" value="' + FX[k] + '"><b>' + FX[k] + '</b></label>'
+).join('');
+fxPanel.addEventListener('input', (e) => {
+  const k = e.target.dataset.k;
+  if (!k) return;
+  FX[k] = parseFloat(e.target.value);
+  e.target.nextElementSibling.textContent = FX[k];
+  if (postMat.uniforms[k]) postMat.uniforms[k].value = FX[k];
+  if (k === 'native') resize();
+});
+// A single switch for the whole PS2 emulation: shading model, alpha rule,
+// sampler filtering and output resolution all move together.
+function applyMode() {
+  for (const mat of allMaterials) mat.uniforms.ps2.value = PS2 ? 1 : 0;
+  for (const t of allTextures) {
+    t.minFilter = PS2 ? THREE.LinearFilter : THREE.LinearMipmapLinearFilter;
+    t.anisotropy = PS2 ? 1 : renderer.capabilities.getMaxAnisotropy();
+    t.needsUpdate = true;
+  }
+  FX.native = PS2 ? 1 : 0;
+  const nat = fxPanel.querySelector('input[data-k="native"]');
+  if (nat) { nat.value = FX.native; nat.nextElementSibling.textContent = FX.native; }
+  resize();
+}
+const modeBtn = document.getElementById('modeBtn');
+modeBtn.onclick = () => {
+  PS2 = !PS2;
+  modeBtn.textContent = PS2 ? 'PS2' : 'Modern';
+  modeBtn.classList.toggle('on', PS2);
+  applyMode();
+};
+
+document.getElementById('fxBtn').onclick = (e) => {
+  fxPanel.classList.toggle('on');
+  e.target.classList.toggle('on', fxPanel.classList.contains('on'));
+};
+
+requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

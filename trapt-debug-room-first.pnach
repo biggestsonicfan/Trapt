@@ -1,0 +1,71 @@
+gametitle=Trapt / Kagero II: Dark Illusion
+comment=Makes every main room load its debug script, so the first room you enter is already the debug room.
+
+// ===========================================================================
+//  TRAPT - DEBUG ROOM FROM THE FIRST ROOM YOU ENTER
+// ===========================================================================
+//  Rename to <CRC>.pnach (or <CRC>_debugroom.pnach if your PCSX2 build globs
+//  extra pnach files) and drop it in PCSX2's "cheats" folder.
+//
+//  DO NOT enable this together with trapt-debug-scripts.pnach. This patch
+//  removes the read of g_debugRoom entirely, so that cheat becomes a no-op.
+//
+//  WHY A CODE HOOK
+//  ---------------
+//  g_debugRoom (0x00482998) is a single global, so a constant write pins the
+//  debug script to ONE room id -- if the game drops you somewhere else first,
+//  you get the wrong room's debug script. To have the debug room be whatever
+//  room you enter (including the very first one), the override has to read the
+//  live room id instead of the global.
+//
+//  The engine already exposes it:
+//      FUN_002E5DB0 @ 0x002E5DB0 :  lw  v0, -0x7678(gp)   ; g_sceneMgr @ 0x00482A78
+//      FUN_002E4480 @ 0x002E4480 :  lh  v0, 0x12C(a0)     ; sceneMgr->roomId
+//  That id is the same numbering IsMainRoom (0x002940E0) and FormatRoomName
+//  (0x00294140) use -- the flow state machine at 0x00168FC0 reads it via
+//  FUN_002E4480 and hands it straight to IsMainRoom.
+//
+//  THE PATCH  (3 words inside OverrideWithDebugScript @ 0x00224E50)
+//  ---------------------------------------------------------------
+//    addr      original    patched     disassembly
+//    00224E54  2402FFFF -> 8F828988    lw   v0, -0x7678(gp)   ; v0 = g_sceneMgr
+//    00224E6C  8F9088A8 -> 8450012C    lh   s0, 0x12C(v0)     ; s0 = current room id
+//    00224E70  16020003 -> 10000003    b    0x00224E80        ; skip the "== -1" test
+//
+//  Why this is safe:
+//    * 0x00224E54 held "addiu v0,zero,-1", used only as the -1 comparand for
+//      the bne we are removing. v0 is not touched again before 0x00224E6C
+//      (only sd/sq spills and "move s2,a0" sit in between).
+//    * s0 is spilled at 0x00224E68 (sq s0,0x0(sp)) before we clobber it.
+//    * 0x00224E74 "move s1,a1" (size arg) still executes -- it is now the
+//      delay slot of the new unconditional branch.
+//    * 0x00224E78/0x00224E7C ("b epilogue" / "addiu v0,zero,-1") are left
+//      intact; they are the branch target of the IsMainRoom-failed test at
+//      0x00224E88, so rooms without a debug script fall back to the normal
+//      b%03devent script exactly as before.
+//
+//  RESULT
+//  ------
+//  Any room in 1-10 / 21-26 / 41-46 loads DATA/SCRIPT/<room>DEBUG.ARC instead
+//  of its story event script, from the moment you first enter it. Passage and
+//  corridor rooms (rh11-rh18, rp11-rp16, rc08-rc15) have no debug script, so
+//  IsMainRoom rejects them and they behave normally.
+//
+//  Static ELF equivalents (LOAD maps vaddr 0x00100000 -> file offset 0x80):
+//      0x00224E54 -> file 0x00124ED4
+//      0x00224E6C -> file 0x00124EEC
+//      0x00224E70 -> file 0x00124EF0
+//
+//  CAVEAT: the three patch words are verified against the disassembly, but the
+//  assumption that sceneMgr->roomId (+0x12C) is already populated at the moment
+//  the event script is set up is inferred from the load order in FUN_00168FC0,
+//  not observed at runtime. If a room comes up with the wrong debug script,
+//  fall back to trapt-debug-scripts.pnach and set the id by hand.
+// ===========================================================================
+
+
+[Debug room: follow the current room]
+description=Replaces the g_debugRoom lookup with the live scene-manager room id, so every main room loads its *DEBUG.ARC script.
+patch=1,EE,00224E54,word,8F828988
+patch=1,EE,00224E6C,word,8450012C
+patch=1,EE,00224E70,word,10000003

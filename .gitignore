@@ -1,0 +1,28 @@
+# --- Game data (copyrighted, huge) ---
+*.zip
+*.iso
+*.bin
+*.cue
+*.elf
+
+# --- Generated output ---
+out/
+.scratch/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- External clone (has its own .git) ---
+hkmodd/
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Claude Code local state ---
+.claude/settings.local.json

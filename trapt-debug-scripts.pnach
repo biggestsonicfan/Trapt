@@ -1,0 +1,93 @@
+gametitle=Trapt / Kagero II: Dark Illusion
+comment=Enables the retail build's dormant debug-script switch.
+
+// ===========================================================================
+//  TRAPT - DEBUG SCRIPT SWITCH
+// ===========================================================================
+//  Rename this file to <CRC>.pnach and drop it in PCSX2's "cheats" folder.
+//  Get <CRC> from the PCSX2 game list (CRC column) or the console log line
+//  "ELF (cdrom0:\SLUS_212.55;1) CRC=0x........".
+//
+//  WHAT THIS DOES
+//  --------------
+//  The engine builds every filename at runtime in lowercase, uppercases it,
+//  then binary-searches the disc TOC baked into the ELF at 0x0036A0F0.
+//
+//  When a room's event script is set up, both loaders
+//      FUN_001DC110 @ 0x001DC110   (run script)
+//      FUN_001DC420 @ 0x001DC420   (load "data/script/<name>.arc")
+//  first build the normal name "b%03devent" (e.g. rc01 -> "b215event"),
+//  then call the override at 0x00224E50:
+//
+//      int OverrideWithDebugScript(char *nameBuf, uint size)
+//      {
+//          int room = g_debugRoom;                 // 0x00482998
+//          if (room == -1 || !IsMainRoom(room)) return -1;   // name untouched
+//          FormatRoomName(room, nameBuf, size);    // -> "rc01"
+//          strcat(nameBuf, "debug");               // -> "rc01debug"
+//          return len + 5;
+//      }
+//
+//  So the room's story event script is replaced by DATA/SCRIPT/RC01DEBUG.ARC.
+//  The debug script is also what pulls in DATA/COMMON/DEBUG.ARC and the
+//  DEBUG/CONE|CYLINDER|SPHERE|DUMMY_MODEL primitives, via the script's own
+//  load-file opcode (FUN_001C8260, "data/%s" + .ssc/.tm2/.smi/.sai/.cam/.arc).
+//
+//  g_debugRoom (0x00482998, gp-0x7758, gp=0x0048A0F0) lives in .bss and is
+//  written in exactly ONE place: the tail of a static constructor at
+//  0x0046E7A4-0x0046E7AC, which stores -1. Nothing else ever touches it, so
+//  a continuous write is enough to turn the feature on.
+//
+//  VALID ROOM IDs (IsMainRoom @ 0x002940E0 accepts only these; they are
+//  exactly the 22 rooms that have a *DEBUG.ARC on disc):
+//      rh01..rh10  =  1 ..10   (0x01..0x0A)   RH01DEBUG..RH10DEBUG
+//      rp01..rp06  = 21 ..26   (0x15..0x1A)   RP01DEBUG..RP06DEBUG
+//      rc01..rc06  = 41 ..46   (0x29..0x2E)   RC01DEBUG..RC06DEBUG
+//
+//  Name is built as sprintf("r%c%02d", "hpcg?t"[id/20], id%20).
+//
+//  NOTE: g_debugRoom is global, not per-room. Whatever id you set here is
+//  used in EVERY room you enter, so pick the room you are actually standing
+//  in. If you want it to follow the current room automatically, use
+//  trapt-debug-room-first.pnach instead (do not enable both).
+// ===========================================================================
+
+
+[Debug script: rc01 (Castle Entrance)]
+description=Loads DATA/SCRIPT/RC01DEBUG.ARC in place of the room's event script.
+patch=1,EE,00482998,word,00000029
+
+//  --- swap the line above for one of these to pick a different room ---
+//
+//  rh01  patch=1,EE,00482998,word,00000001
+//  rh02  patch=1,EE,00482998,word,00000002
+//  rh03  patch=1,EE,00482998,word,00000003
+//  rh04  patch=1,EE,00482998,word,00000004
+//  rh05  patch=1,EE,00482998,word,00000005
+//  rh06  patch=1,EE,00482998,word,00000006
+//  rh07  patch=1,EE,00482998,word,00000007
+//  rh08  patch=1,EE,00482998,word,00000008
+//  rh09  patch=1,EE,00482998,word,00000009
+//  rh10  patch=1,EE,00482998,word,0000000A
+//  rp01  patch=1,EE,00482998,word,00000015
+//  rp02  patch=1,EE,00482998,word,00000016
+//  rp03  patch=1,EE,00482998,word,00000017
+//  rp04  patch=1,EE,00482998,word,00000018
+//  rp05  patch=1,EE,00482998,word,00000019
+//  rp06  patch=1,EE,00482998,word,0000001A
+//  rc01  patch=1,EE,00482998,word,00000029
+//  rc02  patch=1,EE,00482998,word,0000002A
+//  rc03  patch=1,EE,00482998,word,0000002B
+//  rc04  patch=1,EE,00482998,word,0000002C
+//  rc05  patch=1,EE,00482998,word,0000002D
+//  rc06  patch=1,EE,00482998,word,0000002E
+//
+//  --- alternative: patch the constructor instead of forcing the variable ---
+//  Changes "addiu v1,zero,-1" to "addiu v1,zero,41" so the global initialises
+//  to rc01. Must be place 0 (applied at ELF load) because the constructor runs
+//  before the first vsync.
+//
+//      patch=0,EE,0046E7A4,word,24030029
+//
+//  Static ELF equivalent: file offset 0x36E824, 24 03 FF FF -> 24 03 00 29
+//  (LOAD segment maps vaddr 0x00100000 to file offset 0x80).

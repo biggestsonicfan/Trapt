@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "pcsx2": {
+      "command": "node",
+      "args": [
+        "C:/Users/bigge/source/repos/ai/Trapt/hkmodd/PCSX2-MCP/pcsx2-mcp-server/dist/index.js"
+      ]
+    }
+  }
+}
