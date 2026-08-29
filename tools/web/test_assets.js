@@ -23,6 +23,12 @@ const tm2 = require('./tm2.js');
 const smi = require('./smi.js');
 const model_ = require('./model.js');
 const saiMod = require('./sai.js');
+const sscMod = require('./ssc.js');
+const cam = require('./cam.js');
+const sceneMod = require('./scene.js');
+const play = require('./play.js');
+const arcMod = arc;
+const ssc = sscMod;
 
 const ISO = process.argv[2]
   || 'E:/Seagate/OpenSuseBack/Emulators/PS2EMU/Trapt (USA).iso';
@@ -63,13 +69,23 @@ function stubThree() {
     setIndex(a) { this.index = a; }
     computeVertexNormals() { this.computed = true; }
   }
+  class Vec3 {
+    constructor() { this.x = 0; this.y = 0; this.z = 0; }
+    set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+  }
   class Group {
-    constructor() { this.children = []; }
+    constructor() {
+      this.children = []; this.visible = true; this.position = new Vec3();
+    }
     add(c) { this.children.push(c); }
   }
   return {
     BufferAttribute, BufferGeometry, Group,
-    Mesh: class { constructor(g, m) { this.geometry = g; this.material = m; } },
+    Mesh: class {
+      constructor(g, m) {
+        this.geometry = g; this.material = m; this.visible = true;
+      }
+    },
     Color: class { constructor(r, g, b) { this.r = r; this.g = g; this.b = b; } },
     DataTexture: class {
       constructor(d, w, h, f) { this.image = { data: d, width: w, height: h }; }
@@ -404,6 +420,245 @@ async function main() {
     console.log('        %d meshes, radius %s, centre %s',
                 group.children.length, b.radius.toFixed(1),
                 b.center.map((c) => c.toFixed(1)).join(', '));
+  }
+
+  // ------------------------------------------------------- script and camera
+  console.log('SSC bytecode, against tools/ssc.py');
+  {
+    const blob = await disc.read('DATA/RT/E001/RT_E001.ARC');
+    const mem = new Map(arc.entries(blob).map((e) => [e.name.toLowerCase(), e]));
+    const tracks = [...mem.keys()].filter((n) => n.endsWith('.ssc')).sort();
+    const PY_SSC = [
+      'import arc, json, scene, ssc',
+      'd = scene.Disc()',
+      'blob = d.read("DATA/RT/E001/RT_E001.ARC")',
+      'mem = {n.lower(): (o, s) for n, o, s in arc.entries(blob)}',
+      'out = {}',
+      'for name in sorted(k for k in mem if k.endswith(".ssc")):',
+      '    o, s = mem[name]',
+      '    calls = []',
+      '    for off, op, args in ssc.parse(blob[o:o+s]):',
+      '        if op is None:',
+      '            calls.append([off, None, None, args])',
+      '            continue',
+      '        a = []',
+      '        for x in args:',
+      '            if isinstance(x, bytes): a.append(ssc.sj(x))',
+      '            elif isinstance(x, tuple) and x[0] == "c2": a.append([x[1], x[2]])',
+      '            elif isinstance(x, tuple) and x[0] == "c4": a.append(["c4", x[1]])',
+      '            else: a.append(x)',
+      '        calls.append([off, op[0], op[1], a])',
+      '    out[name] = calls',
+      'print(json.dumps(out))',
+    ].join('\n');
+    const pySsc = python(PY_SSC);
+
+    let mismatch = null, totalCalls = 0;
+    for (const name of tracks) {
+      const e = mem.get(name);
+      const calls = ssc.parse(blob.subarray(e.offset, e.offset + e.size));
+      const want = pySsc[name];
+      totalCalls += calls.length;
+      if (calls.length !== want.length) {
+        mismatch = name + ': ' + calls.length + ' calls vs ' + want.length;
+        break;
+      }
+      for (let i = 0; i < calls.length && !mismatch; i++) {
+        const g = calls[i], w = want[i];
+        const ga = g.args.map((x) => (x && typeof x === 'object'
+          ? ('den' in x ? [x.num, x.den] : ['c4', x.c4]) : x));
+        if (g.offset !== w[0] || g.op !== w[1]
+            || (g.op !== null && g.flag !== w[2])
+            || JSON.stringify(ga) !== JSON.stringify(w[3]))
+          mismatch = name + ' call ' + i + ': ' + JSON.stringify([g.offset, g.op, ga])
+                   + ' vs ' + JSON.stringify(w);
+      }
+      if (mismatch) break;
+    }
+    check(tracks.length + ' tracks, ' + totalCalls + ' calls, identical to ssc.py',
+          mismatch, null);
+  }
+
+  console.log('CAM tracks, against tools/cam.py');
+  {
+    const blob = await disc.read('DATA/RT/E001/RT_E001.ARC');
+    const mem = new Map(arc.entries(blob).map((e) => [e.name.toLowerCase(), e]));
+    const e = mem.get('e001.cam');
+    const track = cam.parse(blob.subarray(e.offset, e.offset + e.size));
+    const PY_CAM = [
+      'import arc, cam, json, scene',
+      'd = scene.Disc()',
+      'blob = d.read("DATA/RT/E001/RT_E001.ARC")',
+      'mem = {n.lower(): (o, s) for n, o, s in arc.entries(blob)}',
+      'o, s = mem["e001.cam"]',
+      't = cam.parse(blob[o:o+s])',
+      'frames = [1, 100.5, 4670, 7800, 7910, t.duration()]',
+      'print(json.dumps({',
+      '  "duration": t.duration(),',
+      '  "widths": [None if c is None else c.width for c in t.channels],',
+      '  "keys": [0 if c is None else len(c.times) for c in t.channels],',
+      '  "samples": [[round(v, 4) if not isinstance(v, tuple)',
+      '               else [round(x, 4) for x in v]',
+      '               for k, v in sorted(t.sample(f).items())] for f in frames],',
+      '  "frames": frames}))',
+    ].join('\n');
+    const w = python(PY_CAM);
+    check('duration and channel widths',
+          [track.duration(), track.channels.map((c) => (c ? c.width : null)),
+           track.channels.map((c) => (c ? c.times.length : 0))],
+          [w.duration, w.widths, w.keys]);
+    let worst = 0;
+    w.frames.forEach((f, i) => {
+      const s = track.sample(f);
+      const got = Object.keys(s).sort().map((k) => s[k]);
+      const want = w.samples[i];
+      for (let j = 0; j < want.length; j++) {
+        const a = got[j], b = want[j];
+        if (Array.isArray(b))
+          for (let c = 0; c < b.length; c++) worst = Math.max(worst, Math.abs(a[c] - b[c]));
+        else worst = Math.max(worst, Math.abs(a - b));
+      }
+    });
+    check('sampled identically at ' + w.frames.length + ' frames', worst < 1e-3, true);
+    console.log('        %s frames, worst delta %s',
+                track.duration(), worst.toExponential(1));
+  }
+
+  // ------------------------------------------------------------- the timeline
+  // The interpreter is where a cutscene stops being a bag of files: which
+  // actor wears which model, plays which clip when, in which room, under which
+  // camera.  Every field here is one the player reads directly.
+  console.log('the scene timeline, against tools/scene.py');
+  for (const cutscene of ['e001', 'e009', 'e401_01']) {
+    const up = cutscene.toUpperCase();
+    const blob = await disc.read('DATA/RT/' + up + '/RT_' + up + '.ARC');
+    const assets = arcMod.members(blob);
+    const built = sceneMod.compile(cutscene, assets);
+
+    const PY_SCENE = [
+      'import json, scene',
+      'd = scene.Disc()',
+      's = scene.load("' + cutscene + '", d)',
+      'print(json.dumps({',
+      '  "room": s.room, "duration": s.duration, "camera": s.camera_file,',
+      '  "fog": list(s.fog) if s.fog else None,',
+      '  "bgm": [[f, k, i] for f, k, i in s.bgm],',
+      '  "fades": [[f, k, n] for f, k, n in s.fades],',
+      '  "letterbox": [[f, k, n] for f, k, n in s.letterbox],',
+      '  "subtitles": [[x.frame, x.speaker, x.lines, x.voice] for x in s.subtitles],',
+      '  "entities": [{"track": e.track, "kind": e.kind, "label": e.label,',
+      '                "models": e.models, "render": e.render_models,',
+      '                "clips": [[f, n] for f, n in e.clips],',
+      '                "start": e.start, "end": e.end,',
+      '                "root_bone": e.root_bone, "light": e.light,',
+      '                "transform": list(e.transform) if e.transform else None,',
+      '                "scale": list(e.scale) if e.scale else None,',
+      '                "vis": [[f, bool(v)] for f, v in e.visibility]}',
+      '               for e in s.entities]}))',
+    ].join('\n');
+    const w = python(PY_SCENE);
+
+    check(cutscene + ': room, duration and camera',
+          [built.room, built.duration, built.cameraFile],
+          [w.room, w.duration, w.camera]);
+    check(cutscene + ': bgm, fades and letterbox',
+          [built.bgm, built.fades, built.letterbox], [w.bgm, w.fades, w.letterbox]);
+    check(cutscene + ': ' + built.subtitles.length + ' subtitle cues',
+          built.subtitles.map((s) => [s.frame, s.speaker, s.lines, s.voice]),
+          w.subtitles);
+    check(cutscene + ': ' + built.entities.length + ' entities',
+          built.entities.length, w.entities.length);
+
+    const diffs = [];
+    built.entities.forEach((e, i) => {
+      const x = w.entities[i];
+      if (!x) { diffs.push('missing ' + i); return; }
+      const mine = {
+        track: e.track, kind: e.kind, label: e.label, models: e.models,
+        render: sceneMod.renderModels(e), clips: e.clips, start: e.start,
+        end: e.end, root_bone: e.rootBone, light: e.light,
+        transform: e.transform, scale: e.scale, vis: e.visibility,
+      };
+      if (JSON.stringify(mine) !== JSON.stringify(x))
+        diffs.push({ i: i, got: mine, want: x });
+    });
+    check(cutscene + ': every entity identical', diffs.slice(0, 1), []);
+    console.log('        room %s, %d frames, %d entities, %d cues, camera %s',
+                built.room, built.duration, built.entities.length,
+                built.subtitles.length, built.cameraFile);
+  }
+
+  // --------------------------------------------------------- the whole scene
+  // Assembling a cutscene is where every port meets: the script names actors,
+  // the actors name rigs and clips, the rigs name textures, and the room and
+  // camera come from somewhere else again.  A stub THREE is enough to check
+  // that all of it resolves and that posing at a frame actually moves things.
+  console.log('a whole cutscene assembled, against tools/scene.py');
+  for (const cutscene of ['e001', 'e009']) {
+    const built = await play.assemble(THREE, disc, cutscene);
+    const s = built.scene;
+
+    check(cutscene + ': assembled with no missing assets', built.warnings, []);
+    check(cutscene + ': has a camera track and a room',
+          [!!built.camera, !!built.room], [true, true]);
+
+    // every actor the timeline draws got geometry
+    const drawn = s.entities.filter(
+      (e) => e.kind === 4 && sceneMod.renderModels(e).length);
+    check(cutscene + ': ' + built.actors.length + ' actors built',
+          built.actors.length,
+          drawn.reduce((n, e) => n + sceneMod.renderModels(e).length, 0));
+
+    // and every clip the timeline names resolved to a parsable SAI
+    let clips = 0, unresolved = [];
+    for (const actor of built.actors)
+      for (const [, file] of actor.entity.clips) {
+        clips++;
+        if (!built.clipFor(actor, file)) unresolved.push(file);
+      }
+    check(cutscene + ': ' + clips + ' clip references all resolve',
+          [...new Set(unresolved)].slice(0, 3), []);
+
+    // The camera track ends a few frames before the scene does -- the last
+    // events are the letterbox closing -- and sampling past the end clamps.
+    const camDur = built.camera.duration();
+    check(cutscene + ': camera spans the scene and clamps past its end',
+          [camDur > s.duration * 0.9, camDur <= s.duration,
+           built.camera.sample(s.duration + 500).position.every(isFinite)],
+          [true, true, true]);
+
+    // posing has to actually differ frame to frame, and the camera with it
+    const frames = [1, Math.round(s.duration / 3), Math.round(s.duration / 2),
+                    s.duration - 1];
+    const eyes = [], moved = [];
+    for (const f of frames) {
+      const before = built.actors.map(
+        (a) => a.group.children.map((c) => c.geometry.attributes.position.array[1]));
+      const r = play.poseAt(built, f);
+      eyes.push(r.camera.position.map((v) => Math.round(v * 100) / 100));
+      const after = built.actors.map(
+        (a) => a.group.children.map((c) => c.geometry.attributes.position.array[1]));
+      moved.push(JSON.stringify(before) !== JSON.stringify(after));
+    }
+    check(cutscene + ': the camera moves across the scene',
+          new Set(eyes.map(JSON.stringify)).size > 1, true);
+    check(cutscene + ': posing changes the geometry', moved.slice(1).some(Boolean),
+          true);
+
+    // the overlay state the page draws
+    const mid = play.poseAt(built, s.subtitles.length ? s.subtitles[0].frame : 1);
+    check(cutscene + ': the first cue is on screen at its own frame',
+          s.subtitles.length ? mid.subtitle === s.subtitles[0] : true, true);
+    // `0x57 (0, 1)` on frame 1 starts the tween there, so it reads 0 at the
+    // event's own frame and is fully seated one frame later.
+    check(cutscene + ': the letterbox slides in over frame 1',
+          [play.poseAt(built, 1).letterbox, play.poseAt(built, 3).letterbox],
+          [0, 1]);
+
+    console.log('        %d actors, %d clips, room %s, camera %s frames, '
+                + '%d cues, %d entities',
+                built.actors.length, clips, s.room, camDur,
+                s.subtitles.length, s.entities.length);
   }
 
   console.log('the decoders refuse what they should');

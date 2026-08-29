@@ -49,6 +49,18 @@
   #view.grabbing canvas { cursor: grabbing; }
   #vinfo { position: absolute; left: 10px; bottom: 8px; font: 11.5px ui-monospace,
     monospace; opacity: .5; pointer-events: none; }
+  #lbTop, #lbBot { position: absolute; left: 0; right: 0; background: #000;
+    height: 0; pointer-events: none; z-index: 2; }
+  #lbTop { top: 0; } #lbBot { bottom: 0; }
+  #fade { position: absolute; inset: 0; background: #000; opacity: 0;
+    pointer-events: none; z-index: 3; }
+  #subs { position: absolute; left: 0; right: 0; bottom: 9%; text-align: center;
+    z-index: 4; pointer-events: none; display: none; padding: 0 8%;
+    text-shadow: 0 2px 6px #000, 0 0 3px #000; }
+  #subs .spk { color: #d8b06a; font-weight: 600; font-size: 12px;
+    letter-spacing: .05em; }
+  #subs .txt { font-size: clamp(13px, 1.5vw, 19px); white-space: pre-line;
+    line-height: 1.35; }
   #transport { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
   #transport button { background: #232329; color: inherit; border: 1px solid #34343c;
     border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
@@ -96,7 +108,11 @@
 <script src="smi.js"></script>
 <script src="sai.js"></script>
 <script src="../vendor/three.min.js"></script>
+<script src="ssc.js"></script>
+<script src="cam.js"></script>
+<script src="scene.js"></script>
 <script src="model.js"></script>
+<script src="play.js"></script>
 <script>
 'use strict';
 const drop = document.getElementById('drop');
@@ -108,6 +124,7 @@ let DISC = null;
 let CUR = null;      // the archive currently open
 let V = null;        // the three.js viewer, created once
 let M = null;        // the model on screen, and its clip
+let S = null;        // the whole cutscene, when one is playing
 
 function row(label, value, cls) {
   const d = document.createElement('div');
@@ -172,7 +189,10 @@ async function openCutscene(name, path, el) {
   el.classList.add('on');
   detail.innerHTML =
       '<h2>' + name + '</h2><div id="members">reading…</div>'
-    + '<div id="view"><div id="vinfo"></div></div>'
+    + '<div id="view">'
+    + '<div id="lbTop"></div><div id="lbBot"></div>'
+    + '<div id="subs"></div><div id="fade"></div>'
+    + '<div id="vinfo"></div></div>'
     + '<div id="transport"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
 
@@ -227,6 +247,13 @@ async function openCutscene(name, path, el) {
     + ' Mpx decoded in ' + decode.toFixed(0) + ' ms';
 
   const models = document.getElementById('models');
+  const playChip = document.createElement('div');
+  playChip.className = 'cut';
+  playChip.style.background = '#3a5a8a';
+  playChip.style.borderColor = '#4a72ad';
+  playChip.textContent = '▶ play the whole scene';
+  playChip.onclick = () => playScene(name);
+  models.appendChild(playChip);
   const smis = ents.filter((e) => e.name.toLowerCase().endsWith('.smi'));
   for (const e of smis) {
     const chip = document.createElement('div');
@@ -311,6 +338,9 @@ function bindOrbit(host) {
   });
   host.addEventListener('pointermove', (e) => {
     if (!drag) return;
+    if (S) { S.sceneCam = false;
+             const b = document.getElementById('camBtn');
+             if (b) b.textContent = 'Free cam'; }
     V.orbit.yaw -= (e.clientX - drag.x) * 0.008;
     V.orbit.pitch = Math.max(-1.4, Math.min(1.4,
       V.orbit.pitch + (e.clientY - drag.y) * 0.006));
@@ -323,6 +353,15 @@ function bindOrbit(host) {
 }
 
 function showModel(entry, chip) {
+  S = null;                                   // leave scene mode
+  const subs = document.getElementById('subs');
+  if (subs) subs.style.display = 'none';
+  for (const id of ['lbTop', 'lbBot']) {
+    const el = document.getElementById(id);
+    if (el) el.style.height = '0';
+  }
+  const fade = document.getElementById('fade');
+  if (fade) fade.style.opacity = '0';
   const models = document.getElementById('models');
   for (const c of models.querySelectorAll('.cut.on')) c.classList.remove('on');
   if (chip) chip.classList.add('on');
@@ -459,6 +498,134 @@ function info() {
     + ' · drag to orbit, wheel to zoom';
 }
 
+// ------------------------------------------------------------- scene mode
+// The whole cutscene: room, cast, camera, subtitles and letterbox, assembled
+// from the disc by play.js and driven here.
+async function playScene(name) {
+  M = null;                                   // leave single-model mode
+  const vinfo = document.getElementById('vinfo');
+  const clips = document.getElementById('clips');
+  const models = document.getElementById('models');
+  if (clips) clips.innerHTML = '';
+  if (models) models.innerHTML = '';
+  ensureViewer();
+  vinfo.textContent = 'assembling ' + name + '…';
+
+  const t0 = performance.now();
+  let built;
+  try {
+    built = await TraptPlay.assemble(THREE, DISC, name,
+      (msg) => { vinfo.textContent = name + ': ' + msg + '…'; });
+  } catch (err) {
+    vinfo.textContent = name + ': ' + err.message;
+    return;
+  }
+  const load = performance.now() - t0;
+
+  if (V.group) V.scene.remove(V.group);
+  V.group = built.root;
+  V.scene.add(built.root);
+
+  // Frame the room, not the cast: the camera track works in room space.
+  const box = new THREE.Box3().setFromObject(built.root);
+  const c = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  V.orbit.target = [c.x, c.y, c.z];
+  V.orbit.dist = Math.max(size.x, size.y, size.z) * 1.4 || 10;
+
+  S = { built: built, frame: 1, playing: true, ms: 0, load: load,
+        name: name, sceneCam: true };
+  sceneTransport();
+  sceneInfo();
+}
+
+function sceneTransport() {
+  const t = document.getElementById('transport');
+  if (!S) { t.innerHTML = ''; return; }
+  t.innerHTML = '<button id="playBtn"></button>'
+              + '<button id="camBtn"></button>'
+              + '<input id="seek" type="range" min="1" step="1">'
+              + '<span id="fnum"></span>';
+  const btn = document.getElementById('playBtn');
+  const cam = document.getElementById('camBtn');
+  const seek = document.getElementById('seek');
+  seek.max = S.built.scene.duration;
+  seek.value = S.frame;
+  btn.textContent = S.playing ? 'Pause' : 'Play';
+  btn.onclick = () => {
+    S.playing = !S.playing;
+    btn.textContent = S.playing ? 'Pause' : 'Play';
+  };
+  cam.textContent = S.sceneCam ? 'Scene cam' : 'Free cam';
+  cam.onclick = () => {
+    S.sceneCam = !S.sceneCam;
+    cam.textContent = S.sceneCam ? 'Scene cam' : 'Free cam';
+  };
+  seek.oninput = () => {
+    S.frame = +seek.value;
+    S.playing = false;
+    document.getElementById('playBtn').textContent = 'Play';
+  };
+}
+
+function sceneInfo() {
+  if (!S) return;
+  const s = S.built.scene;
+  document.getElementById('vinfo').textContent =
+    S.name + ' · room ' + s.room + ' · ' + S.built.actors.length + ' actors, '
+    + s.entities.length + ' entities, ' + s.subtitles.length + ' cues, '
+    + s.duration + ' frames · assembled in ' + S.load.toFixed(0) + ' ms · '
+    + 'pose ' + S.ms.toFixed(1) + ' ms/frame'
+    + (S.built.warnings.length ? ' · ' + S.built.warnings.length + ' warnings' : '')
+    + ' · drag to orbit (switches to free cam)';
+}
+
+/** Camera, subtitle and letterbox for the current frame. */
+function applySceneFrame() {
+  const t0 = performance.now();
+  const r = TraptPlay.poseAt(S.built, S.frame);
+  S.ms = S.ms * 0.9 + (performance.now() - t0) * 0.1;
+
+  if (r.camera && S.sceneCam) {
+    const p = r.camera.position, t = r.camera.target;
+    if (p) V.camera.position.set(p[0], p[1], p[2]);
+    if (t) V.camera.lookAt(t[0], t[1], t[2]);
+    if (r.camera.fov) {
+      V.camera.fov = r.camera.fov;
+      V.camera.updateProjectionMatrix();
+    }
+    V.key.position.copy(V.camera.position);
+  }
+
+  const subs = document.getElementById('subs');
+  if (r.subtitle) {
+    subs.style.display = 'block';
+    subs.innerHTML = '';
+    if (r.subtitle.speaker) {
+      const sp = document.createElement('div');
+      sp.className = 'spk';
+      sp.textContent = r.subtitle.speaker;
+      subs.appendChild(sp);
+    }
+    const tx = document.createElement('div');
+    tx.className = 'txt';
+    tx.textContent = r.subtitle.lines.join('\n');
+    subs.appendChild(tx);
+  } else {
+    subs.style.display = 'none';
+  }
+
+  // 50 and 110 units of the game's 640x448 UI space, as fractions of height
+  document.getElementById('lbTop').style.height = (r.letterbox * 50 / 448 * 100) + '%';
+  document.getElementById('lbBot').style.height = (r.letterbox * 110 / 448 * 100) + '%';
+  document.getElementById('fade').style.opacity = r.fade.toFixed(3);
+
+  const fnum = document.getElementById('fnum');
+  if (fnum) fnum.textContent = Math.round(S.frame) + ' / ' + S.built.scene.duration;
+  const seek = document.getElementById('seek');
+  if (seek && S.playing) seek.value = Math.round(S.frame);
+}
+
 function tick() {
   requestAnimationFrame(tick);
   const now = performance.now();
@@ -466,6 +633,15 @@ function tick() {
   V.last = now;
   if (!V || !V.group) return;
 
+  if (S) {
+    if (S.playing) {
+      S.frame += dt * 60;                     // the game runs these at 60 fps
+      if (S.frame > S.built.scene.duration) S.frame = 1;
+    }
+    applySceneFrame();
+    if (V.sceneTick === undefined) V.sceneTick = 0;
+    if ((V.sceneTick = (V.sceneTick + 1) % 30) === 0) sceneInfo();
+  }
   if (M && M.clip && M.playing) {
     M.frame += dt * 60;                       // the game runs these at 60 fps
     if (M.frame > M.clip.duration) M.frame = 0;
@@ -483,6 +659,7 @@ function tick() {
     if ((V.frameTick = (V.frameTick + 1) % 30) === 0) info();
   }
 
+  if (S && S.sceneCam) { V.renderer.render(V.scene, V.camera); return; }
   const o = V.orbit;
   const cp = Math.cos(o.pitch);
   V.camera.position.set(
