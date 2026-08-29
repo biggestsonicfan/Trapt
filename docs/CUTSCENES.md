@@ -235,6 +235,34 @@ Two more opcodes those tracks use turned out to need nothing: `0xA6` shares the
 expression-family handler `FUN_001C7240`, and `0x01` is `FUN_001C8C70`, a
 single `jr ra` — a genuine no-op.
 
+### 4.1c `0x83`'s fourth argument is usually a blend, once an offset
+
+`play_anim_entity` normally carries a `C2` rational there. Across the whole
+disc it is a rational **588 times** and a `C1` integer **once**:
+
+```
+rt_e001_c21m.ssc  @8430  play_anim_entity ['c21m_b_e001.sai', 1, 0, 8431, 0]
+```
+
+8431 is the frame it was issued on. That clip runs the **full 11890 frames** —
+the length of the cutscene — because it is authored in absolute scene time, and
+the game hides the body outside its own shots by **sinking it under the floor**:
+
+| clip frame | `koshi` Y |
+|---|---|
+| 0 | −18.89 |
+| 8431 | +1.11 |
+| 9000 | −18.89 |
+
+`knife_a_e001.sai` does the same, parked at y = −20 until it is used. The knife
+looks right anyway because its block starts at frame 0, so clip time and scene
+time coincide. The corpse's block starts at 8430, so playing from clip frame 0
+samples the under-floor pose and the body is never seen — while the knife, the
+same trick, is fine. That is the whole of the bug.
+
+So the integer is a **start offset into the clip**, and `poseAt` samples
+`frame - clip.start + offset`. Only this one clip on the disc uses it.
+
 ### 4.1b `0x63` — room-section culling, not yet implemented
 
 `FUN_001C5810` indexes a string table at `0x00376A30` — `IF_north`, `IF_south`,

@@ -150,7 +150,14 @@ function run(scene, trackName, blob, frameBase, origin) {
       trackVis.push([frame, !((int(args[0]) & VIS_HIDDEN) && int(args[1]))]);
     } else if (entity !== null) {
       if (code === OP_MODEL) entity.models.push(args[0]);
-      else if (code === OP_ANIM) entity.clips.push([frame, args[0]]);
+      // arg[3] is a C2 rational (a blend) 588 times on the disc and a C1
+      // integer exactly once: c21m_b_e001.sai at 8430, carrying 8431.  That
+      // clip is authored in absolute scene time -- it runs the full 11890
+      // frames and parks the body at y=-18.9, under the floor, outside its
+      // own window -- so the integer is where in the clip to start.
+      else if (code === OP_ANIM)
+        entity.clips.push([frame, args[0],
+          args.length > 3 && typeof args[3] === 'number' ? args[3] : 0]);
       else if (code === OP_ROOT_BONE) entity.rootBone = args[0];
       else if (code === OP_ATTACH)
         entity.attachments.push([args[0], args[1],
@@ -200,7 +207,7 @@ function mergeMasterClips(scene) {
     }
     if (!owner) continue;
     if (!owner.clips.some((c) => c[0] === ev.frame && c[1] === name))
-      owner.clips.push([ev.frame, name]);
+      owner.clips.push([ev.frame, name, 0]);
   }
   for (const e of scene.entities)
     e.clips.sort((a, b) => (a[0] - b[0]) || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
@@ -267,8 +274,8 @@ function renderModels(entity) {
 /** Which clip is running at `frame`, or null. */
 function clipAt(entity, frame) {
   let best = null;
-  for (const [start, file] of entity.clips)
-    if (start <= frame) best = { start: start, file: file };
+  for (const [start, file, offset] of entity.clips)
+    if (start <= frame) best = { start: start, file: file, offset: offset || 0 };
   return best;
 }
 

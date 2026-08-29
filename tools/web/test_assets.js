@@ -522,7 +522,7 @@ async function main() {
       '  "subtitles": [[x.frame, x.speaker, x.lines, x.voice] for x in s.subtitles],',
       '  "entities": [{"track": e.track, "kind": e.kind, "label": e.label,',
       '                "models": e.models, "render": e.render_models,',
-      '                "clips": [[f, n] for f, n in e.clips],',
+      '                "clips": [[f, n, o] for f, n, o in e.clips],',
       '                "start": e.start, "end": e.end,',
       '                "root_bone": e.root_bone, "light": e.light,',
       '                "transform": list(e.transform) if e.transform else None,',
@@ -586,6 +586,28 @@ async function main() {
             stab.map((f) => f.track), ['ef_e001_30', 'ef_e001_31']);
       check('e001: at the frames the script names',
             stab.map((f) => f.frame), [8270, 8431]);
+      // The king's corpse.  0x67 drops the living block at 8430 and a new one
+      // attaches c21m_b_h.smi, whose clip runs the full 11890 frames in
+      // absolute scene time: outside its own window it parks koshi at
+      // y = -18.9, under the floor.  Played from clip frame 0 the body spends
+      // the whole scene beneath the stage while the knife, whose block starts
+      // at frame 0, looks correct.  The 8431 in 0x83's fourth argument is what
+      // says otherwise, and it is the only integer in that slot on the disc.
+      const corpse = s.entities.find(
+        (e) => e.models.indexOf('c21m_b_h.smi') >= 0);
+      check('e001: the corpse block exists', !!corpse, true);
+      check('e001: and starts at the frame 0x67 dropped the living king',
+            corpse.start, 8430);
+      check('e001: its clip carries the absolute-time offset',
+            corpse.clips.map((c) => c[2]), [8431]);
+      const at = sceneMod.clipAt(corpse, 8500);
+      check('e001: so frame 8500 samples clip frame 8501, not 70',
+            8500 - at.start + at.offset, 8501);
+      // Every other clip on the disc has a rational there, which is a blend.
+      const others = s.entities.reduce(
+        (n, e) => n + e.clips.filter((c) => c[2]).length, 0);
+      check('e001: and nothing else claims an offset', others, 1);
+
       const placed = s.entities.filter((e) => e.origin);
       check('e001: every effect block carries its spawn origin',
             placed.length, 6);

@@ -218,8 +218,12 @@ function poseAt(built, frame) {
     if (!cur) continue;
     const clip = built.clipFor(actor, cur.file);
     if (!clip) continue;
-    // A clip restarts from the frame the timeline started it on.
-    const local = frame - cur.start;
+    // A clip restarts from the frame the timeline started it on, unless
+    // 0x83 named a start offset -- see scene.js.  The corpse in e001 is the
+    // only case on the disc, and without it the body spends the scene
+    // nineteen units under the floor while the knife, whose block starts at
+    // frame 0, looks right.
+    const local = frame - cur.start + (cur.offset || 0);
     const mats = saiMod.worldMatrices(actor.model, clip, local);
     const skinned = saiMod.skin(actor.model, mats);
     for (const child of actor.group.children) {

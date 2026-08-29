@@ -102,7 +102,7 @@ class Entity:
         self.root_bone = None
         self.transform = None     # (x, y, z, w)
         self.scale = None         # scale on a model, colour on a light
-        self.clips = []           # [(frame, 'x.sai')]
+        self.clips = []           # [(frame, 'x.sai', clip_offset)]
         self.visibility = []      # [(frame, bool)]
         self.light = None         # 'directional' | 'point' | 'ambient'
         self.light_range = None   # (near, far)
@@ -140,7 +140,7 @@ class Entity:
     def clip_at(self, frame):
         """The clip playing at `frame`, as ``(start_frame, filename)``."""
         current = None
-        for start, filename in self.clips:
+        for start, filename, _off in self.clips:
             if start <= frame:
                 current = (start, filename)
         return current
@@ -382,7 +382,15 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             if code == OP_MODEL:
                 entity.models.append(ssc.sj(args[0]))
             elif code == OP_ANIM:
-                entity.clips.append((frame, ssc.sj(args[0])))
+                # arg[3] is a C2 rational (a blend) 588 times on the disc
+                # and a C1 integer exactly once: c21m_b_e001.sai at 8430,
+                # carrying 8431.  That clip is authored in absolute scene
+                # time -- it runs the full 11890 frames and parks the body
+                # at y=-18.9, under the floor, outside its own window -- so
+                # the integer is where in the clip to start.  Play it from 0
+                # and the corpse stays under the stage all scene.
+                off = args[3] if len(args) > 3 and isinstance(args[3], int) else 0
+                entity.clips.append((frame, ssc.sj(args[0]), off))
             elif code == OP_ROOT_BONE:
                 entity.root_bone = ssc.sj(args[0])
             elif code == OP_ATTACH:
@@ -430,7 +438,7 @@ def _merge_master_clips(scene):
     by_family = {}
     by_model = {}
     for e in scene.entities:
-        for _, name in e.clips:
+        for _, name, _off in e.clips:
             by_family.setdefault(_family(name), e)
         for m in e.models:
             by_model.setdefault(m.rsplit('.', 1)[0], e)
@@ -446,8 +454,10 @@ def _merge_master_clips(scene):
                           if stem.startswith(key) or key.startswith(stem)), None)
         if owner is None:
             continue
-        if (frame, name) not in owner.clips:
-            owner.clips.append((frame, name))
+        # Compare on (frame, name) only: the clips now carry a third field
+        # and a 2-tuple would never match one, duplicating every merge.
+        if not any(f == frame and n == name for f, n, _ in owner.clips):
+            owner.clips.append((frame, name, 0))
     for e in scene.entities:
         e.clips.sort()
 
