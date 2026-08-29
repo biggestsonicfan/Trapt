@@ -346,6 +346,59 @@ Note on the request that prompted this: three.js compiles **GLSL ES 3.0**
 GLSL — the same code you would write for Vulkan minus the descriptor-set
 decorations.
 
+### The CRT stage -- newpixie
+
+The post pass emulates the console. `crt/newpixie-crt` from RetroArch's
+slang-shaders emulates the display it was plugged into, and is ported in
+`gs.js` as `CRT_ACC_F`, `CRT_BLUR_F` and `CRT_F`. It is off by default and
+behind the **CRT** button.
+
+    newpixie CRT, by Mattias Gustavsson; adapted for slang by hunterk.
+    Copyright (c) 2016 Mattias Gustavsson, dual licensed MIT / Unlicense.
+
+The order matters and is the physical one -- a signal leaving a console and
+arriving at a tube -- so the CRT consumes the post pass rather than replacing
+it. All four upstream passes are here:
+
+| pass | scale | what it does |
+|---|---|---|
+| accumulate | source | `max(prev * modulate, src * 0.96)`; phosphor persistence, so it reads the target it wrote last frame |
+| blur horiz | source | 9-tap gaussian |
+| blur vert | source | the same, transposed |
+| newpixie-crt | viewport | curvature, ghosting off the blur, scanlines, shadow mask, filmic tone map, noise, flicker |
+
+The first three run at the framebuffer's own size -- 512x224 in PS2 mode -- so
+only the last is full-viewport. Accumulate ping-pongs between two targets
+because a shader cannot sample the target it is drawing into.
+
+**The letterbox moves when the CRT is on.** Whoever draws to the canvas owns
+it: normally that is the post pass, but with the CRT on the post pass is
+drawing into a target, and pillarbox bars baked into that target would sit
+*inside* the tube and get curved, scanlined and vignetted along with the
+picture. So `fitOutput()` hands `fit` to whichever pass reaches the canvas
+last.
+
+Two upstream things are deliberately missing. `use_frame` composites a bezel
+photograph (`crtframe.png`) over the result; it defaults to off upstream, and
+this page ships no binary assets. And upstream's `tsample` takes `offs` and
+`resolution` arguments its body never reads, so they are dropped.
+
+The controls are newpixie's own `#pragma parameter` ranges:
+
+| control | default | upstream name |
+|---|---|---|
+| Curvature | 2.0 | `curvature` |
+| Ghosting | 1.0 | `ghosting` |
+| Vignette | 1.0 | `vignette` |
+| Interference | 0 | `wiggle_toggle` |
+| Rolling lines | 1 | `scanroll` |
+| Persistence | 0.65 | `acc_modulate` |
+| Ghost blur | 1.0 | `blur_x` / `blur_y` |
+
+`test_shader.js` compiles all seven shaders with `glslangValidator` when one is
+on the `PATH`, and skips that section when there is not -- a shader that fails
+to compile shows up in a browser as a black canvas and nothing else.
+
 ---
 
 ## 5. What is faithful, and what is not

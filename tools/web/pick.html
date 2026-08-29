@@ -66,8 +66,10 @@
     line-height: 1.35; }
   #look { position: absolute; right: 10px; top: 10px; width: 232px; z-index: 5;
     background: #16161ae8; border: 1px solid #2e2e36; border-radius: 8px;
-    padding: 8px 10px; display: none; }
+    padding: 8px 10px; display: none;
+    max-height: calc(100% - 20px); overflow-y: auto; }
   #look.on { display: block; }
+  #look h4:not(:first-child) { margin-top: 14px; }
   #look h4 { margin: 2px 0 6px; font-size: 11px; letter-spacing: .08em;
     text-transform: uppercase; opacity: .6; font-weight: 600; }
   #look label { display: flex; align-items: center; gap: 8px; margin: 4px 0;
@@ -632,8 +634,49 @@ function ensurePost() {
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), V.postMat);
   quad.frustumCulled = false;
   V.postScene.add(quad);
+  V.postQuad = quad;                   // the CRT chain swaps its material
+  V.crtQuad = quad;
   V.post = true;
   V.look = Object.assign({}, TraptGs.LOOK);
+  V.crtLook = Object.assign({}, TraptGs.CRT);
+}
+
+/**
+ * The newpixie targets, built on first use so the cost is only paid by
+ * someone who turns it on.  All four are the framebuffer's size; the CRT pass
+ * itself draws straight to the canvas.
+ */
+function ensureCrt() {
+  if (V.crt) return;
+  ensurePost();                        // V.rt is what the targets are sized to
+  const opt = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+                format: THREE.RGBAFormat, depthBuffer: false };
+  const w = V.rt.width, h = V.rt.height;
+  V.crtSrc = new THREE.WebGLRenderTarget(w, h, opt);
+  V.acc = [new THREE.WebGLRenderTarget(w, h, opt),
+           new THREE.WebGLRenderTarget(w, h, opt)];
+  V.accIdx = 0;
+  V.blurA = new THREE.WebGLRenderTarget(w, h, opt);
+  V.blurB = new THREE.WebGLRenderTarget(w, h, opt);
+  V.crt = TraptGs.makeCrt(THREE);
+  applyCrt();
+  fitOutput();
+}
+
+function setCrt(on) {
+  V.crtOn = on;
+  if (on) ensureCrt();
+  fitOutput();
+  const b = document.getElementById('crtBtn');
+  if (b) b.classList.toggle('on', !!on);
+  buildLookPanel();                    // the CRT sliders appear with it
+}
+
+function applyCrt() {
+  if (!V.crt) return;
+  for (const k in V.crtLook)
+    if (V.crt.crt.uniforms[k]) V.crt.crt.uniforms[k].value = V.crtLook[k];
+  V.crt.acc.uniforms.modulate.value = V.crtLook.modulate;
 }
 
 /** Size the render target and the letterboxing that keeps the 4:3 shape. */
@@ -652,12 +695,26 @@ function fitOutput() {
   // Native is anamorphic -- 512x224 stretched to 4:3 -- so it is pillarboxed
   // into the element to keep that shape.  Modern has no such obligation: it
   // renders at the element's own aspect and fills it.
+  let fx = 1, fy = 1;
   if (V.look.native) {
     const want = TraptGs.OUT_ASPECT, have = w / h;
-    V.postMat.uniforms.fit.value.set(
-      have > want ? want / have : 1, have > want ? 1 : have / want);
-  } else {
+    fx = have > want ? want / have : 1;
+    fy = have > want ? 1 : have / want;
+  }
+  // Whoever draws to the canvas owns the letterbox.  With the CRT on, the post
+  // pass is drawing into a target instead, and a target that is only part
+  // picture and part black bar would put the bars inside the tube -- curved,
+  // scanlined and vignetted along with the image.
+  if (V.crtOn && V.crt) {
     V.postMat.uniforms.fit.value.set(1, 1);
+    V.crt.crt.uniforms.fit.value.set(fx, fy);
+    const px = Math.min(devicePixelRatio, 2);
+    V.crt.crt.uniforms.resolution.value.set(
+      Math.max(1, Math.round(w * px * fx)), Math.max(1, Math.round(h * px * fy)));
+    for (const t of [V.crtSrc, V.acc[0], V.acc[1], V.blurA, V.blurB])
+      t.setSize(V.rt.width, V.rt.height);
+  } else {
+    V.postMat.uniforms.fit.value.set(fx, fy);
   }
 }
 
@@ -705,20 +762,44 @@ const LOOK_SLIDERS = [
   ['scanline', 'Scanlines', 0, 1, 0.01],
 ];
 
+// newpixie's own parameter ranges, from its #pragma parameter lines.
+const CRT_SLIDERS = [
+  ['curvature', 'Curvature', 0.0001, 4, 0.25],
+  ['ghosting', 'Ghosting', 0, 2, 0.1],
+  ['vignette', 'Vignette', 0, 1, 0.05],
+  ['wiggle', 'Interference', 0, 1, 1],
+  ['scanroll', 'Rolling lines', 0, 1, 1],
+  ['modulate', 'Persistence', 0, 1, 0.01],
+  ['blur', 'Ghost blur', 0, 5, 0.25],
+];
+
+function slider(k, label, lo, hi, st, val, group) {
+  return '<label><span>' + label + '</span><input data-k="' + k + '" data-g="'
+    + group + '" type="range" min="' + lo + '" max="' + hi + '" step="' + st
+    + '" value="' + val + '"><b>' + val + '</b></label>';
+}
+
 function buildLookPanel() {
   const panel = document.getElementById('look');
-  if (!panel || panel.dataset.built) return;
-  panel.dataset.built = '1';
-  panel.innerHTML = '<h4>Look</h4>' + LOOK_SLIDERS.map(
-    ([k, label, lo, hi, st]) =>
-      '<label><span>' + label + '</span><input data-k="' + k + '" type="range" min="'
-      + lo + '" max="' + hi + '" step="' + st + '" value="' + V.look[k]
-      + '"><b>' + V.look[k] + '</b></label>').join('');
+  if (!panel) return;
+  // Rebuilt rather than cached: the CRT half appears and disappears with the
+  // button, and its values have to reflect whatever the sliders were left at.
+  panel.innerHTML = '<h4>Look</h4>'
+    + LOOK_SLIDERS.map(([k, l, lo, hi, st]) => slider(k, l, lo, hi, st, V.look[k], 'look')).join('')
+    + (V.crtOn && V.crtLook
+        ? '<h4>newpixie CRT</h4>' + CRT_SLIDERS.map(
+            ([k, l, lo, hi, st]) => slider(k, l, lo, hi, st, V.crtLook[k], 'crt')).join('')
+        : '');
+  if (panel.dataset.wired) return;
+  panel.dataset.wired = '1';
   panel.addEventListener('input', (e) => {
     const k = e.target.dataset.k;
     if (!k) return;
-    V.look[k] = parseFloat(e.target.value);
-    e.target.nextElementSibling.textContent = V.look[k];
+    const crt = e.target.dataset.g === 'crt';
+    const bag = crt ? V.crtLook : V.look;
+    bag[k] = parseFloat(e.target.value);
+    e.target.nextElementSibling.textContent = bag[k];
+    if (crt) { applyCrt(); return; }
     applyLook();
     if (k === 'native') { fitOutput(); resize(); }
   });
@@ -1186,11 +1267,13 @@ function sceneTransport() {
               + '<button id="ps2Btn"></button>'
               + '<button id="subsBtn"></button>'
               + '<button id="muteBtn"></button>'
+              + '<button id="crtBtn">CRT</button>'
               + '<button id="lookBtn">Look</button>'
               + '<button id="fsBtn">Fullscreen</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
   document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
+  document.getElementById('crtBtn').onclick = () => setCrt(!V.crtOn);
   document.getElementById('subsBtn').onclick = () => {
     V.subsPick = !V.subsPs2;           // an explicit choice stops it following
     setSubsPs2(V.subsPick);
@@ -1432,9 +1515,56 @@ function drawFrame() {
     V.renderer.render(V.subScene, V.subCam);
     V.renderer.autoClear = true;
   }
-  V.renderer.setRenderTarget(null);
   V.postMat.uniforms.tex.value = V.rt.texture;
+  if (!V.crt || !V.crtOn) {
+    V.renderer.setRenderTarget(null);
+    V.renderer.render(V.postScene, V.postCam);
+    return;
+  }
+  // The post pass becomes the video signal rather than the picture: it lands
+  // in a target and the tube gets to it afterwards.
+  V.renderer.setRenderTarget(V.crtSrc);
   V.renderer.render(V.postScene, V.postCam);
+  drawCrt();
+}
+
+/**
+ * newpixie's four passes.  Three of them run at the framebuffer's own size --
+ * 512x224 in PS2 mode -- so the cost is one full-viewport pass plus change.
+ *
+ * accumulate reads what it wrote last frame, so it ping-pongs between two
+ * targets; a shader cannot sample the target it is drawing into.
+ */
+function drawCrt() {
+  const q = V.crtQuad, m = V.crt;
+  const prev = V.acc[V.accIdx], next = V.acc[V.accIdx ^ 1];
+
+  q.material = m.acc;
+  m.acc.uniforms.src.value = V.crtSrc.texture;
+  m.acc.uniforms.prev.value = prev.texture;
+  V.renderer.setRenderTarget(next);
+  V.renderer.render(V.postScene, V.postCam);
+
+  q.material = m.blur;
+  m.blur.uniforms.src.value = next.texture;
+  m.blur.uniforms.dir.value.set(V.crtLook.blur / next.width, 0);
+  V.renderer.setRenderTarget(V.blurA);
+  V.renderer.render(V.postScene, V.postCam);
+
+  m.blur.uniforms.src.value = V.blurA.texture;
+  m.blur.uniforms.dir.value.set(0, V.crtLook.blur / next.height);
+  V.renderer.setRenderTarget(V.blurB);
+  V.renderer.render(V.postScene, V.postCam);
+
+  q.material = m.crt;
+  m.crt.uniforms.backbuffer.value = next.texture;
+  m.crt.uniforms.blurbuffer.value = V.blurB.texture;
+  m.crt.uniforms.frame.value = (m.crt.uniforms.frame.value + 1) % 100000;
+  V.renderer.setRenderTarget(null);
+  V.renderer.render(V.postScene, V.postCam);
+
+  q.material = V.postMat;              // leave the quad as ensurePost left it
+  V.accIdx ^= 1;
 }
 </script>
 </body>

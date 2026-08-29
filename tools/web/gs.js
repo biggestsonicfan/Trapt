@@ -228,6 +228,220 @@ void main() {
   gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
 
+// ---------------------------------------------------------------- newpixie
+// RetroArch's crt/newpixie-crt, ported to GLSL ES 1.00.
+//
+//   newpixie CRT, by Mattias Gustavsson; adapted for slang by hunterk.
+//   Dual licensed MIT / public domain (Unlicense).  Copyright (c) 2016
+//   Mattias Gustavsson.  Upstream: libretro/slang-shaders crt/shaders/newpixie
+//
+// The .slangp is four passes and this is all four, in order: accumulate (a
+// feedback pass that decays the previous frame), a separable 9-tap blur run
+// horizontally then vertically, and the CRT itself, which samples the
+// accumulate output for the image and the blurred one for the ghosting.  The
+// first three run at the framebuffer's own size, which for us is 512x224, so
+// they cost almost nothing; only the last one is full-viewport.
+//
+// What sits in front of it is our own post pass, so the chain is: GS emulation
+// at 512x224 -> colour depth, dither and grade -> the CRT.  That order is the
+// physical one, a console's video signal arriving at a tube, and it is why the
+// CRT does not replace POST_F but consumes it.
+//
+// Two upstream things are deliberately not here.  `use_frame` composites a
+// bezel photograph (crtframe.png) over the result; it defaults to off, and the
+// whole point of this page is that it ships no binary assets.  And `tsample`
+// upstream takes `offs` and `resolution` arguments that its body never reads,
+// so they are dropped rather than carried.
+const CRT_ACC_F = `
+precision highp float;
+uniform sampler2D src;       // this frame, out of the post pass
+uniform sampler2D prev;      // what this pass produced last frame
+uniform float modulate;      // how much of the old frame survives
+varying vec2 vUv;
+void main() {
+  vec4 a = texture2D(prev, vUv) * modulate;
+  vec4 b = texture2D(src, vUv);
+  gl_FragColor = max(a, b * 0.96);
+}`;
+
+const CRT_BLUR_F = `
+precision highp float;
+uniform sampler2D src;
+uniform vec2 dir;            // (blur/width, 0) horizontally, (0, blur/height) vertically
+varying vec2 vUv;
+void main() {
+  vec4 sum = texture2D(src, vUv) * 0.2270270270;
+  sum += texture2D(src, vUv - 4.0 * dir) * 0.0162162162;
+  sum += texture2D(src, vUv - 3.0 * dir) * 0.0540540541;
+  sum += texture2D(src, vUv - 2.0 * dir) * 0.1216216216;
+  sum += texture2D(src, vUv - 1.0 * dir) * 0.1945945946;
+  sum += texture2D(src, vUv + 1.0 * dir) * 0.1945945946;
+  sum += texture2D(src, vUv + 2.0 * dir) * 0.1216216216;
+  sum += texture2D(src, vUv + 3.0 * dir) * 0.0540540541;
+  sum += texture2D(src, vUv + 4.0 * dir) * 0.0162162162;
+  gl_FragColor = sum;
+}`;
+
+const CRT_F = `
+precision highp float;
+uniform sampler2D backbuffer;   // the accumulate pass
+uniform sampler2D blurbuffer;   // the vertical blur
+uniform vec2 fit;               // letterbox, the same rule POST_F uses
+uniform vec2 resolution;        // the lit area, in device pixels
+uniform float frame;            // FrameCount upstream
+uniform float curvature, wiggle, scanroll, vignette, ghosting;
+varying vec2 vUv;
+
+vec3 tsample(sampler2D samp, vec2 tc) {
+  tc = tc * vec2(1.025, 0.92) + vec2(-0.0125, 0.04);
+  vec3 s = pow(abs(texture2D(samp, vec2(tc.x, 1.0 - tc.y)).rgb), vec3(2.2));
+  return s * vec3(1.25);
+}
+
+vec3 filmic(vec3 linearColor) {
+  vec3 x = max(vec3(0.0), linearColor - vec3(0.004));
+  return (x * (6.2 * x + 0.5)) / (x * (6.2 * x + 1.7) + 0.06);
+}
+
+vec2 curve(vec2 uv) {
+  uv = (uv - 0.5);
+  uv *= vec2(0.925, 1.095);
+  uv *= curvature;
+  uv.x *= 1.0 + pow((abs(uv.y) / 4.0), 2.0);
+  uv.y *= 1.0 + pow((abs(uv.x) / 3.0), 2.0);
+  uv /= curvature;
+  uv += 0.5;
+  uv = uv * 0.92 + 0.04;
+  return uv;
+}
+
+float rand(vec2 co) {
+  return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+  // Outside the 4:3 box there is no tube, so there is nothing to light.
+  vec2 box = (vUv - 0.5) / fit + 0.5;
+  if (box.x < 0.0 || box.x > 1.0 || box.y < 0.0 || box.y > 1.0) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return;
+  }
+  // Upstream's vertex stage flips y and tsample flips it back; keeping both
+  // halves means the asymmetric offsets inside tsample land where they do
+  // upstream instead of mirrored.
+  vec2 vTexCoord = vec2(box.x, 1.0 - box.y);
+  vec2 fragCoord = vTexCoord * resolution;
+
+  float time = mod(frame, 849.0) * 36.0;
+  vec2 uv = vTexCoord;
+
+  /* Curve */
+  vec2 curved_uv = mix(curve(uv), uv, 0.4);
+  float scale = -0.101;
+  vec2 scuv = curved_uv * (1.0 - scale) + scale / 2.0 + vec2(0.003, -0.001);
+  uv = scuv;
+
+  /* Main color, Bleed */
+  vec3 col;
+  float x = wiggle * sin(0.1 * time + curved_uv.y * 13.0)
+          * sin(0.23 * time + curved_uv.y * 19.0)
+          * sin(0.3 + 0.11 * time + curved_uv.y * 23.0) * 0.0012;
+  float o = sin(fragCoord.y * 1.5) / resolution.x;
+  x += o * 0.25;
+  time = float(mod(frame, 640.0));
+  col.r = tsample(backbuffer, vec2(x + scuv.x + 0.0009, scuv.y + 0.0009)).x + 0.02;
+  col.g = tsample(backbuffer, vec2(x + scuv.x + 0.0000, scuv.y - 0.0011)).y + 0.02;
+  col.b = tsample(backbuffer, vec2(x + scuv.x - 0.0015, scuv.y + 0.0000)).z + 0.02;
+  float i = clamp(col.r * 0.299 + col.g * 0.587 + col.b * 0.114, 0.0, 1.0);
+  i = pow(1.0 - pow(i, 2.0), 1.0);
+  i = (1.0 - i) * 0.85 + 0.15;
+
+  /* Ghosting */
+  float ghs = 0.15 * ghosting;
+  vec3 r = tsample(blurbuffer, vec2(x - 0.014, -0.027) * 0.85
+      + 0.007 * vec2(0.35 * sin(1.0 / 7.0 + 15.0 * curved_uv.y + 0.9 * time),
+                     0.35 * sin(2.0 / 7.0 + 10.0 * curved_uv.y + 1.37 * time))
+      + vec2(scuv.x + 0.001, scuv.y + 0.001)).xyz * vec3(0.5, 0.25, 0.25);
+  vec3 g = tsample(blurbuffer, vec2(x - 0.019, -0.020) * 0.85
+      + 0.007 * vec2(0.35 * cos(1.0 / 9.0 + 15.0 * curved_uv.y + 0.5 * time),
+                     0.35 * sin(2.0 / 9.0 + 10.0 * curved_uv.y + 1.50 * time))
+      + vec2(scuv.x + 0.000, scuv.y - 0.002)).xyz * vec3(0.25, 0.5, 0.25);
+  vec3 b = tsample(blurbuffer, vec2(x - 0.017, -0.003) * 0.85
+      + 0.007 * vec2(0.35 * sin(2.0 / 3.0 + 15.0 * curved_uv.y + 0.7 * time),
+                     0.35 * cos(2.0 / 3.0 + 10.0 * curved_uv.y + 1.63 * time))
+      + vec2(scuv.x - 0.002, scuv.y + 0.000)).xyz * vec3(0.25, 0.25, 0.5);
+
+  col += vec3(ghs * (1.0 - 0.299)) * pow(clamp(vec3(3.0) * r, vec3(0.0), vec3(1.0)), vec3(2.0)) * vec3(i);
+  col += vec3(ghs * (1.0 - 0.587)) * pow(clamp(vec3(3.0) * g, vec3(0.0), vec3(1.0)), vec3(2.0)) * vec3(i);
+  col += vec3(ghs * (1.0 - 0.114)) * pow(clamp(vec3(3.0) * b, vec3(0.0), vec3(1.0)), vec3(2.0)) * vec3(i);
+
+  /* Level adjustment (curves) */
+  col *= vec3(0.95, 1.05, 0.95);
+  col = clamp(col * 1.3 + 0.75 * col * col + 1.25 * col * col * col * col * col,
+              vec3(0.0), vec3(10.0));
+
+  /* Vignette */
+  float vig = ((1.0 - 0.99 * vignette)
+      + 16.0 * curved_uv.x * curved_uv.y * (1.0 - curved_uv.x) * (1.0 - curved_uv.y));
+  vig = 1.3 * pow(vig, 0.5);
+  col *= vig;
+
+  time *= scanroll;
+
+  /* Scanlines */
+  float scans = clamp(0.35 + 0.18 * sin(6.0 * time - curved_uv.y * resolution.y * 1.5), 0.0, 1.0);
+  float s = pow(scans, 0.9);
+  col = col * vec3(s);
+
+  /* Vertical lines (shadow mask) */
+  col *= 1.0 - 0.23 * (clamp((mod(fragCoord.x, 3.0)) / 2.0, 0.0, 1.0));
+
+  /* Tone map */
+  col = filmic(col);
+
+  /* Noise */
+  vec2 seed = curved_uv * resolution;
+  col -= 0.015 * pow(vec3(rand(seed + time), rand(seed + time * 2.0), rand(seed + time * 3.0)), vec3(1.5));
+
+  /* Flicker */
+  col *= (1.0 - 0.004 * (sin(50.0 * time + curved_uv.y * 2.0) * 0.5 + 0.5));
+
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+/** newpixie's own defaults, from the #pragma parameter lines upstream. */
+const CRT = {
+  on: 0, modulate: 0.65, blur: 1, curvature: 2, wiggle: 0, scanroll: 1,
+  vignette: 1, ghosting: 1,
+};
+
+/** The three materials of the CRT chain; the caller owns the targets. */
+function makeCrt(THREE) {
+  const flat = { depthTest: false, depthWrite: false, vertexShader: POST_V };
+  return {
+    acc: new THREE.RawShaderMaterial(Object.assign({}, flat, {
+      fragmentShader: CRT_ACC_F,
+      uniforms: { src: { value: null }, prev: { value: null },
+                  modulate: { value: CRT.modulate } },
+    })),
+    blur: new THREE.RawShaderMaterial(Object.assign({}, flat, {
+      fragmentShader: CRT_BLUR_F,
+      uniforms: { src: { value: null }, dir: { value: new THREE.Vector2() } },
+    })),
+    crt: new THREE.RawShaderMaterial(Object.assign({}, flat, {
+      fragmentShader: CRT_F,
+      uniforms: {
+        backbuffer: { value: null }, blurbuffer: { value: null },
+        fit: { value: new THREE.Vector2(1, 1) },
+        resolution: { value: new THREE.Vector2(RT_W, RT_H) },
+        frame: { value: 0 },
+        curvature: { value: CRT.curvature }, wiggle: { value: CRT.wiggle },
+        scanroll: { value: CRT.scanroll }, vignette: { value: CRT.vignette },
+        ghosting: { value: CRT.ghosting },
+      },
+    })),
+  };
+}
+
 // AREF is 120 of 128 on the opaque pass.  tm2.js already maps PS2 alpha
 // 0..0x80 onto 0..255, so the normalised threshold is the same number.
 const AREF_OPAQUE = 120 / 128;
@@ -357,6 +571,7 @@ function makePost(THREE) {
 
 const api = { VERT, FRAG, POST_V, POST_F, makeMaterial, makePost, lightsFor,
               defaultLights, cameraAspect, LOOK, AREF_OPAQUE,
+              CRT_ACC_F, CRT_BLUR_F, CRT_F, CRT, makeCrt,
               RT_W, RT_H, OUT_ASPECT };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptGs = api;

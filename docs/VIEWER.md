@@ -23,7 +23,8 @@ the subtitles between the game's own font, drawn into the 512x224 framebuffer
 the way the GS draws it, and plain DOM text; it follows the PS2/Modern button
 until you press it. **Letterbox** runs the script's own `0x57` bars, which is
 what the dialogue is meant to sit on (§1.5); it follows the PS2/Modern button
-too. **Look** opens a grading panel that works in either mode. These are
+too. **Look** opens a grading panel that works in either mode. **CRT** puts RetroArch's newpixie-crt in front of the
+output; see [`PS2SHADER.md`](PS2SHADER.md) §4. These are
 documented in [`PS2SHADER.md`](PS2SHADER.md) and [`FONT.md`](FONT.md).
 
 `e001` — the opening — exports in about 24 s to a 18 MB page: 13 models,

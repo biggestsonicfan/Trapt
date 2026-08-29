@@ -95,9 +95,17 @@ check('and tick fires it instead of looping',
       /if \(S\.onEnd\)/.test(fn('tick')));
 
 console.log('modern mode fills the element');
+const fo = fn('fitOutput');
 check('only native is pillarboxed to 4:3',
-      /if \(V\.look\.native\) \{[\s\S]*?OUT_ASPECT[\s\S]*?\} else \{[\s\S]*?fit\.value\.set\(1, 1\)/
-        .test(fn('fitOutput')));
+      /let fx = 1, fy = 1;[\s\S]*?if \(V\.look\.native\) \{[\s\S]*?OUT_ASPECT/.test(fo),
+      'modern renders at the element aspect and fills it');
+// With the CRT on, the post pass draws into a target rather than the canvas.
+// If it kept the letterbox, the black bars would be inside the tube and get
+// curved, scanlined and vignetted along with the picture.
+check('and the CRT takes the letterbox over when it is on',
+      /V\.crtOn && V\.crt[\s\S]*?postMat\.uniforms\.fit\.value\.set\(1, 1\)[\s\S]*?crt\.crt\.uniforms\.fit\.value\.set\(fx, fy\)/
+        .test(fo),
+      'the bars belong outside the tube, not in it');
 check('and the projection follows the same switch',
       fn('resize').includes('TraptGs.cameraAspect('));
 

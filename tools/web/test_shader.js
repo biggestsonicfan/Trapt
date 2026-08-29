@@ -84,6 +84,77 @@ const postMissing = postDeclared.filter((u) => !(u in post.uniforms));
 check(postDeclared.length + ' post uniforms, none missing', postMissing.length === 0,
       'missing: ' + postMissing.join(', '));
 
+console.log('the newpixie CRT chain');
+const crt = gs.makeCrt(THREE);
+for (const [src, name, mat] of [[gs.CRT_ACC_F, 'accumulate', crt.acc],
+                                [gs.CRT_BLUR_F, 'blur', crt.blur],
+                                [gs.CRT_F, 'crt', crt.crt]]) {
+  const want = [...src.matchAll(/uniform\s+\w+\s+([^;]+);/g)]
+    .flatMap((m) => m[1].split(',').map((s) => s.trim()));
+  const gone = want.filter((u) => !(u in mat.uniforms));
+  check(name + ': ' + want.length + ' uniforms, none missing', gone.length === 0,
+        'missing: ' + gone.join(', '));
+  // The upstream files are Vulkan GLSL.  Anything left of that vocabulary is
+  // a half-finished port that would only fail at shader compile time, in the
+  // browser, with the canvas simply black.
+  // \bFragColor rejects the slang output variable without rejecting
+  // gl_FragColor, where the preceding underscore is itself a word character.
+  const vulkan = [/#version/, /layout\s*\(/, /\bparams\./, /\bFragColor\b/,
+                  /vec4 Position/, /#pragma stage/, /\bPassFeedback/];
+  const left = vulkan.filter((t) => t.test(src));
+  check(name + ': nothing left of the slang original', left.length === 0,
+        'still present: ' + left.join(', '));
+  check(name + ': braces balance',
+        (src.match(/{/g) || []).length === (src.match(/}/g) || []).length);
+  // texture() is the GLSL 3.30+ spelling; WebGL1 needs texture2D().
+  check(name + ': samples with texture2D', !/[^2]\btexture\s*\(/.test(src));
+}
+
+// The numbers are the port's whole claim to fidelity, so they are asserted
+// rather than eyeballed.  Weights are upstream's 9-tap gaussian.
+const weights = [...gs.CRT_BLUR_F.matchAll(/\* (0\.\d+)/g)].map((m) => parseFloat(m[1]));
+check('the blur is 9 taps summing to 1', weights.length === 9
+      && Math.abs(weights.reduce((a, b) => a + b, 0) - 1) < 1e-6,
+      weights.length + ' taps, sum ' + weights.reduce((a, b) => a + b, 0));
+check('accumulate decays the new frame by 0.96', /b \* 0\.96/.test(gs.CRT_ACC_F));
+check('newpixie defaults match its #pragma parameter lines',
+      gs.CRT.modulate === 0.65 && gs.CRT.curvature === 2 && gs.CRT.ghosting === 1
+      && gs.CRT.vignette === 1 && gs.CRT.scanroll === 1 && gs.CRT.wiggle === 0
+      && gs.CRT.blur === 1);
+check('and it is off until asked for', gs.CRT.on === 0);
+// The bezel is the one upstream feature not ported; it needs crtframe.png and
+// this page ships no binary assets.  Say so out loud, so a later reader does
+// not go looking for a bug.
+check('the frame bezel is deliberately absent',
+      !/frametexture|use_frame/.test(gs.CRT_F));
+
+// Everything above is a text check.  If a real GLSL ES compiler is on the
+// PATH, use it: a shader that does not compile shows up in a browser as a
+// black canvas and nothing else, which is a miserable thing to debug.
+// glslangValidator ships with the Vulkan SDK and is absent on CI, so this
+// section reports itself as skipped rather than failing.
+const cp = require('child_process');
+const os = require('os');
+const probe = cp.spawnSync('glslangValidator', ['--version'], { encoding: 'utf8' });
+if (probe.error) {
+  console.log('GLSL ES 1.00 compile -- skipped, no glslangValidator on PATH');
+} else {
+  console.log('every shader compiles as GLSL ES 1.00');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trapt-glsl-'));
+  for (const [name, stage] of [['VERT', 'vert'], ['POST_V', 'vert'],
+                               ['FRAG', 'frag'], ['POST_F', 'frag'],
+                               ['CRT_ACC_F', 'frag'], ['CRT_BLUR_F', 'frag'],
+                               ['CRT_F', 'frag']]) {
+    const file = path.join(dir, name + '.' + stage);
+    // #version has to be the first line; the constants all start with one.
+    fs.writeFileSync(file, '#version 100\n' + gs[name]);
+    const r = cp.spawnSync('glslangValidator', [file], { encoding: 'utf8' });
+    check(name + ' compiles', r.status === 0, (r.stdout || '') + (r.stderr || ''));
+    fs.unlinkSync(file);
+  }
+  fs.rmdirSync(dir);
+}
+
 console.log('the material honours the material word');
 const blended = gs.makeMaterial(THREE, { blend: true, diffuse: [0, 0, 0, 128] }, {});
 check('a blended material never writes depth', blended.depthWrite === false);
