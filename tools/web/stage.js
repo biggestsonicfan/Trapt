@@ -339,6 +339,90 @@ async function cameraDefaults(disc) {
   return out;
 }
 
+// ------------------------------------------------------- stage id -> map id
+
+// The chapter tables name a *stage*, `M###.BIN` is indexed by a *map*, and
+// there are 26 of the first and 22 of the second, so the two are not the same
+// number.  Nothing in the ELF maps one to the other directly: the map index
+// reaches `FUN_002e4ed0` -- which builds `data/map_data/bin/m###.bin` out of
+// the 22-entry table at `0x00384190` -- as a plain integer argument to SSC
+// opcode `0x1E`, so it is a literal inside a *stage script*.
+//
+// The stage scripts are `DATA/SCRIPT/B<nn><v>EVENT.ARC` and there are exactly
+// **26** with a `B0`/`B1` prefix -- the stage count.  Each ships one
+// `evsub_<room>.ssc` per room it uses, so the archive names its own rooms and
+// the map falls out of matching that set against the 22 maps.  The match is
+// by subset, because a script lists rooms while a map also lists the passages
+// between them, and it is unique for all 26.
+//
+// Stage ids are assigned positionally: walk the chapters in order, giving
+// each as many scripts as it has stages.  That consumes exactly 26, and the
+// scripts' own two-digit prefix independently agrees with the chapter for 14
+// of the 15 -- chapter 15's single stage is `B143EVENT`, sharing the `14`
+// prefix, which is also why there is no `B15`.
+//
+// One ambiguity is left and it does not matter: chapter 10 lists its stages
+// as (17, 16), so which of `B100`/`B101` is which is a guess.  Both resolve
+// to the same map.
+
+const SCRIPT_RE = /B[01]\d\dEVENT\.ARC$/;
+const EVSUB_RE = /^evsub_(r[hpc]\d+)\.ssc$/;
+
+function stageScripts(disc) {
+  return disc.glob('DATA/SCRIPT/').filter((p) => SCRIPT_RE.test(p)).sort();
+}
+
+async function scriptRooms(disc, path) {
+  const blob = await disc.read(path);
+  const out = new Set();
+  if (!blob) return out;
+  let entries;
+  try { entries = arcMod.entries(blob); } catch (e) { return out; }
+  for (const e of entries) {
+    const m = EVSUB_RE.exec(e.name.toLowerCase());
+    if (m) out.add(m[1]);
+  }
+  return out;
+}
+
+/** Which map holds exactly, or contains, this room set: `{map, how}`. */
+function mapForRooms(rooms, maps) {
+  const exact = [];
+  const sub = [];
+  for (const [n, rs] of maps) {
+    if (rs.size === rooms.size && [...rooms].every((r) => rs.has(r))) exact.push(n);
+    if (rooms.size && [...rooms].every((r) => rs.has(r))) sub.push(n);
+  }
+  if (exact.length === 1) return { map: exact[0], how: 'exact' };
+  if (sub.length === 1) return { map: sub[0], how: 'subset' };
+  return { map: null, how: 'ambiguous' };
+}
+
+/** `Map` of stage id -> `{script, rooms, map, how, chapter}` for all 26. */
+async function stageMapTable(disc, chapters) {
+  const maps = new Map();
+  for (const n of mapMod.stageNumbers(disc)) {
+    const g = await mapMod.load(disc, n);
+    maps.set(n, new Set(g.rooms.map((r) => r.id)));
+  }
+  const scripts = stageScripts(disc);
+  const out = new Map();
+  let i = 0;
+  for (const chapter of chapters) {
+    for (const s of chapter.stages || []) {
+      if (i >= scripts.length) break;
+      const path = scripts[i++];
+      const rooms = await scriptRooms(disc, path);
+      const got = mapForRooms(rooms, maps);
+      out.set(typeof s === 'number' ? s : s.stage, {
+        script: path, rooms: [...rooms].sort(),
+        map: got.map, how: got.how, chapter: chapter.index,
+      });
+    }
+  }
+  return out;
+}
+
 // ----------------------------------------------------------------- assembly
 
 /** Every `.col` on the disc, keyed by room id. */
@@ -409,6 +493,7 @@ async function load(disc, number, player, cols) {
 
 const api = { load, loadPlayer, loadCollision, cameraDefaults,
               Stage, Room, Body, chrData, capsule, strideOf,
+              stageScripts, scriptRooms, mapForRooms, stageMapTable,
               PLAYER, DOOR_REACH, SET_REACH, FOOT_BONES, HIP_BONE,
               CAMERA_INIT };
 if (typeof module !== 'undefined') module.exports = api;

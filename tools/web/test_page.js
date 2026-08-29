@@ -177,6 +177,52 @@ console.log('stage mode owns the frame while it is running');
         'preventDefault on every key would break tab, ctrl-r and the rest');
 }
 
+// The route used to announce a stage and step over it, because there was
+// nothing to step into.  Now there is, so the card is a handoff -- and a
+// handoff has two halves that have to agree about who owns `R`.
+console.log('a route hands over to the stage and gets it back');
+{
+  const rn = fn('routeNext');
+  check('the stage beat looks the map up rather than apologising',
+        /STAGEMAP/.test(rn) && !/there is no room to play/.test(rn),
+        'the viewer can play a stage now');
+  check('and passes the map and the stage id to the card',
+        /play: row && row\.map !== null \? row\.map : null/.test(rn));
+
+  const sc = fn('showCard');
+  check('a card with a map offers Play first',
+        sc.indexOf('Play this stage') > 0
+        && sc.indexOf('Play this stage') < sc.indexOf("go.textContent"),
+        'it is the point of the card, so it leads');
+  check('Play enters the stage carrying the route with it',
+        /playStage\(beat\.play, null, \{ route: R, stage: beat\.stage \}\)/.test(sc));
+  check('and the continue button becomes Skip when there is a stage to play',
+        /beat\.play != null \? 'Skip it' : 'Continue'/.test(sc));
+
+  const ps = fn('playStage');
+  check('a route that sent us here is held, not dropped',
+        /if \(opts\.route && R\) clearTimeout\(R\.timer\);\s*else leaveRoute\(\);/
+          .test(ps),
+        'but its chapter-card timer must still go');
+  check('and the stage remembers it can go back',
+        /route: opts\.route \? \{ stage: opts\.stage \} : null/.test(ps));
+
+  const rtr = fn('returnToRoute');
+  check('returning reads G.route before leaveStage clears G',
+        rtr.indexOf('G && G.route') < rtr.indexOf('leaveStage()'));
+  check('and rebuilds the route markup before the next beat',
+        rtr.indexOf('routeViewport()') < rtr.indexOf('routeNext()'),
+        'playing a stage replaced #detail, so #card no longer exists');
+  check('startRoute uses the same markup helper',
+        /routeViewport\(\);/.test(fn('startRoute')),
+        'two copies of it would drift');
+  check('the stage bar offers the way back only on a route',
+        /if \(G\.route\) \{/.test(fn('buildStageBar'))
+        && /back\.onclick = returnToRoute;/.test(fn('buildStageBar')));
+  check('the stage-to-map table is built when a disc opens',
+        /STAGEMAP = await TraptStage\.stageMapTable\(/.test(fn('load')));
+}
+
 console.log('modern mode fills the element');
 const fo = fn('fitOutput');
 check('only native is pillarboxed to 4:3',

@@ -382,6 +382,118 @@ def load_player(disc, name=PLAYER):
     }
 
 
+# ------------------------------------------------------- stage id -> map id
+
+# The chapter tables name a *stage*, `M###.BIN` is indexed by a *map*, and
+# there are 26 of the first and 22 of the second, so the two are not the same
+# number.  Nothing in the ELF maps one to the other directly: the map index
+# reaches `FUN_002e4ed0` -- which builds `data/map_data/bin/m###.bin` out of
+# the 22-entry table at `0x00384190` -- as a plain integer argument to SSC
+# opcode `0x1E` (dispatch slot `0x003766D8`), so it is a literal inside a
+# *stage script*.
+#
+# The stage scripts are `DATA/SCRIPT/B<nn><v>EVENT.ARC`, and there are exactly
+# **26** of them with a `B0`/`B1` prefix -- the stage count.  Better still,
+# each one ships an `evsub_<room>.ssc` per room it uses, so the archive names
+# its own rooms and the map falls out of matching that set against the 22
+# maps' room lists.  The match is by subset, because a script lists rooms
+# while a map also lists the passages between them, and it is unique for all
+# 26.
+#
+# Stage ids are then assigned positionally: walk the chapters in order and
+# give each as many scripts as it has stages.  That consumes exactly 26, and
+# the scripts' own two-digit prefix independently agrees with the chapter for
+# 14 of the 15 -- chapter 15's single stage is `B143EVENT`, sharing the `14`
+# prefix, which is also why there is no `B15`.
+#
+# One ambiguity is left and it does not matter: chapter 10 lists its stages as
+# (17, 16) rather than (16, 17), so which of `B100`/`B101` is which is a
+# guess.  Both resolve to the same map.
+
+SCRIPT_RE = r'B[01]\d\dEVENT\.ARC$'
+EVSUB_RE = r'evsub_(r[hpc]\d+)\.ssc$'
+
+
+def stage_scripts(disc):
+    """The 26 `B<nn><v>EVENT.ARC` stage scripts, in name order."""
+    import re
+    return sorted(p for p in disc.glob('DATA/SCRIPT/')
+                  if re.search(SCRIPT_RE, p.upper()))
+
+
+def script_rooms(disc, path):
+    """The rooms a stage script names, from its `evsub_<room>.ssc` members."""
+    import re
+    import arc as arc_mod
+    blob = disc.read(path)
+    if blob is None:
+        return set()
+    out = set()
+    for name, _off, _size in arc_mod.entries(blob):
+        m = re.match(EVSUB_RE, name.lower())
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def map_for_rooms(rooms, maps):
+    """Which map holds exactly, or contains, this room set.  `(index, how)`."""
+    want = frozenset(rooms)
+    exact = [n for n, rs in maps.items() if rs == want]
+    if len(exact) == 1:
+        return exact[0], 'exact'
+    sub = [n for n, rs in maps.items() if want and want <= rs]
+    if len(sub) == 1:
+        return sub[0], 'subset'
+    return None, 'ambiguous'
+
+
+def stage_map_table(disc, chapters=None):
+    """`{stage id: {script, rooms, map, how, chapter}}` for all 26 stages."""
+    if chapters is None:
+        import order as order_mod
+        chapters = order_mod.Story().chapters
+    maps = {n: frozenset(r.id for r in mapbin.load(disc, n).rooms)
+            for n in mapbin.stage_numbers(disc)}
+    scripts = stage_scripts(disc)
+    out = {}
+    i = 0
+    for chapter in chapters:
+        for entry in _chapter_stages(chapter):
+            if i >= len(scripts):
+                break
+            path = scripts[i]
+            i += 1
+            rooms = script_rooms(disc, path)
+            index, how = map_for_rooms(rooms, maps)
+            out[entry] = {'script': path, 'rooms': sorted(rooms),
+                          'map': index, 'how': how,
+                          'chapter': _chapter_index(chapter)}
+    return out
+
+
+def _chapter_stages(chapter):
+    """The stage ids a chapter runs, however `order.py` shaped the record."""
+    stages = getattr(chapter, 'stages', None)
+    if stages is None and isinstance(chapter, dict):
+        stages = chapter.get('stages', [])
+    out = []
+    for s in stages or []:
+        if isinstance(s, dict):
+            out.append(s['stage'])
+        elif isinstance(s, int):
+            out.append(s)
+        else:
+            out.append(getattr(s, 'stage'))
+    return out
+
+
+def _chapter_index(chapter):
+    if isinstance(chapter, dict):
+        return chapter.get('index', -1)
+    return getattr(chapter, 'index', -1)
+
+
 # ------------------------------------------------------------------ assembly
 
 def load(disc, number, player=None):
@@ -501,6 +613,21 @@ def main():
     args = sys.argv[1:]
     if not args or args[0] == '--check':
         return _check(disc)
+    if args[0] == '--stages':
+        table = stage_map_table(disc)
+        print('%-6s %-8s %-16s %-6s %-8s %s'
+              % ('stage', 'chapter', 'script', 'map', 'matched', 'rooms'))
+        for sid in sorted(table):
+            r = table[sid]
+            print('%-6d %-8d %-16s %-6s %-8s %s'
+                  % (sid, r['chapter'] + 1, r['script'].split('/')[-1],
+                     'M%03d' % r['map'] if r['map'] is not None else '-',
+                     r['how'], ' '.join(r['rooms'])))
+        missing = [s for s, r in table.items() if r['map'] is None]
+        print('\n%d stages, %d resolved to a map%s'
+              % (len(table), len(table) - len(missing),
+                 '' if not missing else '; unresolved %s' % missing))
+        return 1 if missing else 0
     st = load(disc, int(args[0]))
     p = st.player
     print('stage M%03d: %d rooms, %d traps' % (st.number, len(st.rooms), len(st.traps)))

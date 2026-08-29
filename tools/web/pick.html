@@ -234,6 +234,7 @@ let V = null;        // the three.js viewer, created once
 let M = null;        // the model on screen, and its clip
 let S = null;        // the whole cutscene, when one is playing
 let G = null;        // the stage being walked, when one is
+let STAGEMAP = null; // stage id -> which M###.BIN the story tables mean
 let FONT = null;     // the PS2 kernel face, out of the ELF
 let TABLES = null;   // the story tables, out of the same ELF
 let HAVE = null;     // the cutscenes this disc actually carries
@@ -314,9 +315,19 @@ async function load(file) {
 
   try {
     buildStagePanel();
+    const cols = await TraptStage.loadCollision(DISC);
     row('stages', TraptMapbin.stageNumbers(DISC).length
-        + ' in DATA/MAP_DATA/BIN, with collision for '
-        + (await TraptStage.loadCollision(DISC)).size + ' rooms', 'good');
+        + ' in DATA/MAP_DATA/BIN, with collision for ' + cols.size + ' rooms',
+        'good');
+    // Which map each of the story tables' 26 stages means, derived from the
+    // rooms its B##EVENT script names.  Route mode needs it to hand over.
+    if (TABLES) {
+      STAGEMAP = await TraptStage.stageMapTable(DISC, TABLES.chapters);
+      const solved = [...STAGEMAP.values()].filter((r) => r.map !== null).length;
+      row('stage → map', solved + ' of ' + STAGEMAP.size
+          + ' stages resolved to a map, from their B##EVENT scripts',
+          solved === STAGEMAP.size ? 'good' : 'bad');
+    }
   } catch (err) {
     row('stages', err.message, 'bad');
   }
@@ -1092,10 +1103,12 @@ function routeBeats(opts) {
   return TraptStory2.route(TABLES, Object.assign({ have: HAVE }, opts || {}));
 }
 
-async function startRoute(opts) {
-  if (!TABLES) { alert('open a disc first'); return; }
-  leaveStage();                            // the stage owns tick until it goes
-  R = { beats: routeBeats(opts), at: -1, paused: false };
+/**
+ * The route's own markup.  Factored out because playing a stage replaces the
+ * whole of `#detail` with the stage's, so coming back has to rebuild it --
+ * `#card` in particular, which is what every beat after the stage draws into.
+ */
+function routeViewport() {
   detail.innerHTML =
       '<h2 id="routeHead">Route</h2><div id="members"></div>'
     + '<div id="view">'
@@ -1107,6 +1120,22 @@ async function startRoute(opts) {
     + '<div id="vinfo"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
   ensureViewer();
+}
+
+async function startRoute(opts) {
+  if (!TABLES) { alert('open a disc first'); return; }
+  leaveStage();                            // the stage owns tick until it goes
+  R = { beats: routeBeats(opts), at: -1, paused: false };
+  routeViewport();
+  routeNext();
+}
+
+/** Leave a stage that a route sent us into, and pick the route back up. */
+function returnToRoute() {
+  const back = G && G.route;               // read it before leaveStage clears G
+  leaveStage();
+  if (!back || !R) return;
+  routeViewport();
   routeNext();
 }
 
@@ -1136,9 +1165,21 @@ async function routeNext() {
     return;
   }
   if (b.kind === 'stage') {
-    showCard({ title: 'Stage ' + b.stage.toString(16).toUpperCase().padStart(2, '0'),
-               subtitle: 'played here in the game; there is no room to play in '
-                       + 'the viewer, so the route steps over it' }, null);
+    // The stage half is playable now, so this is a handoff and not an
+    // apology: the card offers the map the stage tables point at, and Play
+    // takes you there.  Skip keeps the old behaviour for anyone walking the
+    // story for its cutscenes.
+    const row = STAGEMAP ? STAGEMAP.get(b.stage) : null;
+    const label = 'Stage ' + String(b.stage).padStart(2, '0');
+    showCard({
+      title: label,
+      subtitle: row && row.map !== null
+        ? 'played here in the game — map M' + String(row.map).padStart(3, '0')
+          + ', ' + row.rooms.length + ' rooms, from ' + row.script.split('/').pop()
+        : 'played here in the game; this stage has no map the viewer can find',
+      stage: b.stage,
+      play: row && row.map !== null ? row.map : null,
+    }, null);
     return;
   }
   // a cutscene: hand it to the scene player, and come back when it ends
@@ -1173,8 +1214,19 @@ function showCard(beat, pic) {
   }
   const bar = document.createElement('div');
   bar.className = 'cardbar';
+  // A stage card leads with Play, because that is the point of it; the
+  // route-continuing button stays but stops being the primary one.
+  if (beat.play !== null && beat.play !== undefined) {
+    const play = document.createElement('button');
+    play.textContent = 'Play this stage';
+    play.onclick = () => {
+      el.className = '';
+      playStage(beat.play, null, { route: R, stage: beat.stage });
+    };
+    bar.appendChild(play);
+  }
   const go = document.createElement('button');
-  go.textContent = R ? 'Continue' : 'Done';
+  go.textContent = R ? (beat.play != null ? 'Skip it' : 'Continue') : 'Done';
   go.onclick = () => { el.className = ''; if (R) routeNext(); };
   bar.appendChild(go);
   if (R) {
@@ -1313,9 +1365,18 @@ function buildStagePanel() {
   buildPadPanel();
 }
 
-async function playStage(number, chip) {
+/**
+ * Walk stage `number`.  `opts.route` is set when a route sent us here, in
+ * which case the route is held rather than dropped and the stage offers a way
+ * back into it.
+ */
+async function playStage(number, chip, opts) {
+  opts = opts || {};
   S = null; M = null;                       // leave cutscene and model modes
-  leaveRoute();                             // and stop a route from stepping on
+  // A held route must still lose its chapter-card timer, or it fires into the
+  // stage and rebuilds the markup underneath it.
+  if (opts.route && R) clearTimeout(R.timer);
+  else leaveRoute();
   leaveStage();                             // and the stage before this one
   for (const c of document.querySelectorAll('#stages .cut.on'))
     c.classList.remove('on');
@@ -1347,7 +1408,8 @@ async function playStage(number, chip) {
 
   const pad = new TraptPad.Pad(PADCFG.bindings).attach(document.getElementById('view'));
   G = { runner, pad, edges: new TraptPad.Edges(), stage: runner.stage,
-        number, last: performance.now(), fps: 60, msg: '', msgUntil: 0 };
+        number, last: performance.now(), fps: 60, msg: '', msgUntil: 0,
+        route: opts.route ? { stage: opts.stage } : null };
   // The page keeps its own keyboard behaviour except for the keys the pad
   // actually uses, so the view has to be focusable for them to arrive.
   const view = document.getElementById('view');
@@ -1382,6 +1444,14 @@ function buildStageBar() {
     bar.appendChild(d);
     return d;
   };
+  if (G.route) {
+    const back = pill('◀ back to the route', false, null,
+                      'finish here and carry on from stage '
+                      + String(G.route.stage).padStart(2, '0'));
+    back.style.cursor = 'pointer';
+    back.onclick = returnToRoute;
+    back.classList.add('on');
+  }
   pill('collision', G.runner.showCollision,
        () => G.runner.setCollisionVisible(!G.runner.showCollision),
        'draw the .col itself: floors green, walls red, ceilings blue');

@@ -66,7 +66,8 @@ disc data. They work under two loaders — `require` in the tests and a classic
   `poster.js` when a card scrolls into view.
 * **Route** — the game's own chapter cards (`DATA/TWO_D/SLD`, with the
   chapter name already in the art) and then that chapter's cutscenes, in the
-  order the tables give, unattended.
+  order the tables give, unattended — and it now hands over to the stage half
+  rather than stepping past it.
 * **Stage** — the other half of the game. Any of the 22 stages, its rooms
   placed where the stage graph says, walked with real collision, its doors
   crossed, its 48 traps set on the ceilings, walls and floors they belong on.
@@ -85,7 +86,7 @@ uses the element's own aspect.
 ## 4. Tests
 
 ```
-node tools/web/test_all.js              # 587 checks with a disc
+node tools/web/test_all.js              # 610 checks with a disc
 node tools/web/test_all.js --no-disc    # 204 without
 ```
 

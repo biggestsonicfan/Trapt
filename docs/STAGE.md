@@ -29,6 +29,7 @@ python tools/trap.py                 # all 48 traps with their stats
 python tools/trap.py tc00            # one trap in full
 python tools/stage.py 0              # the whole thing assembled
 python tools/stage.py 0 --walk 1200  # and a body walked around it
+python tools/stage.py --stages       # which map each story stage means
 python tools/pcsx2pad.py             # your PCSX2 pad bindings
 ```
 
@@ -322,6 +323,52 @@ pretending they are a speed.
 
 ---
 
+## 5.2 Which map a stage id means
+
+The chapter tables name a **stage**, `M###.BIN` is indexed by a **map**, and
+there are 26 of the first and 22 of the second — so the two are not the same
+number, and route mode cannot hand over without knowing which is which.
+
+Nothing in the ELF maps one to the other. The map index reaches
+`FUN_002e4ed0` — which builds `data/map_data/bin/m###.bin` out of the
+22-entry table at `0x00384190` — as a plain integer argument to **SSC opcode
+`0x1E`** (dispatch slot `0x003766D8`), so it is a literal inside a *stage
+script*, not a table entry.
+
+The stage scripts are `DATA/SCRIPT/B<nn><v>EVENT.ARC`, and there are exactly
+**26** with a `B0`/`B1` prefix — the stage count. Better still, each ships one
+`evsub_<room>.ssc` per room it uses, so **the archive names its own rooms**
+and the map falls out of matching that set against the 22 maps' room lists.
+The match is by *subset*, because a script lists rooms while a map also lists
+the passages between them, and it is unique for all 26.
+
+Stage ids are then assigned positionally: walk the chapters in order, giving
+each as many scripts as it has stages. That consumes exactly 26, and the
+scripts' own two-digit prefix independently agrees with the chapter for **14
+of the 15** — chapter 15's single stage is `B143EVENT`, sharing the `14`
+prefix, which is also why there is no `B15`.
+
+```
+python tools/stage.py --stages
+
+stage  chapter  script           map    matched  rooms
+0      1        B010EVENT.ARC    M000   subset   rh01 … rh08
+8      7        B070EVENT.ARC    M002   subset   rp01 … rp06
+13     9        B090EVENT.ARC    M001   subset   rc01 … rc06
+18     11       B110EVENT.ARC    M007   exact    rc01
+25     15       B143EVENT.ARC    M006   exact    rh10
+```
+
+which reads as the story does: the House for chapters 1–6, the Palace for
+7–8, the Castle for 9–11, back to the House for 12–13, and the sealed rooms
+`rh09`/`rh10` for the finale.
+
+One ambiguity is left and it does not matter: chapter 10 lists its stages as
+(17, 16) rather than (16, 17), so which of `B100`/`B101` is which is a guess.
+Both resolve to the same map.
+
+---
+
 ## 6. Walking a stage
 
 [`stage.py`](../tools/stage.py) puts it together, and `tools/web/stage.js` is
@@ -435,8 +482,13 @@ is this project's choice, not the retail game's — the key-config screen (`KC`,
 
 ## 8. Verification
 
+Route mode uses it: a stage beat is now a **handoff** rather than an apology.
+The card names the map the tables point at and offers *Play this stage*, the
+stage keeps a way back into the route, and *Skip it* preserves the old
+behaviour for anyone walking the story for its cutscenes.
+
 ```
-node tools/web/test_all.js            # 587 checks with a disc
+node tools/web/test_all.js            # 610 checks with a disc
 node tools/web/test_all.js --no-disc  # 204 without
 ```
 

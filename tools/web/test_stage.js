@@ -297,6 +297,32 @@ async function main() {
     check('seven records, same values', js.map((c) => c.raw), py);
   }
 
+  console.log('which map each of the 26 stages means');
+  {
+    const py = python(
+      'import stage, json, order, scene; d = scene.Disc();'
+      + ' t = stage.stage_map_table(d);'
+      + ' print(json.dumps([[s, t[s]["script"].split("/")[-1], t[s]["map"],'
+      + ' t[s]["how"], t[s]["rooms"], t[s]["chapter"]] for s in sorted(t)]))');
+    const story = require('./story.js');
+    const tables = story.read(disc);
+    const js = await stageMod.stageMapTable(disc, tables.chapters);
+    check('26 stages, all resolved',
+          [js.size, [...js.values()].filter((r) => r.map !== null).length],
+          [26, 26]);
+    check('the same script, map, match kind and rooms for every stage',
+          [...js.keys()].sort((a, b) => a - b).map((s) => {
+            const r = js.get(s);
+            return [s, r.script.split('/').pop(), r.map, r.how, r.rooms,
+                    r.chapter];
+          }), py);
+    // The two facts the derivation rests on, asserted rather than assumed.
+    check('there are exactly 26 stage scripts',
+          stageMod.stageScripts(disc).length, 26);
+    check('stage 0 is the House and stage 25 the last sealed room',
+          [js.get(0).map, js.get(25).map], [0, 6]);
+  }
+
   // ------------------------------------------------------- assembly + walking
   console.log('stage assembly and the walk solver');
   const pyAssembled = python(
