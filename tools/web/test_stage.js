@@ -323,6 +323,59 @@ async function main() {
           [js.get(0).map, js.get(25).map], [0, 6]);
   }
 
+  console.log('stage scripts, against tools/stagescript.py');
+  {
+    const scriptMod = require('./stagescript.js');
+    const py = python(
+      'import stagescript, json, scene; d = scene.Disc();'
+      + ' out = {};\n'
+      + 'for path in ' + JSON.stringify(
+          ['DATA/SCRIPT/B010EVENT.ARC', 'DATA/SCRIPT/B070EVENT.ARC',
+           'DATA/SCRIPT/B143EVENT.ARC']) + ':\n'
+      + '    s = stagescript.load(d, path)\n'
+      + '    out[path] = {"map": s.map_index,'
+      + ' "player": (None if not s.player else [list(s.player["pos"]),'
+      + ' s.player["angle"]]),'
+      + ' "actors": [[a["model"], a["id"], list(a["pos"]), a["angle"]]'
+      + ' for a in s.actors],'
+      + ' "rooms": {r: [[p.number, p.gimmick, p.name, list(p.pos), p.rot,'
+      + ' p.slot, p.extra] for p in v] for r, v in s.rooms.items()},'
+      + ' "labels": s.labels}\n'
+      + 'print(json.dumps(out))');
+    for (const path of Object.keys(py)) {
+      const js = await scriptMod.load(disc, path);
+      const w = py[path];
+      const stem = path.split('/').pop();
+      check(stem + ': map, player and cast',
+            [js.mapIndex,
+             js.player ? [js.player.pos, js.player.angle] : null,
+             js.actors.map((a) => [a.model, a.id, a.pos, a.angle]),
+             js.labels],
+            [w.map, w.player, w.actors, w.labels]);
+      const rooms = {};
+      for (const [r, v] of Object.entries(js.rooms))
+        rooms[r] = v.map((p) => [p.number, p.gimmick, p.name, p.pos, p.rot,
+                                 p.slot, p.extra]);
+      check(stem + ': every placement identical', rooms, w.rooms);
+    }
+    // The remap is the one piece of arithmetic here, and it is the difference
+    // between placing GC22 and placing nothing.
+    check('the decimal-to-engine gimmick remap',
+          [22, 136, 137, 206].map((n) => scriptMod.gimmickName(scriptMod.gimmickId(n))),
+          ['GC22', 'GW36', 'GW37', 'GF06']);
+    // The engine adds a flat constant per band, but a letter only has 64
+    // slots, so 64..99 spills out of GC into GW and 164..199 out of GW into
+    // GF.  Every one of the disc's 1158 placements is inside a clean band, so
+    // the authoring convention -- three readable hundreds -- always holds;
+    // the spill is arithmetic nobody exercises, and it is pinned here so a
+    // "tidier" remap that breaks the real numbers cannot pass.
+    check('the band edges',
+          [0, 63, 64, 100, 163, 164, 200, 263, 264, -1, -2]
+            .map((n) => scriptMod.gimmickName(scriptMod.gimmickId(n))),
+          ['GC00', 'GC63', 'GW00', 'GW00', 'GW63', 'GF00', 'GF00', 'GF63',
+           null, null, null]);
+  }
+
   // ------------------------------------------------------- assembly + walking
   console.log('stage assembly and the walk solver');
   const pyAssembled = python(

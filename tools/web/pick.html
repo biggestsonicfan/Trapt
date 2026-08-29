@@ -215,6 +215,7 @@
 <script src="trap.js"></script>
 <script src="pad.js"></script>
 <script src="stage.js"></script>
+<script src="stagescript.js"></script>
 <script src="stageview.js"></script>
 <script src="story.js"></script>
 <script src="cards.js"></script>
@@ -1413,9 +1414,19 @@ async function playStage(number, chip, opts) {
   const members = document.getElementById('members');
   let runner;
   const t0 = performance.now();
+  // Which stage script to dress the map with.  A route knows the story stage
+  // it is playing; the panel only knows a map, so take the first stage that
+  // uses it -- several stages share one map and differ in what they place.
+  const scriptFor = (map, stageId) => {
+    if (!STAGEMAP) return null;
+    if (stageId !== undefined && STAGEMAP.has(stageId))
+      return STAGEMAP.get(stageId).script;
+    for (const [, row] of STAGEMAP) if (row.map === map) return row.script;
+    return null;
+  };
   try {
     runner = await TraptStageView.create(THREE, DISC, number,
-      { ps2: !V.look || !!V.look.native },
+      { ps2: !V.look || !!V.look.native, script: scriptFor(number, opts.stage) },
       (msg) => { members.textContent = msg + '…'; });
   } catch (err) {
     members.innerHTML = '<span class="bad">' + err.message + '</span>';
@@ -1445,6 +1456,13 @@ async function playStage(number, chip, opts) {
     + 'radius ' + st.player.radius + ', walks '
     + (st.player.gaits.walk.speed * 60).toFixed(1) + ' and runs '
     + (st.player.gaits.run.speed * 60).toFixed(1) + ' units/s'
+    + (runner.script
+        ? ' · script ' + runner.script.archive.split('/').pop() + ': '
+          + Object.values(runner.script.rooms)
+              .reduce((a, b) => a + b.length, 0) + ' gimmicks, '
+          + runner.script.actors.length + ' cast'
+          + (runner.scriptedSpawn() ? ', scripted start' : '')
+        : ' · no stage script')
     + (runner.warnings.length ? ' · ' + runner.warnings.length + ' warnings' : '');
   buildStageBar();
   hud();

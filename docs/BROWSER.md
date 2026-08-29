@@ -53,6 +53,7 @@ disc data. They work under two loaders — `require` in the tests and a classic
 | `mapbin.js` | `mapbin.py` | the stage graph: rooms, passages, doors |
 | `trap.js` | `trap.py` | the 48 traps, their stats and their volumes |
 | `stage.js` | `stage.py` | a whole stage, assembled and walkable |
+| `stagescript.js` | `stagescript.py` | what a stage is told to contain |
 | `pad.js` | `pcsx2pad.py` | a PCSX2 `[Pad1]`, and the pad it becomes |
 | `model.js`, `play.js`, `audio.js`, `cards.js`, `catalog.js`, `poster.js` | — | the three.js and playback layer |
 | `stageview.js` | — | the same, for a stage: geometry, skinning, camera, input |
@@ -86,7 +87,7 @@ uses the element's own aspect.
 ## 4. Tests
 
 ```
-node tools/web/test_all.js              # 649 checks with a disc
+node tools/web/test_all.js              # 670 checks with a disc
 node tools/web/test_all.js --no-disc    # 235 without
 ```
 

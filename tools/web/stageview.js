@@ -37,6 +37,7 @@ const modelMod = req ? require('./model.js') : window.TraptModel;
 const colMod = req ? require('./col.js') : window.TraptCol;
 const stageMod = req ? require('./stage.js') : window.TraptStage;
 const trapMod = req ? require('./trap.js') : window.TraptTrap;
+const scriptMod = req ? require('./stagescript.js') : window.TraptStageScript;
 
 const DEG = Math.PI / 180;
 // How far short of a wall the camera stops, in world units.  The body's own
@@ -136,6 +137,7 @@ class Runner {
     this.showCollision = false;
     this.debugGroup = null;
     this.selected = 0;               // which trap the pad would set
+    this.script = null;              // the B##EVENT stage script, if any
     this.trapCache = new Map();
     this.placedGroup = new THREE.Group();
     this.root.add(this.placedGroup);
@@ -234,7 +236,66 @@ class Runner {
     const rec = { group, assets, lights, sli, tex };
     this.rooms.set(name, rec);
     this.root.add(group);
+    await this.placeGimmicks(room, rec, say);
     return rec;
+  }
+
+  /**
+   * Everything the stage script puts in this room.
+   *
+   * The models are in the room's own `_ATH` archive rather than in
+   * `DATA/GIMMICK`, which is what makes this cheap: the room already had to
+   * be read, and `RH01_ATH.ARC` ships exactly the four the script names.  The
+   * gimmick archive is the fallback for anything a room does not carry.
+   */
+  async placeGimmicks(room, rec, onProgress) {
+    const script = this.script;
+    if (!script) return 0;
+    const placed = script.rooms[room.id] || [];
+    if (!placed.length) return 0;
+    const say = onProgress || (() => {});
+    const THREE = this.THREE;
+    say('placing ' + placed.length + ' in ' + room.id);
+
+    const ath = await this.disc.read('DATA/ROOM/' + room.id.toUpperCase()
+                                     + '_ATH.ARC');
+    const athMembers = ath ? arcMod.members(ath) : new Map();
+    const pool = new Map(athMembers);
+    for (const [k, v] of rec.assets) if (!pool.has(k)) pool.set(k, v);
+    const tex = textureCache(THREE);
+    const texFor = tex.make(pool);
+
+    let n = 0;
+    for (const p of placed) {
+      if (!p.name) continue;
+      const stem = p.name.toLowerCase();
+      // A gimmick ships as `gc22.smi`, sometimes split into `gw36_000.smi`
+      // and `gw36_001.smi`; take the base if there is one, else the parts.
+      let files = pool.has(stem + '.smi') ? [stem + '.smi']
+        : [...pool.keys()].filter(
+            (k) => k.startsWith(stem + '_') && k.endsWith('.smi')).sort();
+      if (!files.length) {
+        const own = await this.disc.read(p.archive);
+        if (own) {
+          for (const [k, v] of arcMod.members(own)) if (!pool.has(k)) pool.set(k, v);
+          files = pool.has(stem + '.smi') ? [stem + '.smi'] : [];
+        }
+      }
+      if (!files.length) { this.warnings.push('no model for ' + p.name); continue; }
+      for (const file of files) {
+        let model;
+        try { model = smiMod.parse(pool.get(file)); }
+        catch (e) { this.warnings.push(file + ': ' + e.message); continue; }
+        const g = modelMod.build(THREE, model, smiMod.bindPose(model), texFor,
+                                 { lights: rec.lights,
+                                   ps2: this.opts.ps2 !== false });
+        g.position.set(p.pos[0], p.pos[1], p.pos[2]);
+        g.rotation.y = p.rot;
+        rec.group.add(g);
+        n++;
+      }
+    }
+    return n;
   }
 
   /** Show only the room the body is in; the rest stay loaded but hidden. */
@@ -255,6 +316,36 @@ class Runner {
     this.showOnly(name);
     this.rebuildDebug();
     return this.stage.current;
+  }
+
+  /**
+   * Where the stage script says the player starts, as `{room, local, angle}`.
+   *
+   * `0x1F` gives a **world** point, so the room is whichever one contains it
+   * -- which is also the only check that the script and the stage graph agree
+   * about where anything is.  Returns null when no room does, and the caller
+   * falls back to the biggest patch of floor.
+   */
+  scriptedSpawn() {
+    const p = this.script && this.script.player;
+    if (!p) return null;
+    let best = null;
+    for (const [name, room] of this.stage.rooms) {
+      const local = room.toLocal(p.pos);
+      const [lo, hi] = room.mesh.bounds;
+      if (local[0] < lo[0] || local[0] > hi[0]
+          || local[2] < lo[2] || local[2] > hi[2]) continue;
+      const ground = room.mesh.floorAt(local[0], local[2],
+                                       local[1] + colMod.STEP_UP);
+      if (!ground) continue;
+      // Prefer the room whose floor is nearest under the scripted height: two
+      // rooms can overlap in XZ when one sits above the other.
+      const drop = local[1] - ground[0];
+      if (!best || Math.abs(drop) < Math.abs(best.drop))
+        best = { room: name, local: [local[0], ground[0], local[2]],
+                 angle: p.angle, drop };
+    }
+    return best;
   }
 
   // ------------------------------------------------------------------- tick
@@ -448,8 +539,15 @@ class Runner {
   }
 }
 
+/**
+ * `opts.script` is a `B##EVENT.ARC` path -- what the stage is told to contain.
+ * Without one the stage is still walkable, just empty: no gimmicks, and the
+ * player starts on the biggest patch of floor instead of where the script
+ * says.
+ */
 async function create(THREE, disc, number, opts, onProgress) {
   const say = onProgress || (() => {});
+  opts = opts || {};
   say('reading the stage graph');
   const player = await stageMod.loadPlayer(disc);
   say('reading collision');
@@ -457,10 +555,32 @@ async function create(THREE, disc, number, opts, onProgress) {
   const stage = await stageMod.load(disc, number, player, cols);
   const runner = new Runner(THREE, disc, stage, opts);
   await runner.loadCamera();
-  const first = [...stage.rooms.keys()].sort()[0];
+
+  if (opts.script) {
+    say('reading the stage script');
+    try { runner.script = await scriptMod.load(disc, opts.script); }
+    catch (e) { runner.warnings.push('script: ' + e.message); }
+    // The script's own `0x1E` is the map it expects.  If it disagrees with
+    // the stage we were asked for, the two were paired wrongly and every
+    // placement below would land in the wrong rooms.
+    if (runner.script && runner.script.mapIndex !== null
+        && runner.script.mapIndex !== number) {
+      runner.warnings.push('script wants map M'
+        + String(runner.script.mapIndex).padStart(3, '0') + ', not M'
+        + String(number).padStart(3, '0'));
+      runner.script = null;
+    }
+  }
+
+  const spawn = runner.scriptedSpawn();
+  const first = spawn ? spawn.room : [...stage.rooms.keys()].sort()[0];
   await runner.loadRoom(first, say);
   runner.showOnly(first);
-  stage.enter(first);
+  stage.enter(first, spawn ? spawn.local : null);
+  if (spawn) {
+    stage.body.yaw = spawn.angle;
+    runner.camera.yaw = spawn.angle;
+  }
   say('building the cast');
   await runner.loadActor(say);
   runner.showOnly(first);

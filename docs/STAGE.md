@@ -15,6 +15,7 @@ This is that piece. Four formats, all of them new here:
 | `.col` | a room's collision — its floors, walls and ceilings | [`col.py`](../tools/col.py) |
 | `M###.BIN` | the stage graph: rooms placed in a world, joined by doors | [`mapbin.py`](../tools/mapbin.py) |
 | `.td` / `.tcd` / `TRAPINFO.BIN` | the 48 traps, their stats and their volumes | [`trap.py`](../tools/trap.py) |
+| `B##EVENT.ARC` | the stage script: player, gimmicks, cast | [`stagescript.py`](../tools/stagescript.py) |
 
 On top of them, [`stage.py`](../tools/stage.py) assembles a whole stage and
 walks a body around it, and `tools/web/` does the same in the browser so
@@ -30,6 +31,8 @@ python tools/trap.py tc00            # one trap in full
 python tools/stage.py 0              # the whole thing assembled
 python tools/stage.py 0 --walk 1200  # and a body walked around it
 python tools/stage.py --stages       # which map each story stage means
+python tools/stagescript.py 0        # what stage 0 is told to contain
+python tools/stagescript.py --check  # every stage script on the disc
 python tools/pcsx2pad.py             # your PCSX2 pad bindings
 ```
 
@@ -502,7 +505,7 @@ stage keeps a way back into the route, and *Skip it* preserves the old
 behaviour for anyone walking the story for its cutscenes.
 
 ```
-node tools/web/test_all.js            # 649 checks with a disc
+node tools/web/test_all.js            # 670 checks with a disc
 node tools/web/test_all.js --no-disc  # 235 without
 ```
 
@@ -556,3 +559,92 @@ machine's own `PCSX2.ini` if there is one.
 * **The retail button map.** §7.1's assignments are ours; the `KC` screen has
   the real ones.
 * **`.txp` / `TransmitBox`.** 16 records across ten room archives, unread.
+
+---
+
+## 10. `B##EVENT.ARC` — what a stage is *told* to contain
+
+§3 builds the place. This is what the game puts in it: where the player
+starts, which gimmicks sit where, and who walks in. It is the same `.SSC`
+bytecode a cutscene is, in a different opcode band — cutscenes live at `0x50`+,
+a stage at `0x1D`–`0x3F`.
+
+An archive holds one master script and one per room:
+
+```
+B010EVENT.ARC
+  b010event.ssc      the stage: map, player, cast
+  evsub_rh01.ssc     one per room: what is placed in it
+  ... evsub_rh08.ssc
+```
+
+and `b010event.ssc` reads, in full:
+
+```
+1d 'SCR:_Start'          a label
+1e 0                     the map -- M000
+1f -120 120 600 0        the player, at RH_01's own origin, facing +Z
+3f 0 .. 3f 4             five slots armed
+29 'c30m_d'              the cast model
+2b 0 -120 120 680 -3.15  and where it stands, facing back at her
+53 fade_in 60 0
+1d 'SCR:_End'
+```
+
+| op | handler | what it is |
+|---|---|---|
+| `0x1D` | `FUN_001C7070` | a label — `SCR:_Start`, `SCR:_End` |
+| `0x1E` | `FUN_001DB4E0` | the map index, straight into the loader |
+| `0x1F` | `FUN_001DB310` | the player: `(x, y, z, angle)` |
+| `0x21` | `FUN_001DAE60` | a gimmick: `(slot, id, x, y, z, rot, …)` |
+| `0x22` | `FUN_001DAD10` | the same, without the rotation |
+| `0x29` | `FUN_001DAB20` | the cast model, by name |
+| `0x2B` | `FUN_001DA840` | and where it stands |
+
+**This settles §6's open question.** "Nothing on the disc records where the
+player enters a room" was wrong — `0x1F` does, and it is a world position, so
+which room it lands in is also the only independent check that the script and
+the stage graph agree about where anything is.
+
+**Two conventions the handlers impose**, neither guessable from the data:
+`0x1F` and `0x2B` both add **0.5 to Y** before placing anything, and both wrap
+the angle into `[-π, π]`. A script's `120` is a stand-on height of `120.5`.
+
+### 10.1 Gimmick ids are decimal in the script and hex in the engine
+
+`FUN_001DAE60` remaps: below 100 add `0x30`, below 200 add `0x0C`, otherwise
+subtract `0x18`. Which is to say the script writes three readable hundreds —
+`22` is `GC22`, `136` is `GW36`, `206` is `GF06` — and the engine turns them
+into the id space §4 uses. `rh01`'s script names 22, 136, 137 and 206, and
+`RH01_ATH.ARC` ships exactly `gc22.smi`, `gw36.smi`, `gw37.smi` and
+`gf06.smi`.
+
+The arithmetic is flat, so it *can* spill: a letter has only 64 slots, and
+`64`–`99` would land in `GW` rather than `GC`. **No script does it.** All 1158
+placements on the disc sit in a clean band — 429 in `GC`, 431 in `GW`, 298 in
+`GF` — so the authoring convention always holds and the overlap is arithmetic
+nobody exercises.
+
+### 10.2 What it checks out against
+
+```
+python tools/stagescript.py --check
+26 stage scripts, 1158 placements, 0 problems, 0 map disagreements
+```
+
+Two independent facts have to line up and do:
+
+* every gimmick a room places is in that room's own `_ATH` archive, which is
+  where the models live;
+* the script's own `0x1E` map index agrees with the map §5.2 derives from the
+  rooms the archive names — for all 26, by two completely different routes.
+
+`pick.html` uses it: a stage loads its script, the player starts where `0x1F`
+says instead of on the biggest patch of floor, and each room is dressed with
+what its `evsub_` script places. A script whose `0x1E` disagrees with the map
+being loaded is refused rather than half-applied, because every placement in
+it would otherwise land in the wrong room.
+
+Still unread: `0x23`, `0x24`, `0x25`, `0x27`, `0x2A`, `0x2C` and `0x3F`, and
+the cast is placed but does not move — `M##INTRUDER.BIN` is the other half of
+that and is still undecoded.

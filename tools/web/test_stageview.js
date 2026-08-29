@@ -193,6 +193,59 @@ async function main() {
     check('and re-arms when the timer runs out', rec.armed);
   }
 
+  // The stage script is what a stage is *told* to contain: where the player
+  // starts, what is placed in each room, who walks in.  Without it a stage is
+  // walkable but empty.
+  console.log('the stage script, dressing M000');
+  {
+    const dressed = await viewMod.create(THREE, disc, 0,
+      { ps2: true, script: 'DATA/SCRIPT/B010EVENT.ARC' }, () => {});
+    check('no warnings', dressed.warnings.length === 0,
+          dressed.warnings.join('; '));
+    check('the script agrees it is map 0', dressed.script.mapIndex === 0,
+          String(dressed.script.mapIndex));
+    check('it places 57 gimmicks over 8 rooms',
+          Object.values(dressed.script.rooms).reduce((a, b) => a + b.length, 0)
+            === 57 && Object.keys(dressed.script.rooms).length === 8,
+          JSON.stringify(Object.keys(dressed.script.rooms)));
+    check('and names one cast member', dressed.script.actors.length === 1
+          && dressed.script.actors[0].model === 'c30m_d',
+          JSON.stringify(dressed.script.actors));
+
+    const spawn = dressed.scriptedSpawn();
+    check('the scripted start resolves to a room', !!spawn,
+          JSON.stringify(dressed.script.player));
+    check('which is RH_01, at its own origin',
+          spawn.room === 'RH_01'
+          && Math.abs(spawn.local[0]) < 1 && Math.abs(spawn.local[2]) < 1,
+          JSON.stringify(spawn));
+    check('and the body actually starts there',
+          dressed.stage.current.name === 'RH_01'
+          && Math.abs(dressed.stage.body.pos[0] - spawn.local[0]) < 1e-6,
+          JSON.stringify(dressed.stage.body.pos));
+
+    // rh01 places seven gimmicks; two of them ship as split meshes, so the
+    // room group gains nine objects on top of its own geometry and doors.
+    const rec = dressed.rooms.get('RH_01');
+    const plain = await viewMod.create(THREE, disc, 0, { ps2: true }, () => {});
+    const bare = plain.rooms.get(plain.stage.current.name).group.children.length;
+    check('the dressed room has more in it than the bare one',
+          rec.group.children.length > bare,
+          rec.group.children.length + ' vs ' + bare);
+    check('every placed gimmick resolved to a model',
+          dressed.warnings.filter((w) => w.startsWith('no model for')).length === 0,
+          dressed.warnings.join('; '));
+
+    // A script paired with the wrong map would put everything in the wrong
+    // rooms, so it is refused rather than half-applied.
+    const wrong = await viewMod.create(THREE, disc, 1,
+      { ps2: true, script: 'DATA/SCRIPT/B010EVENT.ARC' }, () => {});
+    check('a script for another map is refused, not half-applied',
+          wrong.script === null
+          && wrong.warnings.some((w) => w.indexOf('wants map M000') >= 0),
+          JSON.stringify(wrong.warnings));
+  }
+
   console.log('the collision overlay');
   {
     runner.setCollisionVisible(true);

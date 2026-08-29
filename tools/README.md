@@ -75,6 +75,7 @@ python order.py --check         # the tables vs. what is on the disc
 | `mapbin.py` | `M###.BIN` -- the stage graph: rooms placed in a world, joined by doors |
 | `trap.py` | the 48 traps: names, stats, effect text and the volumes they occupy |
 | `stage.py` | a whole stage assembled, with a body that can walk it |
+| `stagescript.py` | `B##EVENT.ARC` -- where the player starts, what is placed, who walks in |
 | `pcsx2pad.py` | a PCSX2 `[Pad1]` turned into browser input |
 | `ssc.py` | `.SSC` compiled scene-script reader (cutscene bytecode + subtitles) |
 | `sai.py` | `.SAI` skeletal animation reader |
@@ -120,6 +121,7 @@ python col.py rh01              # one room's floors, walls and ceilings
 python mapbin.py 0              # stage M000, the House
 python trap.py                  # all 48 traps with their stats
 python stage.py 0 --walk 1200   # assemble a stage and walk a body round it
+python stagescript.py 0         # what stage 0 is told to contain
 python pcsx2pad.py              # your own PCSX2 pad bindings
 ```
 
