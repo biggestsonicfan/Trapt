@@ -226,11 +226,53 @@ async function assemble(THREE, disc, name, onProgress) {
     // carry the spawn spread and the rise and none is read, so these sit on
     // top of each other and read as a bright pulsing flame rather than a
     // plume climbing off the brazier.
-    const count = (e.grid && e.grid.cells > 1)
-      ? Math.min(MAX_PARTICLES, e.grid.cells) : 1;
+    // Two kinds of emitter, and the disc has one of each.
+    //
+    // A `0x9F` block -- e001's torch -- gets its count from the grid, above.
+    //
+    // A `0xC8` block -- e004's sparks -- states it outright.  Read live out
+    // of EE RAM, a spark object holds `0xC8`'s first argument at `+0x210`
+    // sitting immediately in front of a **16-slot particle array** at
+    // `+0x188`, and the two values the disc uses are 8 and 16.  The same
+    // object has `+0x24`-`+0x2b` uninitialised and `+0xb4` zero, so it has no
+    // grid and no derived life: this is where its count comes from.
+    //
+    // The game makes one object per *block*, not per bone -- eight of them
+    // for e004's four blocks across two spawns -- so the `0xCA` binds are
+    // emission points that one emitter shares, and the particles are dealt
+    // round-robin between them rather than each bone getting a full set.
+    const emitted = e.emitter && e.emitter.c8 && e.emitter.c8.length
+      ? Math.round(e.emitter.c8[0]) : 0;
     const points = e.binds.length ? e.binds : [null];
-    for (const bind of points) {
-    for (let n = 0; n < count; n++) {
+
+    // The emission slots, flattened: which point each particle comes from and
+    // how old it is.  A grid block runs a full set at every point; a `0xC8`
+    // block has one shared budget dealt round-robin between them.
+    const slots = [];
+    if (e.grid && e.grid.cells > 1) {
+      const n = Math.min(MAX_PARTICLES, e.grid.cells);
+      for (const bind of points)
+        for (let k = 0; k < n; k++) slots.push({ bind, phase: k * e.grid.rate });
+    } else if (emitted > 0 && keyLife(e) > 0) {
+      // Only worth issuing when something varies with age.  e004's sparks
+      // carry no keyframes at all, so N of them at one bone would be N
+      // identical additive quads -- an N-times brightness multiplier, not a
+      // cloud.  The count is right (it is read off the hardware) but without
+      // `0xC8`'s remaining three floats and `0xC9`'s four, which are the
+      // spread, stacking them would distort rather than fix.  So the count is
+      // carried and only spent where the keyframes make each particle
+      // distinct.
+      const n = Math.min(MAX_PARTICLES, emitted);
+      const life = keyLife(e);
+      for (let k = 0; k < n; k++)
+        slots.push({ bind: points[k % points.length],
+                     phase: Math.round(k * life / n) });
+    } else {
+      for (const bind of points) slots.push({ bind, phase: 0 });
+    }
+
+    for (const slot of slots) {
+      const bind = slot.bind;
       const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
                                           : new THREE.BufferGeometry();
       // The UVs are rewritten every frame by `setCell`, so keep the pristine
@@ -249,9 +291,7 @@ async function assemble(THREE, disc, name, onProgress) {
       root.add(mesh);
       sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null,
                      uvBase: uvBase, cellU: u, cellV: v, cell: -1,
-                     // Each particle is one `rate` older than the one before.
-                     phase: e.grid ? n * e.grid.rate : 0 });
-    }
+                     phase: slot.phase });
     }
   }
   // Resolve each bind to the actor that carries the bone, once.
@@ -310,6 +350,13 @@ async function assemble(THREE, disc, name, onProgress) {
            camera: camera, assets: assets, warnings: warnings,
            clipFor: clipFor, textures: texCache, lights: lights,
            roomDir: roomDir, sprites: sprites };
+}
+
+/** The last frame a block's keyframes reach, or 0 when it has none. */
+function keyLife(e) {
+  if (e.colourKeys.length) return e.colourKeys[e.colourKeys.length - 1][0];
+  if (e.sizeKeys.length) return e.sizeKeys[e.sizeKeys.length - 1][0];
+  return 0;
 }
 
 /**
