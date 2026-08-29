@@ -59,6 +59,21 @@ const OP_FX_COLOUR_KEY2 = 0xAA, OP_FX_SIZE_KEY2 = 0xAB;
 // 4 * (4*8) = 128, exactly where its `0xAA` alpha keys end -- so arg0 is
 // **frames per cell** and +0xb4 the particle's whole life.
 const OP_FX_GRID = 0x9F;
+// `0x6C` FUN_001C45C0 -- six flags.  The handler coerces each of its six
+// values with `!= 0` and passes them to a vtable method, so they are switches
+// rather than numbers, and the fourth is the one that shows.
+//
+// Eight sprite blocks on the disc carry a `0x6C`.  The fourth flag is set on
+// four of them: the three that draw `ef_s014c.tm2` and one that draws
+// `ef_e129d.tm2`.  Measured out of the pixels, those two are also the only
+// two of the sixteen sprite textures whose alpha does not peak in the middle
+// -- `ef_s014c.tm2` is a radial falloff centred on its bottom-right *corner*
+// -- and the five centred textures that carry a `0x6C` all have it clear.
+//
+// So the flag says the tile is one quadrant and the sprite is it mirrored
+// into four, which puts that corner at the middle and makes the glow round.
+// Drawn flat it is a hard-edged square, opaque along two of its sides.
+const OP_FX_QUAD_FLAGS = 0x6C;
 
 const KIND_MODEL = 4, KIND_LIGHT = 6, KIND_CAMERA = 7;
 const LIGHT_KINDS = { 0: 'directional', 1: 'point', 4: 'ambient', 5: 'black' };
@@ -100,7 +115,8 @@ function newEntity(track, index, kind, label) {
            start: 0, end: null,
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
-           emitter: null, grid: null, trackLen: null };
+           emitter: null, grid: null, flags: null, mirror: false,
+           trackLen: null };
 }
 
 /**
@@ -196,6 +212,9 @@ function run(scene, trackName, blob, frameBase, origin) {
       while (n.length < 4) n.push(0);
       entity.sprite = { texture: isStr(args[0]) ? args[0] : '',
                         cell: [n[0], n[1]], sheet: [n[2], n[3]] };
+    } else if (code === OP_FX_QUAD_FLAGS && entity && args.length >= 6) {
+      entity.flags = args.slice(0, 6).map((a) => !!num(a));
+      entity.mirror = entity.flags[3];
     // `0x6D(sx, sy, frame)` and `0x6E(r, g, b, a, frame)` are keyframes, and
     // the data says so plainly: in `ef_e004_30.ssc` the `0x6D` pairs run
     // (0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240 -- always equal, always

@@ -66,6 +66,28 @@ OP_FOG = 0xC7
 #   0x6E FUN_001C46A0  four numbers + a frame -> another keyframe list
 #   0xCA FUN_001C1D50  actor + bone; asserts the effect's kind is 3
 OP_FX_TEXTURE = 0x68
+# `0x6C` FUN_001C45C0 -- six flags.  The handler reads six values, coerces
+# each to a boolean with `!= 0`, and passes all six to a vtable method at
+# +0x10, so whatever they are they are switches rather than numbers.
+#
+# The fourth one is the only one this viewer needs, and the disc identifies it
+# without ambiguity.  Eight sprite blocks across the 154 cutscenes carry a
+# `0x6C`; the fourth flag is set on three of them, and those three are the
+# only blocks that draw `ef_s014c.tm2` -- plus one more on `ef_e129d.tm2`.
+# Measured straight out of the pixels, those two textures are also the only
+# two of the sixteen sprite textures whose alpha does **not** peak in the
+# middle: `ef_s014c.tm2` is a clean radial falloff centred on its
+# bottom-right *corner* (flat 255 out to r=30, zero by r=66, on a 64x64
+# tile), and `ef_e129d.tm2` peaks on two opposite corners.  The other five
+# textures that carry a `0x6C` are all centred and all have the flag clear.
+#
+# Five for five and two for two: the flag says the tile is a **quadrant** and
+# the billboard is it mirrored into all four, which puts the tile's
+# bottom-right corner at the centre of the sprite and the glow comes out
+# round.  Drawn flat the way the other fifteen are, it is a hard-edged square
+# that is fully opaque along two of its sides -- which is exactly what e004
+# looked like.
+OP_FX_QUAD_FLAGS = 0x6C
 OP_FX_SIZE_KEY = 0x6D
 OP_FX_COLOUR_KEY = 0x6E
 # `0xAA` and `0xAB` dispatch to the *same handlers* as `0x6E` and `0x6D`
@@ -170,11 +192,17 @@ class Entity:
         self.binds = []           # [(actor, bone)]       from `0xCA`
         self.emitter = None       # raw `0xC8` / `0xC9` parameters
         self.grid = None          # {'rate', 'cols', 'rows', 'cells'} from `0x9F`
+        self.flags = None         # the six booleans from `0x6C`
         self.track_len = None     # how long its track ran, in frames
 
     @property
     def is_sprite(self):
         return self.sprite is not None
+
+    @property
+    def mirror(self):
+        """Is this tile one quadrant of a sprite mirrored into four?"""
+        return bool(self.flags and len(self.flags) > 3 and self.flags[3])
 
     def size_at(self, local):
         """Sprite size at `local` frames since the block began: `(sx, sy)`."""
@@ -449,6 +477,9 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
                 'cell': (nums[0], nums[1]),
                 'sheet': (nums[2], nums[3]),
             }
+        elif (code == OP_FX_QUAD_FLAGS and entity is not None
+              and len(args) >= 6):
+            entity.flags = tuple(bool(_num(a)) for a in args[:6])
         # `0x6D(sx, sy, frame)` and `0x6E(r, g, b, a, frame)` are keyframes,
         # and the data says so plainly: in `ef_e004_30.ssc` the `0x6D` pairs
         # are (0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240 -- always equal,
@@ -718,7 +749,7 @@ HANDLED = frozenset((
     OP_ROOT_BONE, OP_ATTACH, OP_TRANSFORM, OP_SCALE, OP_LIGHT_TYPE,
     OP_LIGHT_RANGE, OP_FX_TEXTURE, OP_FX_SIZE_KEY, OP_FX_COLOUR_KEY,
     OP_FX_EMIT_A, OP_FX_EMIT_B, OP_FX_BIND_BONE, OP_FX_COLOUR_KEY2,
-    OP_FX_SIZE_KEY2, OP_FX_GRID))
+    OP_FX_SIZE_KEY2, OP_FX_GRID, OP_FX_QUAD_FLAGS))
 
 
 def effect_report(names=None):

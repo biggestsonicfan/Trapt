@@ -564,6 +564,8 @@ async function main() {
       '                "size_keys": [list(k) for k in e.size_keys],',
       '                "colour_keys": [list(k) for k in e.colour_keys],',
       '                "binds": [list(b) for b in e.binds],',
+      '                "flags": list(e.flags) if e.flags else None,',
+      '                "mirror": e.mirror,',
       '                "emitter": e.emitter, "track_len": e.track_len}',
       '               for e in s.entities]}))',
     ].join('\n');
@@ -590,7 +592,8 @@ async function main() {
         end: e.end, root_bone: e.rootBone, light: e.light,
         transform: e.transform, scale: e.scale, vis: e.visibility,
         sprite: e.sprite, size_keys: e.sizeKeys, colour_keys: e.colourKeys,
-        binds: e.binds, emitter: e.emitter, track_len: e.trackLen,
+        binds: e.binds, flags: e.flags, mirror: e.mirror,
+        emitter: e.emitter, track_len: e.trackLen,
       };
       if (JSON.stringify(mine) !== JSON.stringify(x))
         diffs.push({ i: i, got: mine, want: x });
@@ -672,18 +675,48 @@ async function main() {
               +s.mesh.geometry.width.toFixed(3),
               +s.mesh.geometry.height.toFixed(3)];
     };
-    check('a single-cell sheet takes the whole texture',
-          rect(built.sprites.find(
-            (s) => s.entity.sprite.texture === 'ef_s014c.tm2')),
-          [0, 1, 0, 1, 1, 1]);
+    // `ef_s014c.tm2` is the one texture on the disc that is a quadrant rather
+    // than a whole sprite: measured out of its pixels, its alpha is a clean
+    // radial falloff centred on its bottom-right *corner* -- flat 255 out to
+    // r = 30, zero by r = 66 on a 64x64 tile -- so drawn flat it is a
+    // hard-edged square, fully opaque along two of its sides.  `0x6C` flag 3
+    // says so, and is set on exactly the four blocks that draw the disc's two
+    // corner-weighted textures and clear on all five that draw centred ones.
+    const s014c = built.sprites.find(
+      (s) => s.entity.sprite.texture === 'ef_s014c.tm2');
+    check('the flash is flagged as a quadrant', s014c.entity.mirror, true);
+    check('so it is four quads, not one',
+          s014c.mesh.geometry.attributes.position.array.length / 3, 24);
+    {
+      const pos = s014c.mesh.geometry.attributes.position.array;
+      const uv = s014c.mesh.geometry.attributes.uv.array;
+      // Mirroring is only right if the tile's bottom-right corner -- the
+      // middle of the glow -- is the corner all four copies meet at.
+      let meet = 0, wrong = 0;
+      for (let i = 0; i < uv.length / 2; i++) {
+        const atCentre = pos[i * 3] === 0 && pos[i * 3 + 1] === 0;
+        const isHot = uv[i * 2] === 1 && uv[i * 2 + 1] === 0;
+        if (atCentre && isHot) meet++;
+        else if (atCentre !== isHot) wrong++;
+      }
+      check('every copy puts the glow centre at the middle', [meet > 0, wrong], [true, 0]);
+      const xs = [], ys = [];
+      for (let i = 0; i < pos.length; i += 3) { xs.push(pos[i]); ys.push(pos[i + 1]); }
+      check('and the four together still fill the unit quad',
+            [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)],
+            [-0.5, 0.5, -0.5, 0.5]);
+    }
     // The quad is always unit -- the shape is the size keys' job, and they
     // disagree with the cell.  e001's torch is a 64x16 cell, four times as
     // wide as tall, whose keys run (1, 2) to (4, 7): taller than wide, which
     // is what a hardware capture of frame 10834 shows.
-    check('spark.tm2 too, and the quad is unit either way',
+    check('an unflagged sheet is one quad taking the whole texture',
           rect(built.sprites.find(
             (s) => s.entity.sprite.texture === 'spark.tm2')),
           [0, 1, 0, 1, 1, 1]);
+    check('and spark.tm2 is not flagged',
+          built.sprites.find(
+            (s) => s.entity.sprite.texture === 'spark.tm2').entity.mirror, false);
     check('every live billboard is aimed at the camera',
           built.sprites.filter((s) => s.mesh.visible && !s.mesh.lookingAt).length, 0);
     check('a spark rides the bone rather than sitting at the origin',

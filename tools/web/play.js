@@ -273,8 +273,7 @@ async function assemble(THREE, disc, name, onProgress) {
 
     for (const slot of slots) {
       const bind = slot.bind;
-      const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
-                                          : new THREE.BufferGeometry();
+      const geo = spriteGeometry(THREE, e.mirror);
       // The UVs are rewritten every frame by `setCell`, so keep the pristine
       // unit-quad corners to build each cell's rect from.
       let uvBase = null;
@@ -357,6 +356,55 @@ function keyLife(e) {
   if (e.colourKeys.length) return e.colourKeys[e.colourKeys.length - 1][0];
   if (e.sizeKeys.length) return e.sizeKeys[e.sizeKeys.length - 1][0];
   return 0;
+}
+
+/**
+ * The quad a sprite billboard is drawn on, in a unit square centred on the
+ * origin, with UVs `setCell` can rewrite.
+ *
+ * Ordinarily that is one quad showing the cell the right way up.  When `0x6C`
+ * flag 3 is set the tile is one **quadrant** of the sprite, so the quad
+ * becomes four -- the tile, and it mirrored in u, in v, and in both -- laid
+ * out so the tile's bottom-right corner meets at the middle.  `ef_s014c.tm2`
+ * is a radial falloff centred on exactly that corner, and four mirrored
+ * copies of it make one round glow twice the tile's width; one flat copy
+ * makes a square that is fully opaque along two of its sides, which is what
+ * e004's blast looked like before this existed.
+ *
+ * The UVs written here are the *fractions within a cell* rather than final
+ * texture coordinates -- mirroring shows up as a fraction that runs 1 to 0 --
+ * because `setCell` maps them onto whichever cell of the sheet is current.
+ */
+function spriteGeometry(THREE, mirror) {
+  if (!mirror) {
+    return THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
+                               : new THREE.BufferGeometry();
+  }
+  const pos = [], uv = [];
+  // Quadrant (qx, qy): qx picks the right half, qy the bottom one.  `u` runs
+  // away from the meeting corner in x and `v` towards it in y, so the tile's
+  // (1, 0) corner -- its bottom-right -- lands at the sprite's middle in all
+  // four.
+  for (let qy = 0; qy < 2; qy++) {
+    for (let qx = 0; qx < 2; qx++) {
+      const x0 = qx ? 0 : -0.5, x1 = qx ? 0.5 : 0;
+      const y0 = qy ? 0 : 0.5, y1 = qy ? -0.5 : 0;
+      const u0 = qx ? 1 : 0, u1 = qx ? 0 : 1;
+      const v0 = qy ? 0 : 1, v1 = qy ? 1 : 0;
+      // Two triangles, wound the way three.js winds a plane.
+      const c = [[x0, y0, u0, v0], [x1, y0, u1, v0],
+                 [x0, y1, u0, v1], [x1, y1, u1, v1]];
+      for (const i of [0, 2, 1, 1, 2, 3]) {
+        pos.push(c[i][0], c[i][1], 0);
+        uv.push(c[i][2], c[i][3]);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',
+                   new THREE.BufferAttribute(new Float32Array(pos), 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2));
+  return geo;
 }
 
 /**

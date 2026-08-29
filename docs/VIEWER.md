@@ -967,7 +967,53 @@ arm-raise the `0xCA` bones describe, **no sparks were visible on screen**.
 Either they are briefer than the sampling, or they fire at a moment the frame
 estimate has not found.
 
-### 9.5 What is still not right
+### 9.6 One texture on the disc is a quadrant
+
+A reported crop turned out not to be a crop at all.  e004's blast drew as a
+hard-edged square, fully bright along two of its sides, rather than a round
+glow.  The block declares `0x68 ef_s014c.tm2 64 64 64 64` -- one cell filling
+the whole 64x64 sheet -- so the UV rect was already the entire texture and
+there was nothing left to crop differently.
+
+The texture is the answer.  Of the sixteen sprite textures the 154 cutscenes
+use, `ef_s014c.tm2` is one of only two whose alpha does **not** peak in the
+middle.  Measured straight out of the pixels it is a clean radial falloff
+centred on its bottom-right *corner*:
+
+```
+ r from (63,63)     0    12    24    36    48    60    66    72
+ mean alpha       255   255   254   226    93     9     0     0
+```
+
+flat out to r = 30 and gone by r = 66 -- a radius larger than the tile, so the
+tile holds one quadrant of a glow about 128 across.  The other is
+`ef_e129d.tm2`, bright on two opposite corners.  All fourteen others peak in
+the centre.
+
+**`0x6C` says which.**  Its handler `FUN_001C45C0` reads six values, coerces
+each with `!= 0`, and passes all six to a vtable method -- six switches, not
+six numbers.  Eight sprite blocks on the disc carry one, and the fourth flag
+splits them exactly along the line the pixels drew:
+
+| texture | `0x6C` | shape from its alpha |
+|---|---|---|
+| `ef_s014c.tm2` (x3) | `1 0 0 **1** 0 0` | quadrant, centred on its BR corner |
+| `ef_e129d.tm2` | `0 0 1 **1** 0 0` | two opposite corners |
+| `ef_d002c.tm2`, `ef_e129c.tm2` | `0 0 1 **0** 0 0` | centred |
+| `ef_p_s_00.tm2`, `ef_s014f.tm2`, `ef_s020a.tm2` | `1 0 0 **0** 0 0` | centred |
+
+Four for four and five for five, from two measurements that know nothing
+about each other -- one taken from the bytecode, one from the texels.
+
+So flag 3 means the tile is a quadrant and the billboard is it mirrored into
+all four, laid out so the tile's bottom-right corner meets at the middle.
+`play.js` builds those sprites from four quads instead of one
+(`spriteGeometry`); the footprint is unchanged, since the size keys still
+describe the whole sprite.  Everything else keeps the single quad it had.
+
+What this does *not* settle is the other five flags.  Only the fourth is read.
+
+### 9.7 What is still not right
 
 **Where the particles go.** `0x9E 20 96 96 0.008 0 1 0`, `0x74 -0.001` and
 `0x77 2 0 0 0 1` carry the spawn spread and the rise, and none of them is
