@@ -50,6 +50,15 @@ const OP_FX_EMIT_A = 0xC8, OP_FX_EMIT_B = 0xC9, OP_FX_BIND_BONE = 0xCA;
 // e001's torch flame uses only the `0xAA`/`0xAB` spelling, which is why it had
 // no colour ramp and no growth until these were read.
 const OP_FX_COLOUR_KEY2 = 0xAA, OP_FX_SIZE_KEY2 = 0xAB;
+// `0x9F` FUN_001C4A50 -- the sheet's grid and how fast it is played.
+// arg1 -> columns, arg2 -> rows, arg3 -> cell count, each defaulting to the
+// derived value when the script passes 0.  The handler derives columns as
+// `sheet_w / cell_w` and rows as `sheet_h / cell_h` from the fields `0x68`
+// filled in, which is what proves `0x68` carries (cell w, cell h, sheet w,
+// sheet h).  It then writes `arg0 * cells` to +0xb4; for e001's torch that is
+// 4 * (4*8) = 128, exactly where its `0xAA` alpha keys end -- so arg0 is
+// **frames per cell** and +0xb4 the particle's whole life.
+const OP_FX_GRID = 0x9F;
 
 const KIND_MODEL = 4, KIND_LIGHT = 6, KIND_CAMERA = 7;
 const LIGHT_KINDS = { 0: 'directional', 1: 'point', 4: 'ambient', 5: 'black' };
@@ -91,7 +100,7 @@ function newEntity(track, index, kind, label) {
            start: 0, end: null,
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
-           emitter: null, trackLen: null };
+           emitter: null, grid: null, trackLen: null };
 }
 
 /**
@@ -205,6 +214,14 @@ function run(scene, trackName, blob, frameBase, origin) {
     } else if (code === OP_FX_BIND_BONE && entity && args.length >= 2) {
       entity.binds.push([isStr(args[0]) ? args[0] : '',
                          isStr(args[1]) ? args[1] : '']);
+    } else if (code === OP_FX_GRID && entity && args.length >= 3) {
+      const cell = entity.sprite ? entity.sprite.cell : [1, 1];
+      const sheet = entity.sprite ? entity.sprite.sheet : [1, 1];
+      const cols = int(args[1]) || (cell[0] ? Math.floor(sheet[0] / cell[0]) : 1);
+      const rows = int(args[2]) || (cell[1] ? Math.floor(sheet[1] / cell[1]) : 1);
+      const cells = (args.length > 3 ? int(args[3]) : 0) || (cols * rows);
+      const rate = int(args[0]);
+      entity.grid = { rate, cols, rows, cells, life: rate * cells };
     } else if ((code === OP_FX_EMIT_A || code === OP_FX_EMIT_B) && entity) {
       // Structure only: what these steer is not established, so they are
       // carried and not used.

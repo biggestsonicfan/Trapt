@@ -3,7 +3,7 @@
     "pcsx2": {
       "command": "node",
       "args": [
-        "C:/Users/bigge/source/repos/ai/Trapt/hkmodd/PCSX2-MCP/pcsx2-mcp-server/dist/index.js"
+        "F:/Emulators/PCSX2-MCP-v1.0.0-win64/PCSX2-MCP-v1.0.0-win64/pcsx2-mcp-server/dist/index.js"
       ]
     }
   }

@@ -707,13 +707,29 @@ async function main() {
     check('its cell is 64x16 on a 256x256 page',
           [s.entity.sprite.cell, s.entity.sprite.sheet],
           [[64, 16], [256, 256]]);
-    const uv = s.mesh.geometry.attributes.uv.array;
-    const us = [uv[0], uv[2], uv[4], uv[6]], vs = [uv[1], uv[3], uv[5], uv[7]];
-    check('so it takes a quarter of the width',
-          [+Math.min(...us).toFixed(3), +Math.max(...us).toFixed(3)], [0, 0.25]);
-    check('and a sixteenth of the height, from the top',
-          [+Math.min(...vs).toFixed(3), +Math.max(...vs).toFixed(3)],
-          [0.938, 1]);
+    // The UVs are per-frame now, so they only mean anything after a pose.
+    const rectAt = (f) => {
+      play.poseAt(built, f);
+      const uv = s.mesh.geometry.attributes.uv.array;
+      const us = [uv[0], uv[2], uv[4], uv[6]], vs = [uv[1], uv[3], uv[5], uv[7]];
+      return [+Math.min(...us).toFixed(3), +Math.max(...us).toFixed(3),
+              +Math.min(...vs).toFixed(3), +Math.max(...vs).toFixed(3)];
+    };
+    // `0x9F 4 4 8 0` -- four columns, eight rows, so 32 cells at four frames
+    // each: a 128-frame life, which is exactly where the alpha keys end.  It
+    // also says the flame is the *top half* of the page only; the bottom half
+    // is a different effect's bank.
+    check('0x9F gives the grid and the rate',
+          s.entity.grid, { rate: 4, cols: 4, rows: 8, cells: 32, life: 128 });
+    check('cell 0 is the top-left quarter-width, sixteenth-height',
+          rectAt(s.entity.start), [0, 0.25, 0.938, 1]);
+    check('it steps a column every four frames',
+          rectAt(s.entity.start + 9), [0.5, 0.75, 0.938, 1]);
+    check('and wraps to the next row after four of them',
+          rectAt(s.entity.start + 17), [0, 0.25, 0.875, 0.938]);
+    check('the last cell is row 7 -- it never leaves the top half',
+          rectAt(s.entity.start + 125), [0.75, 1, 0.5, 0.563]);
+    check('then it loops', rectAt(s.entity.start + 130), [0, 0.25, 0.938, 1]);
     check('the quad stays unit -- the size keys carry the shape',
           [+s.mesh.geometry.width.toFixed(3),
            +s.mesh.geometry.height.toFixed(3)], [1, 1]);

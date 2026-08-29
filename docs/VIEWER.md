@@ -568,8 +568,9 @@ facade, but it will matter in a room the camera enters.
   effects render — see §7 — but `0xC8`/`0xC9` clearly steer an emitter count
   and a spread that nothing reads, so a burst of eight sparks comes out as one
   sprite at the emitter rather than a trail.
-* **A flipbook sheet shows its first frame and does not advance.** Nothing
-  found so far selects or animates the cell (§7.1).
+* **One particle, where the hardware has a cloud** (§9.3). The flipbook runs
+  and the timing is the game's, but a single billboard spends most of its
+  cycle faded out, so a torch flickers rather than burns steadily.
 * **An emitter emits one sprite, not a cloud.** `0x9E`, `0x9F`, `0x74` and
   `0x77` are a particle system that is read but not run (§9.2).
 * **Alpha is a cutout, not a blend** (`discard` below 0.35). Hair sheen and
@@ -640,10 +641,18 @@ on screen at once — which is what a red rectangle over a third of `e001`
 turned out to be. The quad takes one cell's UV rect and its aspect: a 64×16
 cell is four times as wide as it is tall, and a square quad stretches it.
 
-**Which** cell is not known. `0x69` is the only per-block scalar left and it
-reads `-1` on the 64-cell sheets as well as the single-cell ones, so it is not
-an index, and no opcode keyframes one. Cell 0 is what is drawn — exact for the
-eleven single-cell textures, the first frame for the three flipbooks.
+**`0x9F` drives the flipbook**, and it also proves the reading above.
+`FUN_001C4A50` takes `(rate, columns, rows, cells, …)` and defaults each of the
+last three when the script passes 0 — columns from `sheet_w / cell_w`, rows
+from `sheet_h / cell_h`, cells from `columns × rows` — dividing the very
+fields `0x68` filled in. It then writes `rate × cells` to `+0xb4`.
+
+For e001's torch, `0x9F 4 4 8 0` is four columns, **eight rows** and so 32
+cells at four frames each: a 128-frame life, which is exactly where its `0xAA`
+alpha keys end. So `rate` is frames per cell, `+0xb4` is the particle's whole
+life, and the flame is the **top half of the page only** — the 32 translucent
+orange cells, not the bright burst below them. Two independent readings, the
+ELF's arithmetic and the alpha split measured off the pixels, agree.
 
 ### 7.2 Two things that had to be fixed underneath
 

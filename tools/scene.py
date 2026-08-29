@@ -75,6 +75,16 @@ OP_FX_COLOUR_KEY = 0x6E
 # it had no colour ramp and no growth until these were read.
 OP_FX_COLOUR_KEY2 = 0xAA
 OP_FX_SIZE_KEY2 = 0xAB
+# `0x9F` FUN_001C4A50 -- the sprite sheet's grid and how fast it is played.
+#   arg1 -> columns, arg2 -> rows, arg3 -> cell count
+# Each defaults to the derived value when the script passes 0: the handler
+# computes columns as `sheet_w / cell_w` and rows as `sheet_h / cell_h` from
+# the very fields `0x68` filled in, which is what proves `0x68`'s four numbers
+# are (cell w, cell h, sheet w, sheet h).  The count defaults to rows*columns.
+# `arg0` lands at +0x2a and the handler then writes `arg0 * cells` to +0xb4.
+# For e001's torch that is 4 * (4*8) = 128, which is exactly where its `0xAA`
+# alpha keys end -- so arg0 is **frames per cell** and +0xb4 the whole life.
+OP_FX_GRID = 0x9F
 OP_FX_EMIT_A = 0xC8
 OP_FX_EMIT_B = 0xC9
 OP_FX_BIND_BONE = 0xCA
@@ -159,6 +169,7 @@ class Entity:
         self.colour_keys = []     # [(frame, r,g,b,a)]    from `0x6E`
         self.binds = []           # [(actor, bone)]       from `0xCA`
         self.emitter = None       # raw `0xC8` / `0xC9` parameters
+        self.grid = None          # {'rate', 'cols', 'rows', 'cells'} from `0x9F`
         self.track_len = None     # how long its track ran, in frames
 
     @property
@@ -459,6 +470,15 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             entity.binds.append((
                 ssc.sj(args[0]) if isinstance(args[0], bytes) else '',
                 ssc.sj(args[1]) if isinstance(args[1], bytes) else ''))
+        elif code == OP_FX_GRID and entity is not None and len(args) >= 3:
+            cell = entity.sprite['cell'] if entity.sprite else (1, 1)
+            sheet = entity.sprite['sheet'] if entity.sprite else (1, 1)
+            cols = _int(args[1]) or (int(sheet[0] // cell[0]) if cell[0] else 1)
+            rows = _int(args[2]) or (int(sheet[1] // cell[1]) if cell[1] else 1)
+            cells = (_int(args[3]) if len(args) > 3 else 0) or (cols * rows)
+            rate = _int(args[0])
+            entity.grid = {'rate': rate, 'cols': cols, 'rows': rows,
+                           'cells': cells, 'life': rate * cells}
         elif code in (OP_FX_EMIT_A, OP_FX_EMIT_B) and entity is not None:
             # Structure only: a count and three numbers, then four more.  What
             # they steer is not established, so they are carried and not used.
@@ -698,7 +718,7 @@ HANDLED = frozenset((
     OP_ROOT_BONE, OP_ATTACH, OP_TRANSFORM, OP_SCALE, OP_LIGHT_TYPE,
     OP_LIGHT_RANGE, OP_FX_TEXTURE, OP_FX_SIZE_KEY, OP_FX_COLOUR_KEY,
     OP_FX_EMIT_A, OP_FX_EMIT_B, OP_FX_BIND_BONE, OP_FX_COLOUR_KEY2,
-    OP_FX_SIZE_KEY2))
+    OP_FX_SIZE_KEY2, OP_FX_GRID))
 
 
 def effect_report(names=None):

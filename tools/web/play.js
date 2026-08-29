@@ -208,16 +208,11 @@ async function assemble(THREE, disc, name, onProgress) {
     for (const bind of points) {
       const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
                                           : new THREE.BufferGeometry();
-      // Cell 0 is the top-left of the sheet.  `.SMI` V runs top-down and so
-      // does a TIM2, so v0 is 0 and the cell grows downwards.
-      if (geo.attributes && geo.attributes.uv) {
-        const uv = geo.attributes.uv.array;
-        for (let k = 0; k < uv.length; k += 2) {
-          uv[k] *= u;
-          uv[k + 1] = 1 - (1 - uv[k + 1]) * v;
-        }
-        geo.attributes.uv.needsUpdate = true;
-      }
+      // The UVs are rewritten every frame by `setCell`, so keep the pristine
+      // unit-quad corners to build each cell's rect from.
+      let uvBase = null;
+      if (geo.attributes && geo.attributes.uv)
+        uvBase = Float32Array.from(geo.attributes.uv.array);
       const mat = new THREE.MeshBasicMaterial({
         map: tex, transparent: true, depthWrite: false,
         blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
@@ -227,7 +222,8 @@ async function assemble(THREE, disc, name, onProgress) {
       mesh.frustumCulled = false;
       mesh.visible = false;
       root.add(mesh);
-      sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null });
+      sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null,
+                     uvBase: uvBase, cellU: u, cellV: v, cell: -1 });
     }
   }
   // Resolve each bind to the actor that carries the bone, once.
@@ -286,6 +282,25 @@ async function assemble(THREE, disc, name, onProgress) {
            camera: camera, assets: assets, warnings: warnings,
            clipFor: clipFor, textures: texCache, lights: lights,
            roomDir: roomDir, sprites: sprites };
+}
+
+/**
+ * Point a sprite's UVs at cell `index` of its sheet, counting left to right
+ * then top to bottom.  A `.TIM2` runs top-down and three.js puts v = 1 at the
+ * top of a plane, so row 0 is the v = 1 end and rows grow downwards.
+ */
+function setCell(s, index) {
+  if (!s.uvBase || index === s.cell) return;
+  s.cell = index;
+  const g = s.entity.grid;
+  const cols = g && g.cols ? g.cols : 1;
+  const cx = index % cols, cy = Math.floor(index / cols);
+  const uv = s.mesh.geometry.attributes.uv.array;
+  for (let k = 0; k < uv.length; k += 2) {
+    uv[k] = (cx + s.uvBase[k]) * s.cellU;
+    uv[k + 1] = 1 - (cy + (1 - s.uvBase[k + 1])) * s.cellV;
+  }
+  s.mesh.geometry.attributes.uv.needsUpdate = true;
 }
 
 /**
@@ -366,8 +381,12 @@ function poseAt(built, frame) {
     // leaves the torch lit for two seconds and then dark.  Looping is the
     // closest a single billboard gets to a thing that keeps emitting; it is
     // an approximation of the emitter (0x9E/0x9F), not the emitter itself.
-    const loops = keyed > 0 && !e.trackLen;
-    const t = loops ? local % (keyed + 1) : local;
+    // `0x9F` gives the sheet's own life -- frames-per-cell times cells -- and
+    // for e001's torch that is 128, the same frame its alpha keys end on.
+    // Where it exists it is the authority on how long one particle lasts.
+    const span = (e.grid && e.grid.life) || keyed;
+    const loops = span > 0 && !e.trackLen;
+    const t = loops ? local % (span + 1) : local;
     const live = local >= 0 && (loops || local <= life)
               && sceneMod.visibleAt(e, frame) && (e.end === null || frame < e.end);
     s.mesh.visible = live;
@@ -386,6 +405,10 @@ function poseAt(built, frame) {
     // Size is in scene units and carries the shape: e001's torch runs from
     // 1 x 2 to 4 x 7, a plume taller than it is wide.
     s.mesh.scale.set(sx || 1, sy || 1, 1);
+    // Step the flipbook.  Without `0x9F` there is no grid and cell 0 stands.
+    if (e.grid && e.grid.cells > 1 && e.grid.rate > 0)
+      setCell(s, Math.min(e.grid.cells - 1,
+                          Math.floor(t / e.grid.rate)) % e.grid.cells);
 
     let px = 0, py = 0, pz = 0;
     if (s.actor && s.boneIndex >= 0 && s.actor.lastMats) {
