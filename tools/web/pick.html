@@ -43,6 +43,9 @@
     background: repeating-conic-gradient(#1a1a20 0% 25%, #141419 0% 50%) 50%/14px 14px; }
   figcaption { font: 11px ui-monospace, monospace; opacity: .5; margin-top: 6px;
     word-break: break-all; }
+  #view:fullscreen { height: 100%; width: 100%; border: 0; border-radius: 0;
+    background: #000; }
+  #view:-webkit-full-screen { height: 100%; width: 100%; background: #000; }
   #view { position: relative; background: #08080a; border: 1px solid #22222a;
     border-radius: 10px; height: 460px; margin: 10px 0 14px; overflow: hidden; }
   #view canvas { display: block; width: 100%; height: 100%; cursor: grab; }
@@ -379,6 +382,8 @@ function ensureViewer() {
     tick();
   }
   host.appendChild(V.renderer.domElement);
+  ensurePost();                        // V.look has to exist before setPs2
+  ensureSubsPass();
   bindOrbit(host);
   resize();
 }
@@ -631,7 +636,7 @@ function setPs2(on) {
         o.material.uniforms.ps2.value = on ? 1 : 0;
     });
   // Native resolution and the GS alpha rule belong to the same switch.
-  V.look.native = on ? 1 : 0;
+  if (V.look) V.look.native = on ? 1 : 0;
   applyLook();
   fitOutput();
   resize();                            // the projection aspect moves with it
@@ -938,7 +943,7 @@ async function playScene(name) {
   V.orbit.target = [c.x, c.y, c.z];
   V.orbit.dist = Math.max(size.x, size.y, size.z) * 1.4 || 10;
 
-  S = { built: built, frame: 1, playing: true, ms: 0, load: load,
+  S = { built: built, frame: 1, playing: false, ms: 0, load: load,
         name: name, sceneCam: true, seeked: true, ctx: null, audio: null };
   sceneTransport();
   sceneInfo();
@@ -958,7 +963,37 @@ async function playScene(name) {
     S.audio = null;
     built.warnings.push('audio: ' + err.message);
   }
+
+  // Everything is in hand: start, and rebuild the cue index from frame 1 so
+  // nothing that went past during the load counts as already spoken.
+  S.frame = 1;
+  S.seeked = true;
+  S.playing = true;
+  const pb = document.getElementById('playBtn');
+  if (pb) pb.textContent = 'Pause';
+  resumeAudio();
   sceneInfo();
+}
+
+/**
+ * A tab's AudioContext starts suspended unless it was created inside a real
+ * user gesture, and this one is created after an await, so it never is.
+ * Resume it now, and again on the next click if the browser refused.
+ */
+function resumeAudio() {
+  if (!S || !S.ctx) return;
+  const go = () => {
+    if (S && S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
+  };
+  go();
+  if (S.ctx.state === 'suspended' && !V.audioHook) {
+    V.audioHook = true;
+    addEventListener('pointerdown', function once() {
+      removeEventListener('pointerdown', once);
+      V.audioHook = false;
+      go();
+    });
+  }
 }
 
 function sceneTransport() {
@@ -970,6 +1005,7 @@ function sceneTransport() {
               + '<button id="subsBtn"></button>'
               + '<button id="muteBtn"></button>'
               + '<button id="lookBtn">Look</button>'
+              + '<button id="fsBtn">Fullscreen</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
   document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
@@ -995,10 +1031,6 @@ function sceneTransport() {
     panel.classList.toggle('on');
     e.target.classList.toggle('on', panel.classList.contains('on'));
   };
-  ensureSubsPass();
-  setSubsPs2(V.subsPick !== undefined ? V.subsPick
-             : (V.ps2 === undefined ? true : V.ps2));
-  setPs2(V.ps2 === undefined ? true : V.ps2);
   const btn = document.getElementById('playBtn');
   const cam = document.getElementById('camBtn');
   const seek = document.getElementById('seek');
@@ -1023,6 +1055,13 @@ function sceneTransport() {
     S.seeked = true;
     document.getElementById('playBtn').textContent = 'Play';
   };
+  document.getElementById('fsBtn').onclick = toggleFullscreen;
+
+  // Only now, once every control is live.
+  ensureSubsPass();
+  setSubsPs2(V.subsPick !== undefined ? V.subsPick
+             : (V.ps2 === undefined ? true : V.ps2));
+  setPs2(V.ps2 === undefined ? true : V.ps2);
 }
 
 function sceneInfo() {
@@ -1102,7 +1141,7 @@ function tick() {
   const now = performance.now();
   const dt = Math.min(0.1, (now - V.last) / 1000);
   V.last = now;
-  if (!V || !V.group) return;
+  if (!V) return;
 
   if (S) {
     if (S.playing) {
@@ -1134,6 +1173,7 @@ function tick() {
   }
 
   if (S && S.sceneCam) { drawFrame(); return; }
+  if (!V.group) { drawFrame(); return; }
   const o = V.orbit;
   const cp = Math.cos(o.pitch);
   V.camera.position.set(
@@ -1144,6 +1184,44 @@ function tick() {
   V.key.position.copy(V.camera.position);
   drawFrame();
 }
+
+/**
+ * Fullscreen the viewer, not the document: the letterbox, the subtitles, the
+ * card overlay and the look panel are all children of `#view`, so taking that
+ * element full-screen keeps them where they belong.
+ *
+ * The canvas is sized from the element, and in Modern mode the projection
+ * follows the element's aspect, so both have to be recomputed once the
+ * browser has actually resized us -- hence the fullscreenchange hook rather
+ * than measuring straight after the request.
+ */
+function toggleFullscreen() {
+  const host = document.getElementById('view');
+  if (!host) return;
+  const on = document.fullscreenElement || document.webkitFullscreenElement;
+  if (on) {
+    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    const go = host.requestFullscreen || host.webkitRequestFullscreen;
+    if (go) go.call(host);
+  }
+}
+
+function fullscreenChanged() {
+  const on = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const b = document.getElementById('fsBtn');
+  if (b) {
+    b.textContent = on ? 'Exit fullscreen' : 'Fullscreen';
+    b.classList.toggle('on', on);
+  }
+  resize();                            // canvas size and, in Modern, aspect
+  if (V && V.subKey !== undefined) V.subKey = null;   // redraw the overlay
+}
+addEventListener('fullscreenchange', fullscreenChanged);
+addEventListener('webkitfullscreenchange', fullscreenChanged);
+addEventListener('keydown', (e) => {
+  if (e.key === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey) toggleFullscreen();
+});
 
 /** World into the 512x224 target, then the post pass onto the canvas. */
 function drawFrame() {
