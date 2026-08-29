@@ -4,23 +4,28 @@
 # checked by diffing them against the Python over real game data, and the ELF
 # supplies the story tables, the font and the filename table.  None of that
 # belongs on a runner, so those suites skip themselves (exit 2) and the job
-# still passes.
+# still passes -- 114 checks here against 390 with a disc in hand.
 #
-# What does run is the half that needs no game data, and it is the half that
-# has actually caught shipped bugs:
+# What does run is the half that has actually caught shipped bugs:
 #
 #   * every browser module loads the way a browser loads it -- one shared
 #     global scope, not one module scope each.  iso.js and disc.js once both
-#     declared `u32` and `api` at top level, and the page died with
-#     "TraptDisc is not defined" while every test passed.
+#     declared `u32` and `api` at top level, so the second tag died with a
+#     redeclaration error and the page failed with "TraptDisc is not defined"
+#     while every test passed.
 #   * the GS shaders in tools/web/gs.js are still byte-identical to the ones
 #     in tools/player.html, which is the only thing keeping two copies honest.
 #   * pick.html's initialisation order, which broke route mode's play button
 #     and its audio in one line.
 #
+# One job on one small image, because the runner shares a 25 GB disk with
+# Forgejo and decomp.me: node:20-bookworm-slim is about 240 MB, against a
+# gigabyte each for the full node and python images.  git and python3 go in
+# before the checkout -- the slim image has neither, and installing them does
+# not need the repository.
+#
 # Forgejo reads .forgejo/workflows first and falls back to .github/workflows.
-# It needs a registered runner with a Node container; without one this file
-# sits inert and the Actions tab stays empty.
+# It needs a registered runner; see deploy/docker-compose.runner.yml.
 name: ci
 
 on:
@@ -29,37 +34,31 @@ on:
   workflow_dispatch:
 
 jobs:
-  web:
+  test:
     runs-on: docker
     container:
-      image: node:20-bookworm
+      image: node:20-bookworm-slim
     steps:
+      - name: what the slim image is missing
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates python3
+          node --version && git --version && python3 --version
+
       - uses: actions/checkout@v4
 
-      - name: node and python versions
-        run: |
-          node --version
-          python3 --version || echo "no python; the disc suites would skip anyway"
-
-      - name: every module parses
+      - name: every browser module parses
         run: for f in tools/web/*.js; do node --check "$f"; done
 
       - name: the suites that need no disc
         run: node tools/web/test_all.js --no-disc
 
-  python:
-    runs-on: docker
-    container:
-      image: python:3.12-bookworm
-    steps:
-      - uses: actions/checkout@v4
-
       - name: every tool compiles
-        run: python -m compileall -q tools deploy
+        run: python3 -m compileall -q tools deploy
 
       - name: the docs point at files that exist
         run: |
-          python - <<'EOF'
+          python3 - <<'EOF'
           import os, re, sys
           bad = []
           for root, _, files in os.walk('docs'):
@@ -67,7 +66,8 @@ jobs:
                   if not f.endswith('.md'):
                       continue
                   p = os.path.join(root, f)
-                  for link in re.findall(r'\]\(([^)#]+)[^)]*\)', open(p, encoding='utf-8').read()):
+                  text = open(p, encoding='utf-8').read()
+                  for link in re.findall(r'\]\(([^)#]+)[^)]*\)', text):
                       if link.startswith(('http', 'mailto:')):
                           continue
                       t = os.path.normpath(os.path.join(root, link))

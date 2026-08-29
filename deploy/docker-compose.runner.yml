@@ -1,0 +1,52 @@
+# A Forgejo Actions runner for code.robkrum.com, on the same droplet.
+#
+# Register once, then bring it up:
+#
+#   # 1. get a token: Forgejo -> Site administration -> Actions -> Runners
+#   #    -> Create new runner, or for one repository, the repo's
+#   #    Settings -> Actions -> Runners
+#   mkdir -p runner
+#   docker run --rm -it -v "$PWD/runner:/data" \
+#     data.forgejo.org/forgejo/runner:13.0.0 \
+#     forgejo-runner register --no-interactive \
+#       --instance https://code.robkrum.com \
+#       --token <TOKEN> --name droplet \
+#       --labels 'docker:docker://node:20-bookworm-slim'
+#
+#   # 2. run it
+#   cp runner-config.yml runner/config.yml
+#   docker compose -f docker-compose.runner.yml up -d
+#
+# The label has to match what the workflow asks for: `runs-on: docker` in
+# .forgejo/workflows/ci.yml matches the label named `docker`, and the image
+# after `docker://` is what a job gets when it does not name its own.
+#
+# **This mounts the host's Docker socket.** That is the light option -- a
+# docker-in-docker sidecar wants its own daemon and a storage layer, which is
+# a lot on a 1 GB box -- but it is not a small permission: a job can talk to
+# the host daemon, and that is effectively root on the droplet.  For a private
+# instance where you write all the workflows that is a considered trade; it
+# would not be for a repository that takes pull requests from strangers.
+name: forgejo-runner
+
+services:
+  runner:
+    image: data.forgejo.org/forgejo/runner:13.0.0
+    container_name: forgejo-runner
+    command: forgejo-runner daemon --config /data/config.yml
+    working_dir: /data
+    user: "0:0"                      # needs the socket, which is root-owned
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - ./runner:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    # The runner itself does almost nothing -- it hands work to the daemon --
+    # but it shares 1 GB with Forgejo and decomp.me, so box it in.
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "forgejo-runner", "--version"]
+      interval: 60s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,45 @@
+# Forgejo runner config -- copy to runner/config.yml beside the .runner file
+# that `forgejo-runner register` writes.
+#
+# Sized for a 1 vCPU / 1 GB / 25 GB droplet that is already carrying Forgejo
+# and decomp.me: one job at a time, short timeouts, and no image it does not
+# need.  `docker system prune` is worth a cron entry -- job containers are
+# removed, but pulled images are not.
+
+log:
+  level: info
+
+runner:
+  # One at a time.  Two concurrent jobs on one vCPU is slower than one, and
+  # each holds its own container.
+  capacity: 1
+  timeout: 15m
+  shutdown_timeout: 30s
+  # Whether to pull the job image every run.  false keeps the disk quiet and
+  # the network idle once the image is there.
+  fetch_timeout: 5s
+  fetch_interval: 10s
+  # Must match `runs-on:` in the workflow.  The image after `docker://` is the
+  # default for a job that does not name its own container.
+  labels:
+    - "docker:docker://node:20-bookworm-slim"
+
+cache:
+  # actions/cache needs a server the job containers can reach.  Off, because
+  # this repository's CI installs two apt packages and runs node -- there is
+  # nothing worth caching, and the server would want a port and a directory.
+  enabled: false
+
+container:
+  # Job containers get no extra network; they only need to reach the Forgejo
+  # instance, which is public.
+  network: ""
+  privileged: false
+  options: "--memory=512m --cpus=1"
+  # Only the workspace is shared in.
+  valid_volumes: []
+  docker_host: "unix:///var/run/docker.sock"
+  force_pull: false
+
+host:
+  workdir_parent: /data/workspace

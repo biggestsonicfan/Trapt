@@ -161,7 +161,58 @@ content, and the payload here is mostly base64 audio and textures inside
 `.js`. Pages advertises unlimited bandwidth and is the safer of the two on
 that point.
 
-## 6. Rebuilding
+## 6. The CI runner
+
+`code.robkrum.com` has an Actions tab but nothing runs in it until a runner is
+registered. `deploy/docker-compose.runner.yml` is one, on the same droplet:
+
+```sh
+# a token from the repo's Settings -> Actions -> Runners, or site admin
+mkdir -p runner
+docker run --rm -it -v "$PWD/runner:/data"   data.forgejo.org/forgejo/runner:13.0.0   forgejo-runner register --no-interactive     --instance https://code.robkrum.com     --token <TOKEN> --name droplet     --labels 'docker:docker://node:20-bookworm-slim'
+
+cp deploy/runner-config.yml runner/config.yml
+docker compose -f deploy/docker-compose.runner.yml up -d
+```
+
+The label has to match the workflow: `runs-on: docker` picks the label named
+`docker`, and the image after `docker://` is the default for a job that does
+not name its own container.
+
+**It mounts the host's Docker socket.** That is the light option — a
+docker-in-docker sidecar wants its own daemon and storage layer, which is a
+lot next to Forgejo and decomp.me on 1 GB — but it is not a small permission:
+a job can talk to the host daemon, which is effectively root on the droplet.
+For a private instance whose workflows you write yourself that is a considered
+trade; it would not be one for a repository taking pull requests from
+strangers.
+
+Sized for the box: one job at a time, a 15 minute timeout, 512 MB and one CPU
+per job, and a single ~240 MB image rather than the gigabyte-each official
+node and python ones. `git` and `python3` are installed in the first step,
+before the checkout, because the slim image has neither and installing them
+does not need the repository.
+
+Job containers are removed as they finish but pulled images are not, so
+`docker image prune -f` is worth a weekly cron entry on a 25 GB disk.
+
+### What it can actually test
+
+Nothing here builds without the disc, and most suites are parity diffs against
+the Python over real game data, so they skip themselves (exit 2) and the job
+still passes:
+
+```
+node tools/web/test_all.js              # 390 checks, disc present
+node tools/web/test_all.js --no-disc    # 114 checks, what CI runs
+```
+
+The 114 are the three suites that have caught bugs that shipped: module
+loading under a browser's shared global scope, the GS shaders in `gs.js`
+matching `player.html`, and `pick.html`'s initialisation order. See
+[`BROWSER.md`](BROWSER.md) §4.
+
+## 7. Rebuilding
 
 The site is regenerated, never patched:
 
