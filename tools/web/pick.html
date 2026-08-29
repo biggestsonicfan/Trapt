@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trapt — supply your disc</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #0b0b0d; color: #e8e6e3;
+    font: 14px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  p { opacity: .7; margin: 0 0 16px; }
+  .drop { border: 1px dashed #3a3a44; border-radius: 12px; padding: 34px 24px;
+    text-align: center; background: #121216; transition: border-color .15s, background .15s; }
+  .drop.over { border-color: #4a72ad; background: #161a22; }
+  .drop input { display: none; }
+  label.btn { display: inline-block; background: #3a5a8a; border: 1px solid #4a72ad;
+    border-radius: 6px; padding: 9px 16px; cursor: pointer; font-weight: 600; }
+  label.btn:hover { filter: brightness(1.15); }
+  .hint { font-size: 12.5px; opacity: .45; margin-top: 12px; }
+  #out { margin-top: 24px; display: none; }
+  #out.on { display: block; }
+  .row { display: flex; gap: 12px; padding: 6px 0; border-top: 1px solid #1e1e24;
+    font-variant-numeric: tabular-nums; }
+  .row b { flex: 0 0 190px; font-weight: 400; opacity: .5; }
+  .bad { color: #ff9a9a; }
+  .good { color: #9ad7a0; }
+  code { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  #files { max-height: 220px; overflow: auto; background: #101014; border-radius: 8px;
+    padding: 10px 12px; margin-top: 10px; font-family: ui-monospace, monospace;
+    font-size: 12px; opacity: .75; }
+  .note { font-size: 12.5px; opacity: .55; border-left: 2px solid #2e2e36;
+    padding-left: 12px; margin-top: 26px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Supply your Trapt disc</h1>
+  <p>This page reads the game out of your own copy. Nothing is uploaded — the
+     file never leaves your machine, and only the few kilobytes actually needed
+     are read out of it.</p>
+
+  <div class="drop" id="drop">
+    <label class="btn">Choose Trapt (USA).iso<input type="file" id="file" accept=".iso,.bin,.img"></label>
+    <div class="hint">or drop it here &middot; SLUS-21255, 1.76 GB</div>
+  </div>
+
+  <div id="out">
+    <div id="rows"></div>
+    <div id="files"></div>
+  </div>
+
+  <div class="note">
+    Reads the ISO 9660 directory, the filename table baked into
+    <code>SLUS_212.55</code> at <code>0x0036A0F0</code>, and the AFS index at
+    the front of <code>DATA/GAME.DAT</code> — about 100 KB in total out of
+    1.76 GB. Everything after that is a ranged read of just the cutscene you
+    ask for.
+  </div>
+</main>
+
+<script src="iso.js"></script>
+<script src="disc.js"></script>
+<script>
+'use strict';
+const drop = document.getElementById('drop');
+const out = document.getElementById('out');
+const rows = document.getElementById('rows');
+const filesEl = document.getElementById('files');
+
+function row(label, value, cls) {
+  const d = document.createElement('div');
+  d.className = 'row';
+  d.innerHTML = '<b></b><span></span>';
+  d.querySelector('b').textContent = label;
+  const v = d.querySelector('span');
+  v.textContent = value;
+  if (cls) v.className = cls;
+  rows.appendChild(d);
+}
+
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]);
+});
+document.getElementById('file').addEventListener('change', (e) => {
+  if (e.target.files[0]) load(e.target.files[0]);
+});
+
+async function load(file) {
+  out.className = 'on';
+  rows.innerHTML = '';
+  filesEl.textContent = '';
+  row('file', file.name + '  (' + (file.size / 1e9).toFixed(2) + ' GB)');
+  const t0 = performance.now();
+  try {
+    const disc = await TraptDisc.open(TraptIso.blobSource(file));
+    row('volume', disc.iso.volume.id + '  /  ' + disc.iso.volume.system, 'good');
+    row('files in the AFS', disc.entries.length.toLocaleString());
+    row('names in the ELF table', disc.toc.size.toLocaleString());
+
+    // Everything below is read live out of the disc that was just picked.
+    const names = [];
+    for (let i = 0; i < 154; i++)
+      names.push(disc.elfStr(disc.elfU32(0x00386920 + i * 4)));
+    row('cutscenes in the registry', names.length + '  (' + names[0] + ' … '
+        + names[names.length - 1] + ')', 'good');
+
+    const cutscenes = disc.glob('DATA/RT/E').filter((n) => n.endsWith('.ARC'));
+    row('cutscene archives on disc', cutscenes.length);
+
+    const master = await disc.read('DATA/RT/E001/RT_E001.ARC');
+    row('read DATA/RT/E001/RT_E001.ARC',
+        master.length.toLocaleString() + ' bytes in '
+        + (performance.now() - t0).toFixed(0) + ' ms', 'good');
+
+    filesEl.textContent = names.join('  ');
+  } catch (err) {
+    row('problem', err.message, 'bad');
+  }
+}
+</script>
+</body>
+</html>
