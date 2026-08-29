@@ -230,18 +230,29 @@ def pack_font(subtitles):
 # --------------------------------------------------------------------- audio
 
 def encode_audio(adx_blob, bitrate, mono):
-    """Decode ADX with our own decoder, then compress with ffmpeg to Ogg."""
+    """Decode ADX with our own decoder, then compress with ffmpeg to Ogg.
+
+    `-bitexact` is what makes a rebuild reproducible.  Without it the Ogg
+    muxer picks a random bitstream serial number per encode, which lands in
+    every page header and changes every page CRC with it -- two builds of
+    `e001` from the same disc differed in 4790 bytes across 368 runs, all of
+    them serial and CRC, for identical audio.  That is invisible when you open
+    the page and expensive everywhere else: rsync re-sends 0.89 GB, Docker
+    rebuilds the layer, and a git-backed host stores another half a gigabyte.
+    """
     wav = io.BytesIO()
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         wpath = os.path.join(td, 'a.wav')
         opath = os.path.join(td, 'a.ogg')
         adx_mod.to_wav(adx_blob, wpath)
-        cmd = [FFMPEG, '-v', 'error', '-y', '-i', wpath, '-c:a', 'libvorbis',
-               '-b:a', bitrate]
+        cmd = [FFMPEG, '-v', 'error', '-y', '-i', wpath,
+               '-c:a', 'libvorbis', '-b:a', bitrate]
         if mono:
             cmd += ['-ac', '1']
-        cmd += [opath]
+        # `-bitexact` has to sit on the *output* side to reach the muxer;
+        # before `-i` it is an input option and the serial stays random.
+        cmd += ['-bitexact', opath]
         try:
             subprocess.run(cmd, check=True)
         except (OSError, subprocess.CalledProcessError):
