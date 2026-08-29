@@ -40,23 +40,49 @@ function stubThree() {
     setAttribute(n, a) { this.attributes[n] = a; }
     setIndex(a) { this.index = a; }
     computeVertexNormals() { this.computed = true; }
+    dispose() { this.disposed = true; }
   }
-  class Group {
+  // `traverse`, `remove` and `clone` exist because `stageview.js` walks a
+  // built group to re-point its light uniforms when the body changes room,
+  // drops the collision overlay when it is turned off, and clones a trap's
+  // model once per placement.
+  class Object3D {
     constructor() {
-      this.children = []; this.visible = true; this.position = new Vector3();
+      this.children = []; this.visible = true;
+      this.position = new Vector3();
+      this.rotation = new Vector3();
+      this.userData = {};
     }
-    add(c) { this.children.push(c); }
+    add(c) { this.children.push(c); return this; }
+    remove(c) {
+      const i = this.children.indexOf(c);
+      if (i >= 0) this.children.splice(i, 1);
+      return this;
+    }
+    traverse(fn) { fn(this); for (const c of this.children) c.traverse(fn); }
+    clone() {
+      const out = new this.constructor();
+      out.children = this.children.map((c) => c.clone());
+      out.material = this.material;
+      out.geometry = this.geometry;
+      return out;
+    }
   }
+  class Group extends Object3D {}
   return {
-    Vector2, Vector3, BufferAttribute, BufferGeometry, Group,
+    Vector2, Vector3, BufferAttribute, BufferGeometry, Group, Object3D,
     Vector4: class { constructor(x, y, z, w) { Object.assign(this, { x, y, z, w }); } },
     Color: class { constructor(r, g, b) { Object.assign(this, { r, g, b }); } },
-    Mesh: class {
+    Mesh: class extends Object3D {
       constructor(g, m) {
-        this.geometry = g; this.material = m; this.visible = true;
-        this.frustumCulled = true; this.userData = {};
+        super();
+        this.geometry = g; this.material = m; this.frustumCulled = true;
       }
     },
+    LineSegments: class extends Object3D {
+      constructor(g, m) { super(); this.geometry = g; this.material = m; }
+    },
+    LineBasicMaterial: class { constructor(o) { Object.assign(this, o); } },
     DataTexture: class {
       constructor(d, w, h) { this.image = { data: d, width: w, height: h }; }
     },

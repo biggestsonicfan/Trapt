@@ -109,6 +109,24 @@
   #galleryStatus { text-transform: none; letter-spacing: 0; opacity: .8;
     font-weight: 400; margin-left: 10px; }
   #routes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  #stages { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  #stageStatus { text-transform: none; letter-spacing: 0; opacity: .8;
+    font-weight: 400; margin-left: 10px; }
+  #padPanel { font-size: 12.5px; opacity: .65; margin: 8px 0 4px; }
+  #padPanel label.btn { padding: 5px 12px; font-size: 12px; margin-right: 10px; }
+  #padPanel code { opacity: .85; }
+  #hud { position: absolute; left: 10px; top: 10px; z-index: 5;
+    background: #16161ae8; border: 1px solid #2e2e36; border-radius: 8px;
+    padding: 8px 10px; font: 11.5px/1.65 ui-monospace, monospace;
+    color: #cfcdc9; pointer-events: none; max-width: 46%; }
+  #hud b { color: #d8b06a; font-weight: 600; }
+  #hud .dim { opacity: .5; }
+  #hud .warn { color: #ff9a9a; }
+  #traybar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin: 0 0 12px; }
+  #traybar .pill { background: #17171c; border: 1px solid #26262b;
+    border-radius: 6px; padding: 4px 9px; font: 12px ui-monospace, monospace; }
+  #traybar .pill.on { background: #3a5a8a; border-color: #4a72ad; }
   #card { position: absolute; inset: 0; z-index: 6; display: none;
     background: #05050788; backdrop-filter: blur(2px); }
   #card.on { display: flex; flex-direction: column; align-items: center;
@@ -155,6 +173,9 @@
          you just picked was backwards.  It is empty until something is
          opened, and an empty div takes no room. -->
     <div id="detail"></div>
+    <h2>Walk a stage <span id="stageStatus"></span></h2>
+    <div id="stages"></div>
+    <div id="padPanel"></div>
     <h2>Play a route</h2>
     <div id="routes"></div>
     <h2 id="listHead">Cutscenes on the disc</h2>
@@ -188,6 +209,13 @@
 <script src="adx.js"></script>
 <script src="audio.js"></script>
 <script src="model.js"></script>
+<script src="hbin.js"></script>
+<script src="col.js"></script>
+<script src="mapbin.js"></script>
+<script src="trap.js"></script>
+<script src="pad.js"></script>
+<script src="stage.js"></script>
+<script src="stageview.js"></script>
 <script src="story.js"></script>
 <script src="cards.js"></script>
 <script src="catalog.js"></script>
@@ -205,6 +233,7 @@ let CUR = null;      // the archive currently open
 let V = null;        // the three.js viewer, created once
 let M = null;        // the model on screen, and its clip
 let S = null;        // the whole cutscene, when one is playing
+let G = null;        // the stage being walked, when one is
 let FONT = null;     // the PS2 kernel face, out of the ELF
 let TABLES = null;   // the story tables, out of the same ELF
 let HAVE = null;     // the cutscenes this disc actually carries
@@ -281,6 +310,15 @@ async function load(file) {
   } catch (err) {
     TABLES = null;
     row('story order', err.message, 'bad');
+  }
+
+  try {
+    buildStagePanel();
+    row('stages', TraptMapbin.stageNumbers(DISC).length
+        + ' in DATA/MAP_DATA/BIN, with collision for '
+        + (await TraptStage.loadCollision(DISC)).size + ' rooms', 'good');
+  } catch (err) {
+    row('stages', err.message, 'bad');
   }
 
   for (const n of names) {
@@ -1180,6 +1218,240 @@ function buildRoutePanel() {
          { chapters: c + 1, ending: TABLES.routes[c][r] });
 }
 
+// ------------------------------------------------------------- stage mode
+// The other half of the game.  A route announces a stage and steps over it;
+// this walks one.  The rooms, their collision, the doors between them and
+// the 48 traps all come off the disc (stage.js), the body is simulated in
+// room-local space (col.js), and the pad is bound the way PCSX2 is (pad.js).
+
+let PADCFG = null;      // the parsed [Pad1], from a PCSX2.ini or the defaults
+
+function padSummary() {
+  const dev = TraptPad.devicesUsed(PADCFG.bindings);
+  const n = Object.keys(PADCFG.bindings).length;
+  if (!n) return 'nothing bound';
+  const bits = [];
+  if (dev.pads.length) bits.push('gamepad ' + dev.pads.join(', '));
+  if (dev.keys) bits.push(dev.keys + ' keyboard');
+  return n + ' controls bound (' + bits.join(' + ') + ')';
+}
+
+function buildPadPanel() {
+  const host = document.getElementById('padPanel');
+  if (!host) return;
+  if (!PADCFG) PADCFG = TraptPad.defaults();
+  host.innerHTML =
+    '<label class="btn">Use my PCSX2 bindings'
+    + '<input type="file" id="padIni" accept=".ini"></label>'
+    + '<span id="padWhich"></span>';
+  document.getElementById('padWhich').innerHTML =
+    (PADCFG.source || 'built-in keyboard defaults') + ' &middot; ' + padSummary()
+    + ' &middot; <code>Documents/PCSX2/inis/PCSX2.ini</code>';
+  document.getElementById('padIni').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const parsed = TraptPad.parse(await file.text());
+    if (!Object.keys(parsed.bindings).length) {
+      document.getElementById('padWhich').innerHTML =
+        '<span class="bad">no [Pad1] bindings in ' + file.name + '</span>';
+      return;
+    }
+    parsed.source = file.name;
+    PADCFG = parsed;
+    if (G) G.pad.bindings = PADCFG.bindings;
+    buildPadPanel();
+  });
+}
+
+function buildStagePanel() {
+  const host = document.getElementById('stages');
+  if (!host || host.dataset.built) return;
+  host.dataset.built = '1';
+  const numbers = TraptMapbin.stageNumbers(DISC);
+  for (const n of numbers) {
+    const b = document.createElement('div');
+    b.className = 'cut';
+    b.textContent = 'M' + String(n).padStart(3, '0');
+    b.title = 'walk stage ' + n;
+    b.onclick = () => playStage(n, b);
+    host.appendChild(b);
+  }
+  document.getElementById('stageStatus').textContent =
+    numbers.length + ' stages on the disc — rooms, collision, doors and traps';
+  buildPadPanel();
+}
+
+async function playStage(number, chip) {
+  S = null; M = null;                       // leave cutscene and model modes
+  for (const c of document.querySelectorAll('#stages .cut.on'))
+    c.classList.remove('on');
+  if (chip) chip.classList.add('on');
+
+  detail.innerHTML =
+      '<h2>Stage M' + String(number).padStart(3, '0') + '</h2>'
+    + '<div id="members">assembling…</div>'
+    + '<div id="view"><div id="hud"></div><div id="look"></div></div>'
+    + '<div id="traybar"></div>'
+    + '<div id="vinfo"></div>';
+  ensureViewer();
+
+  const members = document.getElementById('members');
+  let runner;
+  const t0 = performance.now();
+  try {
+    runner = await TraptStageView.create(THREE, DISC, number,
+      { ps2: !V.look || !!V.look.native },
+      (msg) => { members.textContent = msg + '…'; });
+  } catch (err) {
+    members.innerHTML = '<span class="bad">' + err.message + '</span>';
+    return;
+  }
+
+  if (G) { G.pad.detach(); if (G.runner) V.scene.remove(G.runner.root); }
+  if (V.group) { V.scene.remove(V.group); V.group = null; }
+  V.scene.add(runner.root);
+  V.group = runner.root;                    // drawFrame feeds it the eye
+
+  const pad = new TraptPad.Pad(PADCFG.bindings).attach(document.getElementById('view'));
+  G = { runner, pad, edges: new TraptPad.Edges(), stage: runner.stage,
+        number, last: performance.now(), fps: 60, msg: '', msgUntil: 0 };
+  // The page keeps its own keyboard behaviour except for the keys the pad
+  // actually uses, so the view has to be focusable for them to arrive.
+  const view = document.getElementById('view');
+  view.tabIndex = 0;
+  view.focus();
+
+  const st = runner.stage;
+  members.textContent =
+    st.rooms.size + ' rooms, ' + st.graph.doors.length + ' doors, '
+    + st.traps.length + ' traps · assembled in '
+    + (performance.now() - t0).toFixed(0) + ' ms · '
+    + st.player.name + ' is ' + st.player.height.toFixed(2) + ' tall, '
+    + 'radius ' + st.player.radius + ', walks '
+    + (st.player.gaits.walk.speed * 60).toFixed(1) + ' and runs '
+    + (st.player.gaits.run.speed * 60).toFixed(1) + ' units/s'
+    + (runner.warnings.length ? ' · ' + runner.warnings.length + ' warnings' : '');
+  buildStageBar();
+  hud();
+}
+
+function buildStageBar() {
+  const bar = document.getElementById('traybar');
+  if (!bar || !G) return;
+  bar.innerHTML = '';
+  const pill = (label, on, fn, title) => {
+    const d = document.createElement('div');
+    d.className = 'pill' + (on ? ' on' : '');
+    d.textContent = label;
+    if (title) d.title = title;
+    d.style.cursor = fn ? 'pointer' : 'default';
+    if (fn) d.onclick = () => { fn(); buildStageBar(); };
+    bar.appendChild(d);
+    return d;
+  };
+  pill('collision', G.runner.showCollision,
+       () => G.runner.setCollisionVisible(!G.runner.showCollision),
+       'draw the .col itself: floors green, walls red, ceilings blue');
+  const rooms = [...G.stage.rooms.keys()].sort();
+  const sel = document.createElement('select');
+  sel.style.cssText = 'background:#17171c;color:inherit;border:1px solid #26262b;'
+    + 'border-radius:6px;padding:4px 8px;font:12px ui-monospace,monospace;';
+  for (const name of rooms) {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    if (G.stage.current && name === G.stage.current.name) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = async () => {
+    await G.runner.enter(sel.value, null,
+      (m) => { document.getElementById('members').textContent = m + '…'; });
+    buildStageBar();
+  };
+  bar.appendChild(sel);
+  const tr = G.stage.traps[G.runner.selected];
+  pill(tr.name + ' · ' + tr.title, false, null,
+       tr.blurb + '\n' + tr.effect + '\n'
+       + tr.surface + ' · ' + tr.damage + ' damage · cost ' + tr.cost
+       + ' · reset ' + tr.reset + ' frames'
+       + (tr.price ? ' · ' + tr.price + ' ARK' : ' · starting trap'));
+}
+
+/** The overlay: where the body is, what it is standing on, what the pad says. */
+function hud() {
+  const el = document.getElementById('hud');
+  if (!el || !G) return;
+  const st = G.stage, b = st.body;
+  if (!b) return;
+  const room = st.current;
+  const floor = room.mesh.floorAt(b.pos[0], b.pos[2], b.pos[1] + 1);
+  const world = room.toWorld(b.pos);
+  const tr = st.traps[G.runner.selected];
+  const door = st.doorAt(b.pos);
+  const state = G.padState || {};
+  el.innerHTML =
+      '<b>' + room.name + '</b> ' + (room.entry.passage ? 'passage' : 'room')
+    + ' <span class="dim">of M' + String(G.number).padStart(3, '0') + '</span><br>'
+    + 'local  ' + b.pos.map((v) => v.toFixed(1).padStart(7)).join(' ') + '<br>'
+    + 'world  ' + world.map((v) => v.toFixed(1).padStart(7)).join(' ') + '<br>'
+    + 'floor  ' + (floor ? floor[0].toFixed(1) + '  material '
+                           + floor[1].material + ' (' + floor[1].surface + ')'
+                         : '<span class="warn">none</span>')
+    + (b.hitWall ? '   <span class="warn">wall</span>' : '') + '<br>'
+    + 'gait   ' + b.gait + '  <span class="dim">clip '
+    + b.clipTime.toFixed(0) + '</span><br>'
+    + 'trap   ' + tr.name + ' ' + tr.title + ' <span class="dim">('
+    + tr.surface + ', ' + st.placed.length + ' set)</span><br>'
+    + (door ? '<b>Cross</b> to enter ' + door.to
+            : '<span class="dim">L1/R1 trap · Square set · Circle run</span>')
+    + '<br><span class="dim">' + (state.connected ? state.connected
+        + ' pad' + (state.connected > 1 ? 's' : '') : 'no pad')
+    + ' · ' + (PADCFG.source || 'default bindings') + '</span>'
+    + (G.msg && performance.now() < G.msgUntil
+        ? '<br><b>' + G.msg + '</b>' : '');
+}
+
+function stageSay(text) {
+  if (!G) return;
+  G.msg = text;
+  G.msgUntil = performance.now() + 2200;
+}
+
+/** One simulation step, called from the render loop. */
+function stageTick(dt) {
+  const frames = Math.min(6, dt * 60);       // a long stall must not teleport
+  const state = G.pad.read();
+  G.padState = state;
+  const out = G.runner.step(state, frames, G.edges);
+  if (out && out.events.entered) {
+    const door = out.events.entered;
+    G.busy = true;
+    G.runner.enter(door.to, G.stage.rooms.get(door.to)
+                     .toLocal(door.world), () => {})
+      .then(() => {
+        // Arrive facing into the new room rather than back at the door.
+        G.stage.body.yaw += Math.PI;
+        G.runner.camera.yaw += Math.PI;
+        stageSay('entered ' + door.to);
+        buildStageBar();
+      })
+      .finally(() => { G.busy = false; });
+  }
+  if (out && out.events.set) {
+    const rec = out.events.set;
+    stageSay(rec.trap.title + ' set on the ' + rec.spot.surface);
+    G.runner.showPlaced(rec);
+    buildStageBar();
+  }
+  const pose = G.runner.cameraPose();
+  if (pose) {
+    V.camera.position.set(pose.eye[0], pose.eye[1], pose.eye[2]);
+    V.camera.lookAt(pose.target[0], pose.target[1], pose.target[2]);
+    V.key.position.copy(V.camera.position);
+  }
+  if (G.hudTick === undefined) G.hudTick = 0;
+  if ((G.hudTick = (G.hudTick + 1) % 6) === 0) hud();
+}
+
 // ------------------------------------------------------------- scene mode
 // The whole cutscene: room, cast, camera, subtitles and letterbox, assembled
 // from the disc by play.js and driven here.
@@ -1417,6 +1689,14 @@ function tick() {
   const dt = Math.min(0.1, (now - V.last) / 1000);
   V.last = now;
   if (!V) return;
+
+  // A stage drives its own camera, so it returns before the orbit block --
+  // otherwise the follow camera and the orbit camera fight for the frame.
+  if (G) {
+    if (!G.busy) stageTick(dt);
+    drawFrame();
+    return;
+  }
 
   if (S) {
     if (S.playing) {

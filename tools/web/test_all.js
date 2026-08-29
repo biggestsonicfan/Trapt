@@ -30,10 +30,13 @@ const SUITES = [
   { file: 'test_modules.js', disc: false },
   { file: 'test_page.js', disc: false },
   { file: 'test_shader.js', disc: false },
+  { file: 'test_pad.js', disc: false },
   { file: 'test_disc.js', disc: true },
   { file: 'test_assets.js', disc: true },
   { file: 'test_audio.js', disc: true },
   { file: 'test_route.js', disc: true },
+  { file: 'test_stage.js', disc: true },
+  { file: 'test_stageview.js', disc: true },
   { file: path.join('..', 'test_order.js'), disc: true },
 ];
 

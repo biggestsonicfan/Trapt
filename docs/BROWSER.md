@@ -48,7 +48,14 @@ disc data. They work under two loaders — `require` in the tests and a classic
 | `adx.js` | `adx.py` | CRI ADX, straight to PCM |
 | `story.js` | `order.py` | the ordering tables and a route walk |
 | `gs.js` | `player.html` | the GS look: shaders copied verbatim |
+| `hbin.js` | `hbin.py` | the `#bin` container the stage half is authored in |
+| `col.js` | `col.py` | room collision, and the solver a body walks with |
+| `mapbin.js` | `mapbin.py` | the stage graph: rooms, passages, doors |
+| `trap.js` | `trap.py` | the 48 traps, their stats and their volumes |
+| `stage.js` | `stage.py` | a whole stage, assembled and walkable |
+| `pad.js` | `pcsx2pad.py` | a PCSX2 `[Pad1]`, and the pad it becomes |
 | `model.js`, `play.js`, `audio.js`, `cards.js`, `catalog.js`, `poster.js` | — | the three.js and playback layer |
+| `stageview.js` | — | the same, for a stage: geometry, skinning, camera, input |
 
 ## 3. What the page does
 
@@ -60,6 +67,10 @@ disc data. They work under two loaders — `require` in the tests and a classic
 * **Route** — the game's own chapter cards (`DATA/TWO_D/SLD`, with the
   chapter name already in the art) and then that chapter's cutscenes, in the
   order the tables give, unattended.
+* **Stage** — the other half of the game. Any of the 22 stages, its rooms
+  placed where the stage graph says, walked with real collision, its doors
+  crossed, its 48 traps set on the ceilings, walls and floors they belong on.
+  The pad comes from your own `PCSX2.ini`. See [`STAGE.md`](STAGE.md).
 * **PS2 / Modern** — the GS fixed function at 512x224 with the letterbox and
   the game's font, or a modern render filling the element with DOM subtitles
   and no bars.
@@ -74,17 +85,17 @@ uses the element's own aspect.
 ## 4. Tests
 
 ```
-node tools/web/test_all.js              # 390 checks with a disc
-node tools/web/test_all.js --no-disc    # 114 without
+node tools/web/test_all.js              # 587 checks with a disc
+node tools/web/test_all.js --no-disc    # 204 without
 ```
 
 Every decoder is diffed against its Python counterpart on real disc data —
 the same textures, the same skinned vertices, the same timeline, the same
-audio samples. A suite that needs the disc exits 2 when there is none, which
-the runner reports as a skip.
+audio samples, the same collision and the same walk. A suite that needs the
+disc exits 2 when there is none, which the runner reports as a skip.
 
-Three suites need no game data, and they are the ones that have caught bugs
-that actually shipped:
+Four suites need no game data, and the first three are the ones that have
+caught bugs that actually shipped:
 
 * `test_modules.js` — every module loaded the way a browser loads it, in one
   shared global scope. `iso.js` and `disc.js` once both declared `u32` and
@@ -97,15 +108,20 @@ that actually shipped:
   `setPs2()` before wiring the play button, and `setPs2()` touched a field
   that only the post pass creates; the throw left a dead Play button and,
   with it, the only thing that resumed the AudioContext.
+* `test_pad.js` — the PCSX2 binding tables, which need no game data because a
+  `PCSX2.ini` is not game data. A transposed pair in them silently swaps
+  Circle and Cross, and the game gets the blame.
 
-`.forgejo/workflows/ci.yml` runs those three, compiles the Python, and checks
+`.forgejo/workflows/ci.yml` runs those four, compiles the Python, and checks
 the docs' relative links.
 
 ## 5. What is not here
 
-* **The stage half of the game.** The viewer plays cutscenes; the rooms are
-  the other machine (`FUN_0016B870`), and a route announces a stage and steps
-  over it.
+* **The rest of a stage.** The rooms can be walked and traps can be set on
+  them ([`STAGE.md`](STAGE.md)), but nothing fires a trap yet, no intruder
+  walks in, and there is no damage, no gauge and no mission. The trap effect
+  scripts are `.ssc`, which the cutscene VM already runs, so the missing piece
+  is the game around them rather than another format.
 * **Ending BGM.** Music is looked up by cutscene name, which is right for the
   main story and finds nothing for an `e4xx` ending — those ask for a *track
   id* through a slot table at `0x00370918` that is only half decoded

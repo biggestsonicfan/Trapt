@@ -115,6 +115,50 @@ check('the debug line is a panel under the transport, not an overlay on the vide
       && !/#vinfo \{[^}]*position: absolute/.test(html),
       'it belongs outside #view so its text can be read and copied');
 
+// Stage mode runs its own camera and its own input, and both of those are
+// things the page already had one of.  Every check here is a collision that
+// would otherwise only show up with a controller in someone's hands.
+console.log('stage mode owns the frame while it is running');
+{
+  const tick = fn('tick');
+  const gAt = tick.indexOf('if (G) {');
+  const orbitAt = tick.indexOf('const o = V.orbit;');
+  const sAt = tick.indexOf('if (S) {');
+  check('tick handles the stage', gAt > 0);
+  check('and does so before the cutscene and orbit blocks',
+        gAt > 0 && gAt < sAt && gAt < orbitAt,
+        'otherwise the follow camera and the orbit camera fight for the frame');
+  check('and returns rather than falling through',
+        /if \(G\) \{[\s\S]{0,200}?return;\s*\}/.test(tick));
+  check('a long stall does not teleport the body',
+        /Math\.min\(6, dt \* 60\)/.test(fn('stageTick')),
+        'a backgrounded tab hands back a dt of seconds, not frames');
+
+  const ps = fn('playStage');
+  check('entering stage mode leaves cutscene and model mode',
+        /S = null; M = null;/.test(ps),
+        'otherwise tick poses three things at once');
+  check('the previous stage is torn down before the next is added',
+        ps.indexOf('G.pad.detach()') > 0
+        && ps.indexOf('G.pad.detach()') < ps.indexOf('V.scene.add(runner.root)'));
+  check('V.group follows the stage so drawFrame feeds it the eye position',
+        /V\.group = runner\.root;/.test(ps),
+        'the point lights in the GS shader need it');
+  check('the pad is attached to the viewport, not the document',
+        /attach\(document\.getElementById\('view'\)\)/.test(ps));
+  check('and the viewport is made focusable so keys reach it',
+        /view\.tabIndex = 0;/.test(ps) && /view\.focus\(\);/.test(ps));
+  check('the HUD lives inside #view so fullscreen carries it',
+        /<div id="view"><div id="hud">/.test(ps),
+        'the letterbox, subtitles and look panel are children of #view too');
+  check('the stage panel is built when a disc is opened',
+        fn('load').includes('buildStagePanel()'));
+  check('an unbound key stays the browser\'s',
+        fs.readFileSync(path.join(__dirname, 'pad.js'), 'utf8')
+          .includes('_wants(code)'),
+        'preventDefault on every key would break tab, ctrl-r and the rest');
+}
+
 console.log('modern mode fills the element');
 const fo = fn('fitOutput');
 check('only native is pillarboxed to 4:3',

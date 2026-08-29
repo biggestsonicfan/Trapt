@@ -70,6 +70,12 @@ python order.py --check         # the tables vs. what is on the disc
 | `tm2.py` | `.TM2` texture reader (Sony TIM2) |
 | `extract.py` | bulk converter |
 | `preview.py` | software rasteriser for verification |
+| `hbin.py` | the `#bin` named-chunk container -- 908 files: trap tables, character parameters, stage graphs |
+| `col.py` | `.col` room collision, and the solver a body is walked with |
+| `mapbin.py` | `M###.BIN` -- the stage graph: rooms placed in a world, joined by doors |
+| `trap.py` | the 48 traps: names, stats, effect text and the volumes they occupy |
+| `stage.py` | a whole stage assembled, with a body that can walk it |
+| `pcsx2pad.py` | a PCSX2 `[Pad1]` turned into browser input |
 | `ssc.py` | `.SSC` compiled scene-script reader (cutscene bytecode + subtitles) |
 | `sai.py` | `.SAI` skeletal animation reader |
 | `cam.py` | `.CAM` camera-track reader |
@@ -103,9 +109,23 @@ archives and all 3328 models parse without error.
 [`../docs/VIEWER.md`](../docs/VIEWER.md), which also documents the standalone
 cutscene player built on top of them.
 
+The stage half of the game is decoded too — `.col` collision, the `M###.BIN`
+stage graphs, the trap tables and the `#bin` container they all sit in — so a
+stage can be walked around rather than stepped over. See
+[`../docs/STAGE.md`](../docs/STAGE.md):
+
+```
+python hbin.py --scan           # every #bin on the disc
+python col.py rh01              # one room's floors, walls and ceilings
+python mapbin.py 0              # stage M000, the House
+python trap.py                  # all 48 traps with their stats
+python stage.py 0 --walk 1200   # assemble a stage and walk a body round it
+python pcsx2pad.py              # your own PCSX2 pad bindings
+```
+
 Other extensions not yet decoded: `.slp` (lip-sync — animation, by far the
-biggest payload at 545 MB), `.ssc`, `.col` (collision), `.cam`, `.swd`/`.sed`
-(sound), `.ckf`, `.nvm`.
+biggest payload at 545 MB), `.swd`/`.sed` (sound), `.ckf`, `.nvm`, and
+`M##INTRUDER.BIN` (who comes into a stage, and when).
 
 ## Formats
 
