@@ -77,6 +77,32 @@
   #look label b { flex: 0 0 34px; text-align: right; font-weight: 400;
     font-variant-numeric: tabular-nums; opacity: .6; }
   #transport button.on { background: #3a5a8a; border-color: #4a72ad; }
+  #cards section { margin: 0 0 22px; }
+  #cards h3 { font-size: 12px; font-weight: 600; letter-spacing: .12em;
+    text-transform: uppercase; opacity: .45; margin: 18px 0 8px; }
+  #cards h3 span { text-transform: none; letter-spacing: 0; opacity: .8;
+    font-weight: 400; margin-left: 10px; }
+  #cards .grid { display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .gcard { background: #131316; border: 1px solid #26262b; border-radius: 9px;
+    overflow: hidden; cursor: pointer; transition: border-color .15s, transform .15s; }
+  .gcard:hover { border-color: #4a72ad; transform: translateY(-2px); }
+  .gcard .shot { display: grid; place-items: center; aspect-ratio: 4 / 3;
+    background: #08080a; overflow: hidden; }
+  .gcard .shot canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gcard .shot span { font-size: 11px; opacity: .3; }
+  .gcard .body { padding: 8px 10px 10px; }
+  .gcard .nm { font-weight: 600; letter-spacing: .04em; font-size: 13px; }
+  .gcard .meta { opacity: .45; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .gcard .line { margin-top: 6px; font-size: 12px; opacity: .8; min-height: 2.4em;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; }
+  .gcard .line.bad { color: #ff9a9a; }
+  .gcard .cast { margin-top: 5px; font-size: 10.5px; opacity: .4;
+    text-transform: uppercase; letter-spacing: .03em; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  #galleryStatus { text-transform: none; letter-spacing: 0; opacity: .8;
+    font-weight: 400; margin-left: 10px; }
   #routes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   #card { position: absolute; inset: 0; z-index: 6; display: none;
     background: #05050788; backdrop-filter: blur(2px); }
@@ -123,6 +149,8 @@
     <div id="routes"></div>
     <h2 id="listHead">Cutscenes on the disc</h2>
     <div id="list"></div>
+    <h2>Gallery <span id="galleryStatus"></span></h2>
+    <div id="cards"></div>
     <div id="detail"></div>
   </div>
 
@@ -153,6 +181,8 @@
 <script src="model.js"></script>
 <script src="story.js"></script>
 <script src="cards.js"></script>
+<script src="catalog.js"></script>
+<script src="poster.js"></script>
 <script src="play.js"></script>
 <script>
 'use strict';
@@ -238,6 +268,7 @@ async function load(file) {
     row('never played', unplayed.length + ' on the disc that no table reaches: '
         + unplayed.join(' '), unplayed.length ? '' : 'good');
     buildRoutePanel();
+    buildGallery();
   } catch (err) {
     TABLES = null;
     row('story order', err.message, 'bad');
@@ -377,6 +408,8 @@ function ensureViewer() {
     V.key = new THREE.DirectionalLight(0xffffff, 0.75);
     V.scene.add(V.key);
     V.orbit = { yaw: 0.6, pitch: 0.25, dist: 10, target: [0, 0, 0] };
+    V.posterAspect = TraptGs.OUT_ASPECT;   // stills keep the display shape
+    V.setEye = setEye;
     V.group = null;
     V.last = performance.now();
     tick();
@@ -629,7 +662,8 @@ function setPs2(on) {
   // makes sense while we are rendering at it.  In Modern the DOM subtitles
   // reflow to whatever shape the element is.  Follow the switch unless the
   // Subs button has been pressed, exactly as player.html does.
-  if (V.subsPick === undefined && V.subsPass !== undefined) setSubsPs2(on);
+  if (V.subsPass !== undefined)
+    setSubsPs2(V.subsPick !== undefined ? V.subsPick : on);
   if (V.group)
     V.group.traverse((o) => {
       if (o.material && o.material.uniforms && o.material.uniforms.ps2)
@@ -718,7 +752,7 @@ function ensureSubsPass() {
 function updateSubs(r) {
   ensureSubsPass();
   const W = TraptGs.RT_W, H = TraptGs.RT_H;
-  const lb = Math.round(r.letterbox * 1000);
+  const lb = Math.round((letterboxOn() ? r.letterbox : 0) * 1000);
   const key = (r.subtitle ? r.subtitle.frame : -1) + '/' + lb
             + '/' + (V.subsPs2 ? 1 : 0);
   if (key === V.subKey) return;
@@ -727,8 +761,9 @@ function updateSubs(r) {
   V.subBuf.fill(0);
   if (V.subsPs2) {
     // the bars first: the text is drawn *over* them, as on hardware
-    const top = Math.round(r.letterbox * 50 / 448 * H);
-    const bot = Math.round(r.letterbox * 110 / 448 * H);
+    const lb = letterboxOn() ? r.letterbox : 0;
+    const top = Math.round(lb * 50 / 448 * H);
+    const bot = Math.round(lb * 110 / 448 * H);
     for (let y = 0; y < top; y++)
       for (let x = 0; x < W; x++) V.subBuf[(y * W + x) * 4 + 3] = 255;
     for (let y = H - bot; y < H; y++)
@@ -749,6 +784,15 @@ function updateSubs(r) {
   V.subTex.needsUpdate = true;
 }
 
+/**
+ * Is the letterbox in play at all?  The `0x57` bars are part of the PS2
+ * presentation -- they exist to sit dialogue on black inside a 4:3 frame --
+ * so Modern, which fills the element, has none.  Within PS2 they are drawn
+ * into the framebuffer alongside the game's own font, or as DOM bars when the
+ * subtitles are DOM.
+ */
+function letterboxOn() { return !!V.ps2; }
+
 function setSubsPs2(on) {
   ensureSubsPass();
   V.subsPs2 = on;
@@ -757,14 +801,147 @@ function setSubsPs2(on) {
   if (dom) dom.style.display = 'none';
   for (const id of ['lbTop', 'lbBot']) {
     const el = document.getElementById(id);
-    // in PS2 mode the bars are drawn into the framebuffer, not over it
-    if (el) el.style.display = on ? 'none' : 'block';
+    // PS2 draws them into the framebuffer; Modern does not draw them at all
+    if (el) el.style.display = (!on && letterboxOn()) ? 'block' : 'none';
   }
   const b = document.getElementById('subsBtn');
   if (b) {
     b.textContent = on ? 'Subs PS2' : 'Subs DOM';
     b.classList.toggle('on', on);
   }
+}
+
+// -------------------------------------------------------------- the gallery
+// A card per cutscene: a still, the name, where the game plays it, and the
+// first thing anybody says in it.  The text comes from catalog.js, which
+// reads only the script tracks -- about 35 KB of a 5 MB bundle.  The still is
+// rendered on demand by poster.js, because rendering 149 of them up front
+// would take minutes; a card asks for one when it scrolls into view.
+let CAT = null;                        // name -> catalogue entry
+let PQ = null;                         // the poster queue
+let SEEN = null;                       // IntersectionObserver
+
+async function buildGallery() {
+  const host = document.getElementById('cards');
+  if (!host || !TABLES) return;
+  host.innerHTML = '';
+  CAT = new Map();
+  PQ = PQ || TraptPoster.queue(() => !S && !R);
+
+  // Story order, with the chapter each cutscene belongs to for its heading.
+  const beats = TraptStory2.route(TABLES, { have: HAVE });
+  const ref = TraptStory2.referenced(TABLES);
+  const unplayed = TABLES.names.filter((n, i) => !ref.has(i) && HAVE.has(n));
+
+  const sections = [];
+  let cur = null;
+  for (const b of beats) {
+    if (b.kind === 'card') {
+      cur = { title: b.title, card: b.card, items: [] };
+      sections.push(cur);
+    } else if (b.kind === 'cutscene' && cur) {
+      cur.items.push(b);
+    }
+  }
+  if (unplayed.length)
+    sections.push({
+      title: 'In the registry, never played',
+      note: 'no table reaches these, and they are exactly the '
+          + unplayed.length + ' on the disc that were never translated',
+      card: null,
+      items: unplayed.map((n) => ({ name: n, note: 'unreferenced' })),
+    });
+
+  const status = document.getElementById('galleryStatus');
+  const cards = [];
+  for (const sec of sections) {
+    if (!sec.items.length) continue;
+    const el = document.createElement('section');
+    const h = document.createElement('h3');
+    h.textContent = sec.title;
+    if (sec.note) {
+      const sm = document.createElement('span');
+      sm.textContent = sec.note;
+      h.appendChild(sm);
+    }
+    el.appendChild(h);
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    for (const it of sec.items) {
+      const card = document.createElement('div');
+      card.className = 'gcard';
+      card.innerHTML =
+          '<div class="shot"><span>still</span></div>'
+        + '<div class="body"><div class="nm"></div>'
+        + '<div class="meta"></div><div class="line"></div>'
+        + '<div class="cast"></div></div>';
+      card.querySelector('.nm').textContent = it.name;
+      card.querySelector('.meta').textContent = it.note || '';
+      card.onclick = () => { R = null; playScene(it.name); };
+      card.dataset.name = it.name;
+      grid.appendChild(card);
+      cards.push(card);
+    }
+    el.appendChild(grid);
+    host.appendChild(el);
+  }
+
+  // Fill the text in as it arrives; 149 ranged reads, a few milliseconds each.
+  const names = cards.map((c) => c.dataset.name);
+  await TraptCatalog.describeAll(DISC, names, (entry, done, total) => {
+    if (status)
+      status.textContent = done < total
+        ? 'reading ' + done + ' of ' + total + '…'
+        : total + ' cutscenes; stills render as you scroll';
+    if (!entry) return;
+    CAT.set(entry.name, entry);
+    const card = cards.find((c) => c.dataset.name === entry.name);
+    if (!card) return;
+    if (entry.error) {
+      card.querySelector('.line').textContent = entry.error;
+      card.querySelector('.line').className = 'line bad';
+      return;
+    }
+    const meta = [entry.length, entry.cues + ' cues'];
+    if (entry.room) meta.push(entry.room);
+    const note = card.querySelector('.meta').textContent;
+    card.querySelector('.meta').textContent =
+      meta.join(' · ') + (note ? ' · ' + note : '');
+    card.querySelector('.line').textContent =
+      (entry.openingSpeaker ? entry.openingSpeaker + ': ' : '') + entry.opening;
+    card.querySelector('.cast').textContent = entry.speakers.join(', ');
+    card.dataset.frame = entry.openingFrame;
+  });
+
+  watchCards(cards);
+}
+
+/** Render a card's still when it comes into view, one at a time. */
+function watchCards(cards) {
+  if (SEEN) SEEN.disconnect();
+  SEEN = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const card = e.target;
+      SEEN.unobserve(card);
+      if (card.dataset.shot) continue;
+      card.dataset.shot = '1';
+      const shotEl = card.querySelector('.shot');
+      shotEl.innerHTML = '<span>rendering…</span>';
+      PQ.add(async () => {
+        ensureViewer();
+        return TraptPoster.render(THREE, DISC, V, card.dataset.name,
+                                  card.dataset.frame ? +card.dataset.frame : null);
+      }).then((shot) => {
+        shotEl.innerHTML = '';
+        shotEl.appendChild(TraptPoster.toCanvas(shot));
+      }).catch((err) => {
+        shotEl.innerHTML = '<span></span>';
+        shotEl.querySelector('span').textContent = err.message;
+      });
+    }
+  }, { rootMargin: '200px' });
+  for (const c of cards) SEEN.observe(c);
 }
 
 // ------------------------------------------------------------- route mode
@@ -1119,10 +1296,11 @@ function applySceneFrame() {
 
   // 50 and 110 units of the game's 640x448 UI space, as fractions of height.
   // In PS2 mode these are drawn into the framebuffer instead (updateSubs).
+  const domBars = !V.subsPs2 && letterboxOn();
   document.getElementById('lbTop').style.height =
-    V.subsPs2 ? '0' : (r.letterbox * 50 / 448 * 100) + '%';
+    domBars ? (r.letterbox * 50 / 448 * 100) + '%' : '0';
   document.getElementById('lbBot').style.height =
-    V.subsPs2 ? '0' : (r.letterbox * 110 / 448 * 100) + '%';
+    domBars ? (r.letterbox * 110 / 448 * 100) + '%' : '0';
   document.getElementById('fade').style.opacity = r.fade.toFixed(3);
 
   if (S.audio) {
@@ -1224,6 +1402,15 @@ addEventListener('keydown', (e) => {
 });
 
 /** World into the 512x224 target, then the post pass onto the canvas. */
+/** Push the camera position into every material's `eye` uniform. */
+function setEye() {
+  if (!V.group) return;
+  V.group.traverse((o) => {
+    if (o.material && o.material.uniforms && o.material.uniforms.eye)
+      o.material.uniforms.eye.value.copy(V.camera.position);
+  });
+}
+
 function drawFrame() {
   ensurePost();
   // the shader wants the eye position for its point lights

@@ -18,6 +18,7 @@ const iso = require('./iso.js');
 const discMod = require('./disc.js');
 const story = require('./story.js');
 const cards = require('./cards.js');
+const catalog = require('./catalog.js');
 
 const ISO = process.argv[2]
   || 'E:/Seagate/OpenSuseBack/Emulators/PS2EMU/Trapt (USA).iso';
@@ -129,6 +130,48 @@ async function main() {
   let lit = 0;
   for (let i = 3; i < pic.rgba.length; i += 4) if (pic.rgba[i] > 8) lit++;
   check('the card is not blank', lit > pic.width * pic.height * 0.5, true);
+
+  console.log('the catalogue, against scene.py');
+  const SAMPLE = ['e001', 'e009', 'e133', 'e326', 'e401_01', 'e429_04'];
+  const PY = [
+    'import json, scene',
+    'd = scene.Disc()',
+    'out = {}',
+    'for n in ' + JSON.stringify(SAMPLE) + ':',
+    '    s = scene.load(n, d)',
+    '    first = s.subtitles[0] if s.subtitles else None',
+    '    out[n] = {"room": s.room, "duration": s.duration,',
+    '              "cues": len(s.subtitles),',
+    '              "speakers": list(dict.fromkeys(x.speaker for x in s.subtitles',
+    '                                             if x.speaker)),',
+    '              "opening": " ".join(first.lines) if first else "",',
+    '              "openingFrame": first.frame if first else s.duration // 2,',
+    '              "entities": len(s.entities)}',
+    'print(json.dumps(out))',
+  ].join(String.fromCharCode(10));
+  const wantCat = JSON.parse(
+    execFileSync('python', ['-c', PY], { cwd: TOOLS, maxBuffer: 1 << 26 }).toString());
+
+  let read = 0;
+  const realRead = disc.iso.source.read.bind(disc.iso.source);
+  disc.iso.source.read = async (o, n) => { read += n; return realRead(o, n); };
+  for (const n of SAMPLE) {
+    const e = await catalog.describe(disc, n);
+    const w = wantCat[n];
+    check(n + ': room, length, cues and cast',
+          [e.room, e.duration, e.cues, e.speakers], [w.room, w.duration, w.cues, w.speakers]);
+    check(n + ': the opening line and its frame',
+          [e.opening, e.openingFrame], [w.opening, w.openingFrame]);
+    check(n + ': entity count', e.entities, w.entities);
+  }
+  disc.iso.source.read = realRead;
+  // The whole point of the ranged read: a card costs kilobytes, not megabytes.
+  const bundles = SAMPLE.reduce(
+    (n, x) => n + disc.sizeOf('DATA/RT/' + x.toUpperCase() + '/RT_' + x.toUpperCase() + '.ARC'), 0);
+  check('it read a fraction of the bundles it described', read < bundles / 20, true,
+        'read ' + (read / 1024).toFixed(0) + ' KB of ' + (bundles / 1e6).toFixed(1) + ' MB');
+  console.log('        %d KB read to describe %s MB of bundles',
+              Math.round(read / 1024), (bundles / 1e6).toFixed(1));
 
   source.close();
   console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);

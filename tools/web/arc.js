@@ -53,7 +53,52 @@ function members(data) {
   return out;
 }
 
-const api = { entries, members };
+/**
+ * Open an archive without reading it: pull the header and entry table, then
+ * fetch members individually.  The header is `0x18 + 0x14 * count` bytes, so
+ * one small read describes an archive of any size.
+ */
+async function openRanged(disc, path) {
+  const head = await disc.readRange(path, 0, 0x18);
+  if (!head || head.length < 0x18) return null;
+  if (u32(head, 0) !== MAGIC) return null;
+  const count = u32(head, 4);
+  const tableEnd = 0x18 + 0x14 * count;
+  // Names sit past the entry table and before data_base, so one read of the
+  // whole header region covers the table and every name in it.
+  const base = u32(head, 8);
+  const front = await disc.readRange(path, 0, Math.min(base, tableEnd + 0x8000));
+  const list = [];
+  for (let i = 0; i < count; i++) {
+    const p = 0x18 + 0x14 * i;
+    if (p + 0x14 > front.length) break;
+    const nameOff = u32(front, p + 8);
+    list.push({
+      name: nameOff < front.length ? cstr(front, nameOff) : '',
+      offset: base + u32(front, p + 12),
+      size: u32(front, p),
+    });
+  }
+  return {
+    path: path, entries: list,
+    /** Read one member, by name, as its own ranged read. */
+    read: async (name) => {
+      const want = name.toLowerCase();
+      const e = list.find((x) => x.name.toLowerCase() === want);
+      return e ? disc.readRange(path, e.offset, e.size) : null;
+    },
+    /** Read every member whose name passes `want(name)`. */
+    readWhere: async (want) => {
+      const out = new Map();
+      for (const e of list)
+        if (want(e.name.toLowerCase()))
+          out.set(e.name.toLowerCase(), await disc.readRange(path, e.offset, e.size));
+      return out;
+    },
+  };
+}
+
+const api = { entries, members, openRanged };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptArc = api;
 })();

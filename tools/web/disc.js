@@ -76,6 +76,33 @@ class Disc {
     if (!e || !e.size) return null;
     return this.iso.source.read(this.gamedat.offset + e.offset, e.size);
   }
+
+  /**
+   * Part of a file, without reading the rest of it.
+   *
+   * A cutscene bundle is several megabytes and most of it is models and
+   * textures.  Anything that only wants the script tracks -- a catalogue of
+   * what each cutscene is, say -- would otherwise read 700 MB across the
+   * disc to look at about 3 MB of bytecode.
+   */
+  async readRange(path, offset, length) {
+    const id = this.byName.get(path.toUpperCase());
+    if (id === undefined) return null;
+    const e = this.entries[id];
+    if (!e || !e.size) return null;
+    const start = Math.min(offset, e.size);
+    const n = Math.max(0, Math.min(length, e.size - start));
+    if (!n) return new Uint8Array(0);
+    return this.iso.source.read(this.gamedat.offset + e.offset + start, n);
+  }
+
+  /** The size of a file, from the AFS index, without reading it. */
+  sizeOf(path) {
+    const id = this.byName.get(path.toUpperCase());
+    if (id === undefined) return -1;
+    const e = this.entries[id];
+    return e ? e.size : -1;
+  }
 }
 
 /**
