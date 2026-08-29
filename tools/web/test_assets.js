@@ -576,6 +576,27 @@ async function main() {
     check(cutscene + ': has a camera track and a room',
           [!!built.camera, !!built.room], [true, true]);
 
+    // Effect tracks (0x08/0x07).  These were dropped entirely until the stab
+    // in e001 turned out to have no blood: ef_e001_30 and _31 are spawned at
+    // world points just after Olaf's cry at 7830, and neither existed.
+    if (cutscene === 'e001') {
+      check('e001: six effect tracks spawned', s.effects.length, 6);
+      const stab = s.effects.filter((f) => f.frame > 8000);
+      check('e001: two of them land after the stab',
+            stab.map((f) => f.track), ['ef_e001_30', 'ef_e001_31']);
+      check('e001: at the frames the script names',
+            stab.map((f) => f.frame), [8270, 8431]);
+      const placed = s.entities.filter((e) => e.origin);
+      check('e001: every effect block carries its spawn origin',
+            placed.length, 6);
+      const ef = placed.find((e) => e.models.indexOf('ef_e001_01.smi') >= 0);
+      check('e001: the effect model is instantiated', !!ef, true);
+      // The fourth 0x7E field reaches 1.5 across the disc, so it is not alpha
+      // and must never be treated as one -- that would hide the sprite.
+      check('e001: and tinted, with only the colour taken',
+            ef && ef.tint ? ef.tint.length : 0, 4);
+    }
+
     // every actor the timeline draws got geometry
     const drawn = s.entities.filter(
       (e) => e.kind === 4 && sceneMod.renderModels(e).length);

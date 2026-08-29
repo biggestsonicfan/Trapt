@@ -30,6 +30,8 @@ OP_AT_TIME = 0x04
 OP_CUE = 0x05
 OP_SPAWN = 0x06
 OP_PRELOAD = 0x09
+OP_SPAWN_FX_AT = 0x07      # (track, x, y, z, target) -- offset from a target
+OP_SPAWN_FX = 0x08         # (track, x, y, z, flags)  -- world position
 OP_SCENE_BEGIN = 0x50
 OP_SCENE_END = 0x51
 OP_FADE_IN = 0x53
@@ -50,6 +52,7 @@ OP_SCALE = 0x80
 OP_MODEL = 0x82
 OP_ANIM = 0x83
 OP_TRANSFORM = 0x84
+OP_TINT = 0x7E             # (r, g, b, a, mask) -- colour and alpha
 OP_VISIBLE = 0xA2
 OP_ROOT_BONE = 0xB3
 OP_LIGHT_TYPE = 0xB4
@@ -105,6 +108,8 @@ class Entity:
         self.light_range = None   # (near, far)
         self.light_parent = False # `0xB4` arg1: ride the camera (see below)
         self.light_dir = None     # inherited from the room's `.sli`
+        self.origin = None        # world position a `0x08` spawn placed it at
+        self.tint = None          # (r, g, b, w) from `0x7E`; w is not alpha
         self.start = 0            # frame the block ran on
         self.end = None           # frame `0x67` destroyed it, if it ever did
 
@@ -190,6 +195,7 @@ class Scene:
         self.fog = None           # (near, far, r, g, b)
         self.room_model = None    # '<room>.smi' from DATA/ROOM/<ROOM>_ALL.ARC
         self.room_lights = []     # <room>.sli, the room's own light set
+        self.effects = []         # [(frame, track, (x,y,z), target)] from 0x07/0x08
         self.events = []          # (frame, track, opcode, args)
         self.archives = {}        # lower-case member name -> bytes
         self.loose = {}           # lower-case base name -> bytes (streamed .sai)
@@ -270,9 +276,15 @@ def _int(a):
     return int(_num(a)) & 0xFFFFFFFF
 
 
-def _run(scene, track_name, blob):
-    """Execute one `.ssc` track into `scene`."""
-    frame = 0
+def _run(scene, track_name, blob, frame_base=0, origin=None):
+    """Execute one `.ssc` track into `scene`.
+
+    `frame_base` and `origin` are non-zero only for a track spawned by
+    `0x07`/`0x08`: an effect track times everything from the moment it was
+    spawned, not from the start of the cutscene, and is placed at the world
+    position the spawn named.
+    """
+    frame = frame_base
     entity = None
     pending_voice = None
     counter = collections.Counter()
@@ -289,7 +301,7 @@ def _run(scene, track_name, blob):
             continue
         code = op[0]
         if code == OP_AT_TIME:
-            frame = args[0] if args else frame
+            frame = (args[0] + frame_base) if args else frame
             continue
         if code == OP_CUE:
             continue
@@ -300,6 +312,16 @@ def _run(scene, track_name, blob):
             scene.room = ssc.sj(args[0])
         elif code == OP_SPAWN:
             scene.tracks.append(ssc.sj(args[0]))
+        elif code in (OP_SPAWN_FX, OP_SPAWN_FX_AT):
+            # ELF 0x001C8790 (0x08) reads a string then three floats into a
+            # {x,y,z,1} vec4 and hands it to the same track spawner 0x06 uses.
+            # 0x001C8860 (0x07) takes a fourth argument and adds the position
+            # to a looked-up target instead of using it as a world point.
+            # Unlike 0x06 the same track spawns many times, at different
+            # places and frames, so these are instances rather than names.
+            pos = tuple(_num(a) for a in args[1:4])
+            tgt = _int(args[4]) if code == OP_SPAWN_FX_AT and len(args) > 4 else None
+            scene.effects.append((frame, ssc.sj(args[0]), pos, tgt))
         elif code == OP_CAMERA:
             scene.camera_file = ssc.sj(args[1])
         elif code == OP_BGM_START:
@@ -333,7 +355,15 @@ def _run(scene, track_name, blob):
                             ssc.sj(args[1]) if len(args) > 1 and
                             isinstance(args[1], bytes) else None)
             entity.start = frame
+            entity.origin = origin
             scene.entities.append(entity)
+        elif code == OP_TINT and entity is not None:
+            # ELF 0x001C2CC0: four floats.  The first three are a colour --
+            # (0.6, 0.2, 0.1) recurs, a torch orange.  The fourth is NOT
+            # alpha: it reaches 1.5 across the disc, so it is an intensity
+            # or a ramp, and it is kept but not yet applied.  The trailing
+            # 65535 is a channel mask we do not need.
+            entity.tint = tuple(_num(a) for a in args[:4])
         elif code == OP_BLOCK_END:
             entity = None
         elif code == OP_BLOCK_DROP:
@@ -470,6 +500,19 @@ def load(name, disc=None):
             continue
         counts[key] = _run(scene, key, blob)
         queued.extend(t for t in scene.tracks if t.lower() not in seen)
+
+    # Effect tracks last, because the spawns that name them come out of the
+    # tracks above.  Each spawn is its own instance: `ef_e001_20` is spawned
+    # three times at three positions, and each wants its own entities.
+    for i, (at, tname, pos, _tgt) in enumerate(list(scene.effects)):
+        key = tname.lower()
+        if not key.endswith('.ssc'):
+            key += '.ssc'
+        blob = scene.archives.get(key)
+        if blob is None:
+            continue
+        counts['%s@%d' % (key, at)] = _run(scene, '%s#%d' % (key, i), blob,
+                                          frame_base=at, origin=pos)
 
     scene.opcounts = counts
     scene.duration = max([f for f, _, _, _ in scene.events] or [0]) + 1

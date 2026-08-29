@@ -27,11 +27,13 @@
 const ssc = (typeof require !== 'undefined') ? require('./ssc.js') : window.TraptSsc;
 
 const OP_END = 0x00, OP_AT_TIME = 0x04, OP_CUE = 0x05, OP_SPAWN = 0x06;
+const OP_SPAWN_FX_AT = 0x07, OP_SPAWN_FX = 0x08;   // spawn a track at a point
 const OP_PLAY_ANIM = 0x55, OP_LETTERBOX = 0x57, OP_VOICE = 0x59;
 const OP_BGM_START = 0x5A, OP_BGM_STOP = 0x5B;
 const OP_FADE_IN = 0x53, OP_FADE_OUT = 0x54;
 const OP_SUB_SHOW = 0x60, OP_SUB_HIDE = 0x61, OP_SET_ROOM = 0x62;
 const OP_BLOCK_BEGIN = 0x64, OP_BLOCK_END = 0x65, OP_BLOCK_DROP = 0x67;
+const OP_TINT = 0x7E;                              // (r, g, b, w); w is not alpha
 const OP_SCALE = 0x80, OP_MODEL = 0x82, OP_ANIM = 0x83, OP_TRANSFORM = 0x84;
 const OP_VISIBLE = 0xA2, OP_ROOT_BONE = 0xB3, OP_LIGHT_TYPE = 0xB4;
 const OP_LIGHT_RANGE = 0xB5, OP_ATTACH = 0xB7, OP_CAMERA = 0xB9, OP_FOG = 0xC7;
@@ -72,22 +74,38 @@ function newEntity(track, index, kind, label) {
   return { track: track, index: index, kind: kind, label: label,
            models: [], attachments: [], rootBone: null, transform: null,
            scale: null, clips: [], visibility: [], light: null,
-           lightRange: null, lightParent: false, start: 0, end: null };
+           lightRange: null, lightParent: false, origin: null, tint: null,
+           start: 0, end: null };
 }
 
-/** Execute one track into `scene`. */
-function run(scene, trackName, blob) {
-  let frame = 0, entity = null, pendingVoice = null;
+/**
+ * `frameBase` and `origin` are non-zero only for a track spawned by 0x07/0x08:
+ * an effect track times everything from the moment it was spawned, and is
+ * placed at the world position the spawn named.
+ */
+function run(scene, trackName, blob, frameBase, origin) {
+  frameBase = frameBase || 0;
+  origin = origin || null;
+  let frame = frameBase, entity = null, pendingVoice = null;
   const trackVis = [];
   for (const call of ssc.parse(blob)) {
     if (call.op === null) continue;
     const code = call.op, args = call.args;
-    if (code === OP_AT_TIME) { if (args.length) frame = int(args[0]); continue; }
+    if (code === OP_AT_TIME) { if (args.length) frame = int(args[0]) + frameBase; continue; }
     if (code === OP_CUE) continue;
     scene.events.push({ frame: frame, track: trackName, code: code, args: args });
 
     if (code === OP_SET_ROOM) scene.room = args[0];
     else if (code === OP_SPAWN) scene.tracks.push(args[0]);
+    // ELF 0x001C8790 (0x08) reads a string then three floats into a {x,y,z,1}
+    // vec4 and hands it to the same spawner 0x06 uses; 0x001C8860 (0x07) adds
+    // the position to a looked-up target instead.  Unlike 0x06 the same track
+    // spawns many times, at different places and frames, so these are
+    // instances rather than names.
+    else if (code === OP_SPAWN_FX || code === OP_SPAWN_FX_AT)
+      scene.effects.push({ frame: frame, track: args[0],
+        pos: args.slice(1, 4).map(num),
+        target: code === OP_SPAWN_FX_AT && args.length > 4 ? int(args[4]) : null });
     else if (code === OP_CAMERA) scene.cameraFile = args[1];
     else if (code === OP_BGM_START) scene.bgm.push([frame, 'start', int(args[0])]);
     else if (code === OP_BGM_STOP) scene.bgm.push([frame, 'stop', int(args[0])]);
@@ -113,7 +131,13 @@ function run(scene, trackName, blob) {
                          args.length ? int(args[0]) : null,
                          args.length > 1 && isStr(args[1]) ? args[1] : null);
       entity.start = frame;
+      entity.origin = origin;
       scene.entities.push(entity);
+    } else if (code === OP_TINT && entity) {
+      // Four floats.  The first three are a colour -- (0.6, 0.2, 0.1) recurs,
+      // a torch orange.  The fourth is NOT alpha: it reaches 1.5 across the
+      // disc, so it is an intensity or a ramp, kept but not yet applied.
+      entity.tint = args.slice(0, 4).map(num);
     } else if (code === OP_BLOCK_END) {
       entity = null;
     } else if (code === OP_BLOCK_DROP) {
@@ -190,7 +214,7 @@ function compile(name, assets) {
   const scene = {
     name: name, room: null, duration: 0, entities: [], subtitles: [],
     bgm: [], fades: [], letterbox: [], cameraFile: null, fog: null,
-    events: [], tracks: [], opcounts: {},
+    events: [], tracks: [], effects: [], opcounts: {},
   };
   const masterName = 'rt_' + name + '.ssc';
   const master = assets.get(masterName);
@@ -210,6 +234,16 @@ function compile(name, assets) {
     run(scene, key, blob);
     for (let i = before; i < scene.tracks.length; i++) queue.push(scene.tracks[i]);
   }
+
+  // Effect tracks last, because the spawns that name them come out of the
+  // tracks above.  Each spawn is its own instance: ef_e001_20 is spawned three
+  // times at three positions, and each wants its own entities.
+  scene.effects.forEach((fx, i) => {
+    let key = fx.track.toLowerCase();
+    if (!/\.ssc$/.test(key)) key += '.ssc';
+    const b2 = assets.get(key);
+    if (b2) run(scene, key + '#' + i, b2, fx.frame, fx.pos);
+  });
 
   let last = 0;
   for (const ev of scene.events) if (ev.frame > last) last = ev.frame;

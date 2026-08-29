@@ -136,11 +136,21 @@ async function assemble(THREE, disc, name, onProgress) {
       } catch (err) { warnings.push(file + ': ' + err.message); continue; }
       const group = modelMod.build(THREE, model, posed, texFor, {
         lights: lights, fog: scene.fog,
-        // `0x80` on a model block is a material multiplier, not a scale
-        tint: e.scale ? e.scale.slice(0, 3) : null,
+        // `0x80` on a model block is a material multiplier, not a scale.
+        // `0x7E` on an effect block is the same kind of thing -- a colour --
+        // so whichever the block carried wins, with 0x7E taking precedence
+        // because only effect blocks emit it.
+        tint: e.tint ? e.tint.slice(0, 3) : (e.scale ? e.scale.slice(0, 3) : null),
       });
       if (e.transform) group.position.set(e.transform[0], e.transform[1],
                                           e.transform[2]);
+      // An effect track is spawned at a world point by `0x08`/`0x07` and its
+      // blocks are positioned relative to it, so the two add.
+      if (e.origin) {
+        group.position.x += e.origin[0];
+        group.position.y += e.origin[1];
+        group.position.z += e.origin[2];
+      }
       root.add(group);
       actors.push({ entity: e, model: model, group: group, file: file,
                     clips: new Map(), bind: posed });

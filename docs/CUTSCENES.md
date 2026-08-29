@@ -195,6 +195,64 @@ VM instance fields (verified against a running cutscene):
 The script manager singleton is at `0x0048293C`; the RT scene manager is at
 `0x00482A28` (`+0xB4` = room index).
 
+### 4.1a Effect tracks — `0x08`, `0x07`, `0x7E`
+
+Half the cutscenes stage their effects through a second kind of spawn, and the
+viewer ignored all of it until the stab in `e001` turned out to have no blood.
+
+| op | handler | shape |
+|---|---|---|
+| `0x08` | `FUN_001C8790` | `(track, x, y, z, flags)` — spawn a track **at a world point** |
+| `0x07` | `FUN_001C8860` | `(track, x, y, z, target)` — the same, offset from a looked-up target |
+| `0x7E` | `FUN_001C2CC0` | `(r, g, b, w, mask)` — a colour on the block |
+
+`0x08` reads a string, then three floats into a `{x, y, z, 1.0}` vec4, and
+calls the same track spawner `0x06` uses. The difference from `0x06` is that
+the same track spawns **many times**, at different places and frames, so these
+are instances rather than names: `ef_e001_20` is spawned three times.
+
+An effect track times everything from the moment it was spawned — its own
+`at_time` values start at 0 — so a spawn contributes a frame base as well as an
+origin.
+
+In `e001`, after Olaf's cry at 7830:
+
+```
+@8270  0x08  ['ef_e001_30', -0.6701, 3.6973, -44.5011, 0]
+@8431  0x08  ['ef_e001_31', -0.6797, 3.7091, -46.4969, 0]
+```
+
+Both attach `ef_e001_01.smi`, which is in `RT_E001.ARC` and was never being
+instantiated. `0x08` fires **600 times across 73 of the 157 cutscenes**;
+`0x07` 148 times across 71.
+
+**`0x7E`'s fourth field is not alpha.** It reaches 1.5 across the disc, so it
+cannot be one, and treating it as alpha hides the sprite — `ef_e001_30` passes
+0.0. The first three are plainly a colour: `(0.6, 0.2, 0.1)` recurs, a torch
+orange. Only the colour is applied; the fourth is carried and unused.
+
+Two more opcodes those tracks use turned out to need nothing: `0xA6` shares the
+expression-family handler `FUN_001C7240`, and `0x01` is `FUN_001C8C70`, a
+single `jr ra` — a genuine no-op.
+
+### 4.1b `0x63` — room-section culling, not yet implemented
+
+`FUN_001C5810` indexes a string table at `0x00376A30` — `IF_north`, `IF_south`,
+`IF_east`, `IF_west`, `IF_ceiling`, `IF_floor`, `IF_distant` — maps the name to
+an id through `FUN_00298A30`, and toggles it with `FUN_00294380(room, id, on)`.
+That walks a per-room array at `room+0x240` of `{id, part, flags}` and
+enables or disables a part.
+
+e001 turns the north wall on and the south wall off at 7910 and reverses it at
+7980, following the camera cuts. Ignoring it leaves walls standing in shots
+meant to have them removed.
+
+It is **not implemented**, because the mapping cannot be recovered statically:
+the name→id table at `0x0048EB10` is in `.bss` and built at runtime, and
+neither the room `.smi` (`rp03.smi`: 50 meshes, one node) nor the RT models
+carry `IF_*` names or a group id. Reading it needs a live session, or the
+room-data parser that fills `room+0x240`.
+
 ### 4.2 Bytecode
 
 ```
