@@ -134,13 +134,31 @@ console.log('stage mode owns the frame while it is running');
         /Math\.min\(6, dt \* 60\)/.test(fn('stageTick')),
         'a backgrounded tab hands back a dt of seconds, not frames');
 
+  // A stale G is not untidy, it is fatal: tick hands the stage the whole
+  // frame and returns, so whatever took over gets starved.  That shipped
+  // once -- a route hung on its first cutscene after a stage had been walked,
+  // because the scene assembled, never advanced, and so never fired the
+  // S.onEnd that moves the route on.  Every mode entry has to tear it down.
+  check('leaveStage detaches the pad and drops the scene graph',
+        /G\.pad\.detach\(\)/.test(fn('leaveStage'))
+        && /V\.scene\.remove\(G\.runner\.root\)/.test(fn('leaveStage'))
+        && /G = null;/.test(fn('leaveStage')));
+  for (const entry of ['playScene', 'showModel', 'openCutscene', 'startRoute',
+                       'playStage'])
+    check(entry + ' leaves stage mode first',
+          /leaveStage\(\);/.test(fn(entry)),
+          'a stale G starves it of every frame');
+  check('and V.group is only cleared when it was the stage',
+        /if \(V\.group === G\.runner\.root\) V\.group = null;/
+          .test(fn('leaveStage')),
+        'blanking it unconditionally would drop the thing that replaced it');
+
   const ps = fn('playStage');
-  check('entering stage mode leaves cutscene and model mode',
-        /S = null; M = null;/.test(ps),
-        'otherwise tick poses three things at once');
-  check('the previous stage is torn down before the next is added',
-        ps.indexOf('G.pad.detach()') > 0
-        && ps.indexOf('G.pad.detach()') < ps.indexOf('V.scene.add(runner.root)'));
+  check('entering stage mode leaves cutscene, model and route mode',
+        /S = null; M = null;/.test(ps) && /leaveRoute\(\);/.test(ps),
+        'otherwise a chapter card timer fires into a stage');
+  check('a route timer is cleared and not just orphaned',
+        /clearTimeout\(R\.timer\)/.test(fn('leaveRoute')));
   check('V.group follows the stage so drawFrame feeds it the eye position',
         /V\.group = runner\.root;/.test(ps),
         'the point lights in the GS shader need it');

@@ -336,6 +336,9 @@ async function load(file) {
 }
 
 async function openCutscene(name, path, el) {
+  // Before the markup under it is replaced: a bundle with no models never
+  // reaches showModel, so this cannot be left to that.
+  leaveStage();
   for (const c of list.querySelectorAll('.cut.on')) c.classList.remove('on');
   el.classList.add('on');
   detail.innerHTML =
@@ -520,6 +523,7 @@ function bindOrbit(host) {
 
 function showModel(entry, chip) {
   S = null;                                   // leave scene mode
+  leaveStage();                               // and stage mode
   const subs = document.getElementById('subs');
   if (subs) subs.style.display = 'none';
   for (const id of ['lbTop', 'lbBot']) {
@@ -1090,6 +1094,7 @@ function routeBeats(opts) {
 
 async function startRoute(opts) {
   if (!TABLES) { alert('open a disc first'); return; }
+  leaveStage();                            // the stage owns tick until it goes
   R = { beats: routeBeats(opts), at: -1, paused: false };
   detail.innerHTML =
       '<h2 id="routeHead">Route</h2><div id="members"></div>'
@@ -1226,6 +1231,33 @@ function buildRoutePanel() {
 
 let PADCFG = null;      // the parsed [Pad1], from a PCSX2.ini or the defaults
 
+/**
+ * Tear stage mode down.  Every other mode has to call this before it starts.
+ *
+ * `tick` gives the stage the whole frame and returns, because the follow
+ * camera and the orbit camera cannot both have it.  That makes a stale `G`
+ * fatal rather than untidy: it silently starves whatever took over, and the
+ * way that showed up was a route hanging on its first cutscene after a stage
+ * had been walked -- the scene assembled, never advanced, and so never fired
+ * the `S.onEnd` that moves the route on.  The card just sat there.
+ */
+function leaveStage() {
+  if (!G) return;
+  G.pad.detach();
+  if (G.runner) {
+    V.scene.remove(G.runner.root);
+    if (V.group === G.runner.root) V.group = null;
+  }
+  G = null;
+}
+
+/** The same for a running route, for when the stage is what interrupts. */
+function leaveRoute() {
+  if (!R) return;
+  clearTimeout(R.timer);
+  R = null;
+}
+
 function padSummary() {
   const dev = TraptPad.devicesUsed(PADCFG.bindings);
   const n = Object.keys(PADCFG.bindings).length;
@@ -1283,6 +1315,8 @@ function buildStagePanel() {
 
 async function playStage(number, chip) {
   S = null; M = null;                       // leave cutscene and model modes
+  leaveRoute();                             // and stop a route from stepping on
+  leaveStage();                             // and the stage before this one
   for (const c of document.querySelectorAll('#stages .cut.on'))
     c.classList.remove('on');
   if (chip) chip.classList.add('on');
@@ -1307,7 +1341,6 @@ async function playStage(number, chip) {
     return;
   }
 
-  if (G) { G.pad.detach(); if (G.runner) V.scene.remove(G.runner.root); }
   if (V.group) { V.scene.remove(V.group); V.group = null; }
   V.scene.add(runner.root);
   V.group = runner.root;                    // drawFrame feeds it the eye
@@ -1457,6 +1490,7 @@ function stageTick(dt) {
 // from the disc by play.js and driven here.
 async function playScene(name) {
   M = null;                                   // leave single-model mode
+  leaveStage();                               // a stale stage owns the frame
   const vinfo = document.getElementById('vinfo');
   const clips = document.getElementById('clips');
   const models = document.getElementById('models');
