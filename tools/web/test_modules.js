@@ -57,6 +57,31 @@ const unused = [...provided].filter((g) => !used.has(g));
 check('and nothing is loaded that the page never uses', unused.length === 0,
       'loaded but unused: ' + unused.join(', '));
 
+// Being provided eventually is not enough.  Modules capture their dependency
+// once, at load time -- `const playMod = req ? require('./play.js') :
+// window.TraptPlay;` -- so the publisher must already have run.  poster.js
+// shipped loading one tag before play.js, which left playMod undefined for
+// the life of the page and put "can't access property assemble, playMod is
+// undefined" in every gallery tile.  The sandbox check further down cannot
+// see this: by the time it runs, every global is present.
+const publisher = new Map();
+for (const f of loaded) {
+  const src = fs.readFileSync(path.join(HERE, f), 'utf8');
+  for (const m of src.matchAll(/window\.(Trapt[A-Za-z0-9]*)\s*=/g))
+    publisher.set(m[1], f);
+}
+const tooLate = [];
+loaded.forEach((f, i) => {
+  const src = fs.readFileSync(path.join(HERE, f), 'utf8');
+  for (const m of src.matchAll(/window\.(Trapt[A-Za-z0-9]*)\b(?!\s*=)/g)) {
+    const owner = publisher.get(m[1]);
+    if (owner && loaded.indexOf(owner) > i)
+      tooLate.push(f + ' reads ' + m[1] + ', which ' + owner + ' publishes later');
+  }
+});
+check('and every one is published before it is read', tooLate.length === 0,
+      tooLate.join('\n        '));
+
 console.log('every module parses on its own');
 for (const f of loaded) {
   let err = '';
