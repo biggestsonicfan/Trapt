@@ -140,10 +140,47 @@ console.log('reading a pad with no devices attached');
   const moved = p.read();
   check('a held key drives the stick it is bound to',
         [moved.lx, moved.ly], [1, -1]);
-  check('the d-pad and the stick share the axis rather than doubling it',
-        (() => { p.held.add('ArrowUp'); return p.read().ly; })(), -1);
+  check('the arrows are the right stick, so they aim rather than move',
+        (() => { p.held.add('ArrowUp'); const r = p.read();
+                 return [r.ly, r.ry]; })(), [-1, -1]);
+  check('the d-pad and the stick share an axis rather than doubling it',
+        (() => { p.held.add('Numpad8'); return p.read().ly; })(), -1);
   p.held.clear();
-  check('releasing clears it', p.read().lx, 0);
+  check('releasing clears it', [p.read().lx, p.read().ry], [0, 0]);
+}
+
+// The on-screen control help is generated from the bindings, so it is only as
+// right as this is.  The ArrowLeft case is a bug that was written and caught
+// here: stripping a bare trailing `Left`, which is what ShiftLeft wants,
+// silently turned ArrowLeft into the empty string and the whole right stick
+// into "nothing bound".
+console.log('naming a binding for the player');
+{
+  const d = pad.defaults().bindings;
+  check('a letter key is just the letter', pad.hint(d, 'Circle'), 'L');
+  check('the four arrows survive being tidied',
+        ['RUp', 'RLeft', 'RDown', 'RRight'].map((t) => pad.hint(d, t)),
+        ['Up', 'Left', 'Down', 'Right']);
+  check('a numpad key says so', pad.hint(d, 'Up'), 'numpad 8');
+  check('an unbound control is null', pad.hint({}, 'Cross'), null);
+
+  const mods = pad.parse(['[Pad1]', 'Start = Keyboard/Shift & Keyboard/Return',
+                          'Select = Keyboard/Control'].join('\n')).bindings;
+  check('a modifier drops its side', pad.hint(mods, 'Select'), 'Control');
+  check('and a chord keeps both halves', pad.hint(mods, 'Start'), 'Shift + Enter');
+
+  check('four single keys read as one word', pad.stickHint(d, 'L'), 'WASD');
+  check('four longer keys are separated', pad.stickHint(d, 'R'),
+        'Up/Left/Down/Right');
+  check('nothing bound says so', pad.stickHint({}, 'L'), 'nothing bound');
+
+  const gp = pad.parse(['[Pad1]', 'LUp = SDL-1/-LeftY', 'LDown = SDL-1/+LeftY',
+                        'LLeft = SDL-1/-LeftX', 'LRight = SDL-1/+LeftX',
+                        'Cross = SDL-1/FaceSouth'].join('\n')).bindings;
+  check('on a controller a button is named by what PCSX2 called it',
+        pad.hint(gp, 'Cross'), 'Cross');
+  check('and a stick is named as a stick', pad.stickHint(gp, 'L'),
+        'the left stick');
 }
 
 console.log('rising edges');

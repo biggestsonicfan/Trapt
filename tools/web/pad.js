@@ -67,12 +67,18 @@ const PAD_TARGETS = [
 
 // Used when no ini is supplied.  Written in PCSX2's own syntax so it goes
 // through the same parser -- one code path, not two.
+// The arrows are the *right* stick, not the d-pad: a stage is moved with one
+// stick and aimed with the other, so a keyboard with nothing on the right
+// stick cannot turn the camera at all.  The d-pad goes on the numpad, which
+// keeps it bound without stealing the arrows.
 const DEFAULT_INI = [
   '[Pad1]',
-  'Up = Keyboard/Up', 'Down = Keyboard/Down',
-  'Left = Keyboard/Left', 'Right = Keyboard/Right',
+  'Up = Keyboard/Keypad8', 'Down = Keyboard/Keypad2',
+  'Left = Keyboard/Keypad4', 'Right = Keyboard/Keypad6',
   'LUp = Keyboard/W', 'LDown = Keyboard/S',
   'LLeft = Keyboard/A', 'LRight = Keyboard/D',
+  'RUp = Keyboard/Up', 'RDown = Keyboard/Down',
+  'RLeft = Keyboard/Left', 'RRight = Keyboard/Right',
   'Cross = Keyboard/K', 'Circle = Keyboard/L',
   'Square = Keyboard/J', 'Triangle = Keyboard/I',
   'L1 = Keyboard/Q', 'R1 = Keyboard/E',
@@ -162,6 +168,37 @@ function describe(s) {
   if (s.kind === 'key') return 'key ' + s.code;
   if (s.kind === 'button') return 'pad' + s.pad + ' button ' + s.index;
   return 'pad' + s.pad + ' axis ' + s.index + (s.sign > 0 ? ' +' : ' -');
+}
+
+/**
+ * What a PS2 control is physically bound to, in a form worth printing.
+ *
+ * On a controller the useful name is the PS2 one: PCSX2 has already mapped a
+ * physical button to it, so `Circle` is what the player presses and
+ * "pad1 button 1" is noise.  Only a keyboard needs the key spelled out.
+ */
+function hint(bindings, target) {
+  const sources = bindings && bindings[target];
+  if (!sources || !sources.length) return null;
+  if (sources.some((s) => s.kind !== 'key')) return target;
+  return sources.map((s) => s.code
+    // Anchored, and first: stripping a bare trailing `Left` -- which is what
+    // ShiftLeft wants -- turns ArrowLeft into the empty string.
+    .replace(/^(Shift|Control|Alt|Meta)(Left|Right)$/, '$1')
+    .replace(/^Key/, '').replace(/^Digit/, '')
+    .replace(/^Arrow/, '').replace(/^Numpad/, 'numpad ')).join(' + ');
+}
+
+/** The four half-axes of one stick as a single phrase. */
+function stickHint(bindings, prefix) {
+  const keys = [prefix + 'Up', prefix + 'Left', prefix + 'Down', prefix + 'Right']
+    .map((t) => hint(bindings, t));
+  if (!keys.every(Boolean)) return 'nothing bound';
+  // A gamepad binding reports its own target name back, so that is the tell.
+  if (keys[0] === prefix + 'Up')
+    return 'the ' + (prefix === 'L' ? 'left' : 'right') + ' stick';
+  if (keys.every((k) => k.length === 1)) return keys.join('');
+  return keys.join('/');
 }
 
 /** Which physical devices a binding set needs -- for telling the user. */
@@ -296,7 +333,7 @@ class Edges {
 }
 
 const api = { parse, defaults, readIni, resolveSource, resolveBinding,
-              describe, devicesUsed, Pad, Edges,
+              describe, devicesUsed, hint, stickHint, Pad, Edges,
               PAD_TARGETS, SDL_BUTTONS, SDL_AXES, SDL_TRIGGERS, KEYS,
               DEFAULT_INI, DEADZONE };
 if (typeof module !== 'undefined') module.exports = api;

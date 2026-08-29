@@ -87,16 +87,25 @@ PAD_TARGETS = (
 
 # Used when no ini is supplied.  Written in PCSX2's own syntax so it goes
 # through exactly the same parser -- one code path, not two.
+#
+# The arrows are the *right* stick, not the d-pad: a stage is moved with one
+# stick and aimed with the other, so a keyboard with nothing on the right
+# stick cannot turn the camera at all.  The d-pad goes on the numpad, which
+# keeps it bound without stealing the arrows.
 DEFAULT_INI = """
 [Pad1]
-Up = Keyboard/Up
-Down = Keyboard/Down
-Left = Keyboard/Left
-Right = Keyboard/Right
+Up = Keyboard/Keypad8
+Down = Keyboard/Keypad2
+Left = Keyboard/Keypad4
+Right = Keyboard/Keypad6
 LUp = Keyboard/W
 LDown = Keyboard/S
 LLeft = Keyboard/A
 LRight = Keyboard/D
+RUp = Keyboard/Up
+RDown = Keyboard/Down
+RLeft = Keyboard/Left
+RRight = Keyboard/Right
 Cross = Keyboard/K
 Circle = Keyboard/L
 Square = Keyboard/J

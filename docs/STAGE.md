@@ -461,7 +461,21 @@ translating: `Return`, `Plus`, `Backtab`.
 
 With no ini the page falls back to a keyboard set written **in PCSX2's own
 syntax** and run through the same parser, so there is one code path and not
-two.
+two. In it the arrows are the **right stick, not the d-pad** — a stage is
+moved with one stick and aimed with the other, and a keyboard with nothing on
+the right stick cannot turn the camera at all. The d-pad goes on the numpad,
+which keeps it bound without stealing the arrows.
+
+The page prints the live bindings rather than a fixed legend, so the help
+stays true when an ini replaces them:
+
+```
+built-in keyboard defaults · move WASD · camera Up/Left/Down/Right
+                           · run L · door K · set a trap J · pick a trap Q/E
+
+a PCSX2.ini on a pad       · move the left stick · camera the right stick
+                           · run Circle · door Cross · set a trap Square
+```
 
 ### 7.1 What the buttons do
 
@@ -488,8 +502,8 @@ stage keeps a way back into the route, and *Skip it* preserves the old
 behaviour for anyone walking the story for its cutscenes.
 
 ```
-node tools/web/test_all.js            # 610 checks with a disc
-node tools/web/test_all.js --no-disc  # 204 without
+node tools/web/test_all.js            # 622 checks with a disc
+node tools/web/test_all.js --no-disc  # 235 without
 ```
 
 Two new suites need the disc and one does not.

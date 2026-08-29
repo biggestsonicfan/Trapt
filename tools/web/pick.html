@@ -223,6 +223,13 @@
 <script src="poster.js"></script>
 <script>
 'use strict';
+
+// Bumped whenever the page gains something a user would look for.  A browser
+// holding a cached pick.html is indistinguishable from a broken feature --
+// the stage handoff was reported as missing twice while the file on disk had
+// it -- so the page says out loud which build is running.
+const BUILD = '2026-08-29 · stage mode + route handoff';
+
 const drop = document.getElementById('drop');
 const stage = document.getElementById('stage');
 const rows = document.getElementById('rows');
@@ -263,6 +270,7 @@ document.getElementById('file').addEventListener('change', (e) => {
 async function load(file) {
   stage.className = 'on';
   rows.innerHTML = ''; list.innerHTML = ''; detail.innerHTML = '';
+  row('page build', BUILD);
   row('file', file.name + '  (' + (file.size / 1e9).toFixed(2) + ' GB)');
   const t0 = performance.now();
   try {
@@ -1310,6 +1318,11 @@ function leaveRoute() {
   R = null;
 }
 
+// The on-screen control help is derived from the live bindings rather than
+// written down, so it stays true when a PCSX2.ini replaces the defaults.
+const padHint = (t) => TraptPad.hint(PADCFG.bindings, t);
+const moveHint = (prefix) => TraptPad.stickHint(PADCFG.bindings, prefix);
+
 function padSummary() {
   const dev = TraptPad.devicesUsed(PADCFG.bindings);
   const n = Object.keys(PADCFG.bindings).length;
@@ -1328,9 +1341,16 @@ function buildPadPanel() {
     '<label class="btn">Use my PCSX2 bindings'
     + '<input type="file" id="padIni" accept=".ini"></label>'
     + '<span id="padWhich"></span>';
+  const key = (t) => '<code>' + (padHint(t) || '—') + '</code>';
   document.getElementById('padWhich').innerHTML =
     (PADCFG.source || 'built-in keyboard defaults') + ' &middot; ' + padSummary()
-    + ' &middot; <code>Documents/PCSX2/inis/PCSX2.ini</code>';
+    + ' &middot; <code>Documents/PCSX2/inis/PCSX2.ini</code>'
+    + '<br>move <code>' + moveHint('L') + '</code>'
+    + ' &middot; camera <code>' + moveHint('R') + '</code>'
+    + ' &middot; run ' + key('Circle')
+    + ' &middot; door ' + key('Cross')
+    + ' &middot; set a trap ' + key('Square')
+    + ' &middot; pick a trap ' + key('L1') + '/' + key('R1');
   document.getElementById('padIni').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1361,7 +1381,7 @@ function buildStagePanel() {
     host.appendChild(b);
   }
   document.getElementById('stageStatus').textContent =
-    numbers.length + ' stages on the disc — rooms, collision, doors and traps';
+    numbers.length + ' on the disc — click one to walk it';
   buildPadPanel();
 }
 

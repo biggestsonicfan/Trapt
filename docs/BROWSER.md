@@ -86,8 +86,8 @@ uses the element's own aspect.
 ## 4. Tests
 
 ```
-node tools/web/test_all.js              # 610 checks with a disc
-node tools/web/test_all.js --no-disc    # 204 without
+node tools/web/test_all.js              # 622 checks with a disc
+node tools/web/test_all.js --no-disc    # 235 without
 ```
 
 Every decoder is diffed against its Python counterpart on real disc data —
