@@ -37,6 +37,13 @@ const OP_TINT = 0x7E;                              // (r, g, b, w); w is not alp
 const OP_SCALE = 0x80, OP_MODEL = 0x82, OP_ANIM = 0x83, OP_TRANSFORM = 0x84;
 const OP_VISIBLE = 0xA2, OP_ROOT_BONE = 0xB3, OP_LIGHT_TYPE = 0xB4;
 const OP_LIGHT_RANGE = 0xB5, OP_ATTACH = 0xB7, OP_CAMERA = 0xB9, OP_FOG = 0xC7;
+// Sprite effects.  Handlers, from the dispatch table at 0x00376660:
+//   0x68 FUN_001C4C90  string + 4 ints -> effect vtable +0x80
+//   0x6D FUN_001C47F0  two numbers + a frame -> a keyframe list
+//   0x6E FUN_001C46A0  four numbers + a frame -> another keyframe list
+//   0xCA FUN_001C1D50  actor + bone; asserts the effect's kind is 3
+const OP_FX_TEXTURE = 0x68, OP_FX_SIZE_KEY = 0x6D, OP_FX_COLOUR_KEY = 0x6E;
+const OP_FX_EMIT_A = 0xC8, OP_FX_EMIT_B = 0xC9, OP_FX_BIND_BONE = 0xCA;
 
 const KIND_MODEL = 4, KIND_LIGHT = 6, KIND_CAMERA = 7;
 const LIGHT_KINDS = { 0: 'directional', 1: 'point', 4: 'ambient', 5: 'black' };
@@ -75,8 +82,37 @@ function newEntity(track, index, kind, label) {
            models: [], attachments: [], rootBone: null, transform: null,
            scale: null, clips: [], visibility: [], light: null,
            lightRange: null, lightParent: false, origin: null, tint: null,
-           start: 0, end: null };
+           start: 0, end: null,
+           // Sprite effects: a block naming a texture instead of a model.
+           sprite: null, sizeKeys: [], colourKeys: [], binds: [],
+           emitter: null, trackLen: null };
 }
+
+/**
+ * Linear interpolation over `[[frame, ...values], ...]`, held at both ends.
+ *
+ * Keys arrive in script order, which is ascending on the disc.  Before the
+ * first and after the last the value is held rather than extrapolated --
+ * `ef_e004_30`'s alpha ends on 0 and an extrapolated fifth key would drive it
+ * negative.
+ */
+function sample(keys, t, fallback) {
+  if (!keys.length) return fallback;
+  if (t <= keys[0][0]) return keys[0].slice(1);
+  if (t >= keys[keys.length - 1][0]) return keys[keys.length - 1].slice(1);
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (a[0] <= t && t <= b[0]) {
+      const span = b[0] - a[0];
+      const f = span <= 0 ? 0 : (t - a[0]) / span;
+      return a.slice(1).map((av, k) => av + (b[k + 1] - av) * f);
+    }
+  }
+  return keys[keys.length - 1].slice(1);
+}
+
+const sizeAt = (e, local) => sample(e.sizeKeys, local, [1, 1]);
+const colourAt = (e, local) => sample(e.colourKeys, local, [1, 1, 1, 1]);
 
 /**
  * `frameBase` and `origin` are non-zero only for a track spawned by 0x07/0x08:
@@ -133,6 +169,39 @@ function run(scene, trackName, blob, frameBase, origin) {
       entity.start = frame;
       entity.origin = origin;
       scene.entities.push(entity);
+    // ------------------------------------------------------ sprite effects
+    // A sprite effect names a **texture** here where a model effect names an
+    // `.smi` with `0x82`.  The four ints are (cell w, cell h, sheet w,
+    // sheet h): `ef_p_s_00.tm2` is `32 32 256 256`, an 8x8 grid of 32-pixel
+    // cells on a sheet that really is 256x256.  Where the declared sheet
+    // disagrees with the file -- five textures do -- the cell is the whole
+    // sheet, so the UV rect is the whole image either way.
+    } else if (code === OP_FX_TEXTURE && entity && args.length) {
+      const n = args.slice(1, 5).map(num);
+      while (n.length < 4) n.push(0);
+      entity.sprite = { texture: isStr(args[0]) ? args[0] : '',
+                        cell: [n[0], n[1]], sheet: [n[2], n[3]] };
+    // `0x6D(sx, sy, frame)` and `0x6E(r, g, b, a, frame)` are keyframes, and
+    // the data says so plainly: in `ef_e004_30.ssc` the `0x6D` pairs run
+    // (0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240 -- always equal, always
+    // growing -- while the `0x6E` quads hold (1.5,0.2,0.1) and move the
+    // fourth 0 -> 1.8 -> 1.8 -> 0 over the same span.
+    } else if (code === OP_FX_SIZE_KEY && entity && args.length >= 3) {
+      entity.sizeKeys.push([num(args[2]), num(args[0]), num(args[1])]);
+    } else if (code === OP_FX_COLOUR_KEY && entity && args.length >= 5) {
+      entity.colourKeys.push([num(args[4]), num(args[0]), num(args[1]),
+                              num(args[2]), num(args[3])]);
+    // `0xCA(actor, bone, ?)` binds the emitter to a bone.  `FUN_001C1D50`
+    // requires the effect object's kind to be 3 -- exactly the block kind
+    // these appear in -- then resolves the actor and the bone by name.
+    } else if (code === OP_FX_BIND_BONE && entity && args.length >= 2) {
+      entity.binds.push([isStr(args[0]) ? args[0] : '',
+                         isStr(args[1]) ? args[1] : '']);
+    } else if ((code === OP_FX_EMIT_A || code === OP_FX_EMIT_B) && entity) {
+      // Structure only: what these steer is not established, so they are
+      // carried and not used.
+      if (!entity.emitter) entity.emitter = {};
+      entity.emitter[code.toString(16)] = args.map(num);
     } else if (code === OP_TINT && entity) {
       // Four floats.  The first three are a colour -- (0.6, 0.2, 0.1) recurs,
       // a torch orange.  The fourth is NOT alpha: it reaches 1.5 across the
@@ -173,7 +242,17 @@ function run(scene, trackName, blob, frameBase, origin) {
     if (code === OP_END) break;
   }
   for (const e of scene.entities)
-    if (e.track === trackName) e.visibility = trackVis.slice();
+    if (e.track === trackName) {
+      e.visibility = trackVis.slice();
+      // How long the track ran.  A sprite block with no `0x6E` alpha keys
+      // has nothing else saying when it is over -- e004's spark tracks are
+      // thirty frames long and carry only `0x80` and the emitter -- so
+      // without this they would burn until the cutscene ended.  It is a
+      // *length* and not an end frame because the same track is spawned more
+      // than once: `ef_e004_12` runs at 1172 and again at 1182, and an
+      // absolute end would give the second spawn the first one's.
+      if (e.trackLen === null) e.trackLen = frame - frameBase;
+    }
 }
 
 /** `c01f_a_e001_2.sai` -> `c01f_a_e001`, the per-act clip family. */
@@ -287,7 +366,8 @@ function visibleAt(entity, frame) {
 }
 
 const api = { compile, run, mergeMasterClips, family, text, renderModels,
-              clipAt, visibleAt, num, KIND_MODEL, KIND_LIGHT, KIND_CAMERA };
+              clipAt, visibleAt, num, sample, sizeAt, colourAt,
+              KIND_MODEL, KIND_LIGHT, KIND_CAMERA };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptScene = api;
 })();

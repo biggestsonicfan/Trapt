@@ -123,6 +123,32 @@ async function main() {
   const sizes = [...new Set(decoded.map((d) => d.w + 'x' + d.h))];
   console.log('  sizes seen: %s', sizes.slice(0, 8).join(' '));
 
+  // TIM2's `format` byte moves the first picture header: 0 puts it after the
+  // 16-byte file header, anything else aligns it to 128.  Reading 0x10
+  // unconditionally made 129 of the disc's 7668 textures decode to a 0x0
+  // picture and vanish -- among them `spark.tm2`, the effect e004 draws on
+  // Allura's hand, and `rh01_21.tm2`, a wall in the House's first room.
+  console.log('format-1 TIM2, which used to decode to nothing');
+  {
+    const fx = await disc.read('DATA/EFFECT/EF_COMMON.ARC');
+    const members = arcMod.members(fx);
+    for (const name of ['spark.tm2', 'ef_g004a.tm2']) {
+      const blob = members.get(name);
+      check(name + ' is format 1', blob[5], 1);
+      const pics = tm2.decode(blob);
+      check(name + ' decodes to one picture', pics.length, 1);
+      const w = python(
+        'import arc, hashlib, json, scene, tm2; d = scene.Disc();'
+        + ' m = {n.lower(): (o, s) for n, o, s in'
+        + ' arc.entries(d.read("DATA/EFFECT/EF_COMMON.ARC"))};'
+        + ' o, s = m["' + name + '"];'
+        + ' w, h, px = tm2.decode(d.read("DATA/EFFECT/EF_COMMON.ARC")[o:o+s])[0];'
+        + ' print(json.dumps([w, h, hashlib.sha256(px).hexdigest()[:16]]))');
+      check(name + ' is ' + w[0] + 'x' + w[1] + ' and byte-identical',
+            [pics[0].width, pics[0].height, sha(pics[0].rgba)], w);
+    }
+  }
+
   // ------------------------------------------------------------ geometry
   // Models chosen for the cases that break silently: a skinned character with
   // a facial rig, a rigid-mesh room, a prop that rides a single node (the
@@ -502,8 +528,11 @@ async function main() {
   // The interpreter is where a cutscene stops being a bag of files: which
   // actor wears which model, plays which clip when, in which room, under which
   // camera.  Every field here is one the player reads directly.
+  // e004 leans on sprite effects harder than anything but e132 and is the
+  // only cutscene that binds them to bones, so it is the one that would
+  // notice the two sides drifting.
   console.log('the scene timeline, against tools/scene.py');
-  for (const cutscene of ['e001', 'e009', 'e401_01']) {
+  for (const cutscene of ['e001', 'e009', 'e401_01', 'e004']) {
     const up = cutscene.toUpperCase();
     const blob = await disc.read('DATA/RT/' + up + '/RT_' + up + '.ARC');
     const assets = arcMod.members(blob);
@@ -527,7 +556,15 @@ async function main() {
       '                "root_bone": e.root_bone, "light": e.light,',
       '                "transform": list(e.transform) if e.transform else None,',
       '                "scale": list(e.scale) if e.scale else None,',
-      '                "vis": [[f, bool(v)] for f, v in e.visibility]}',
+      '                "vis": [[f, bool(v)] for f, v in e.visibility],',
+      '                "sprite": (None if not e.sprite else',
+      '                           {"texture": e.sprite["texture"],',
+      '                            "cell": list(e.sprite["cell"]),',
+      '                            "sheet": list(e.sprite["sheet"])}),',
+      '                "size_keys": [list(k) for k in e.size_keys],',
+      '                "colour_keys": [list(k) for k in e.colour_keys],',
+      '                "binds": [list(b) for b in e.binds],',
+      '                "emitter": e.emitter, "track_len": e.track_len}',
       '               for e in s.entities]}))',
     ].join('\n');
     const w = python(PY_SCENE);
@@ -552,6 +589,8 @@ async function main() {
         render: sceneMod.renderModels(e), clips: e.clips, start: e.start,
         end: e.end, root_bone: e.rootBone, light: e.light,
         transform: e.transform, scale: e.scale, vis: e.visibility,
+        sprite: e.sprite, size_keys: e.sizeKeys, colour_keys: e.colourKeys,
+        binds: e.binds, emitter: e.emitter, track_len: e.trackLen,
       };
       if (JSON.stringify(mine) !== JSON.stringify(x))
         diffs.push({ i: i, got: mine, want: x });
@@ -567,6 +606,72 @@ async function main() {
   // the actors name rigs and clips, the rigs name textures, and the room and
   // camera come from somewhere else again.  A stub THREE is enough to check
   // that all of it resolves and that posing at a frame actually moves things.
+  // Sprite effects, end to end.  Before these existed, 59 of the disc's 78
+  // effect blocks compiled to an entity with nothing to draw, because a
+  // sprite names a texture with 0x68 where a model names an .smi with 0x82.
+  console.log('sprite effects, in e004');
+  {
+    const THREE = stubThree();
+    const built = await play.assemble(THREE, disc, 'e004', () => {});
+    check('assembles with no warnings', built.warnings, []);
+    check('17 billboards -- one per emitter point', built.sprites.length, 17);
+    const bound = built.sprites.filter((s) => s.bind);
+    check('14 of them are bound to a bone', bound.length, 14);
+    check('and every bind resolved to an actor and a real bone',
+          bound.filter((s) => !s.actor || s.boneIndex < 0).length, 0);
+    check('the bones are the right arm, finger to shoulder',
+          [...new Set(bound.map((s) => s.bind[1]))].sort(),
+          ['hiji_R', 'te_R', 'ude_R', 'yubi_2_1_R']);
+    check('spark.tm2 decoded -- it is a format-1 TIM2',
+          !!built.textures.get('spark.tm2'), true);
+
+    // The visible shape of the effect, frame by frame.  ef_e004_11 and _12
+    // spark on her arm from 1172; _30 and _31 flash from 1420.
+    const lit = (f) => {
+      play.poseAt(built, f);
+      const on = built.sprites.filter((s) => s.mesh.visible);
+      const by = {};
+      for (const s of on) {
+        const t = s.entity.sprite.texture;
+        by[t] = (by[t] || 0) + 1;
+      }
+      return by;
+    };
+    check('nothing before the first spawn', lit(1150), {});
+    check('sparks once it starts', lit(1175), { 'spark.tm2': 7 });
+    check('both spawns overlap', lit(1190), { 'spark.tm2': 14 });
+    check('the flash joins them', lit(1500),
+          { 'ef_s014c.tm2': 3, 'spark.tm2': 8 });
+    check('and everything is gone by the end', lit(1700), {});
+
+    play.poseAt(built, 1500);
+    const flash = built.sprites.find(
+      (s) => s.mesh.visible && s.entity.sprite.texture === 'ef_s014c.tm2');
+    const spark = built.sprites.find(
+      (s) => s.mesh.visible && s.entity.sprite.texture === 'spark.tm2');
+    // The keyframes: 0x6D grows the flash 0.5 -> 4.5, 0x6E fades its alpha
+    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).
+    check('the flash is keyframed, and mid-swell at 1500',
+          [+flash.mesh.scale.x.toFixed(2), +flash.mesh.material.opacity.toFixed(2),
+           +flash.mesh.material.color.r.toFixed(2)],
+          [3.08, 1, 1.5]);
+    // A spark has no keys at all -- it takes its colour from 0x80 and its
+    // lifetime from the length of its own track.
+    check('a spark takes its colour from 0x80',
+          [+spark.mesh.material.color.r.toFixed(2),
+           +spark.mesh.material.color.g.toFixed(2),
+           +spark.mesh.material.color.b.toFixed(2)], [0.9, 0.3, 0.1]);
+    check('every live billboard is aimed at the camera',
+          built.sprites.filter((s) => s.mesh.visible && !s.mesh.lookingAt).length, 0);
+    check('a spark rides the bone rather than sitting at the origin',
+          (() => {
+            play.poseAt(built, 1190);
+            const a = spark.mesh.position.z;
+            play.poseAt(built, 1200);
+            return Math.abs(spark.mesh.position.z - a) > 1;
+          })(), true);
+  }
+
   console.log('a whole cutscene assembled, against tools/scene.py');
   for (const cutscene of ['e001', 'e009']) {
     const built = await play.assemble(THREE, disc, cutscene);

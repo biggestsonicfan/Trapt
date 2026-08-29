@@ -34,6 +34,12 @@ const gsMod = req ? require('./gs.js') : window.TraptGs;
 
 const COMMON = 'DATA/RT/COMMON/RT_COMMON.ARC';
 const COSTUME = 'DATA/RT/COSTUME/RT_C01F_A_HL.ARC';
+// Sprite effects name textures that live in neither the cutscene bundle nor
+// the room: `spark.tm2`, `ef_s014c.tm2` and the rest are in the effect
+// library, and the per-room `EF_DI_R??.ARC` holds the ones a particular room
+// uses.  Nothing loaded either, so even once a sprite block compiled it had
+// no picture to draw.
+const EFFECTS = 'DATA/EFFECT/EF_COMMON.ARC';
 
 /** Read an archive and fold its members in; `fill` only adds what is missing. */
 async function fold(disc, path, assets, fill) {
@@ -62,6 +68,7 @@ async function assemble(THREE, disc, name, onProgress) {
   if (!await fold(disc, 'DATA/RT/' + up + '/RT_' + up + '.ARC', assets, false))
     throw new Error('no bundle for ' + name);
   await fold(disc, COSTUME, assets, true);
+  await fold(disc, EFFECTS, assets, true);
 
   say('compiling the script');
   const scene = sceneMod.compile(name, assets);
@@ -69,6 +76,9 @@ async function assemble(THREE, disc, name, onProgress) {
   if (scene.room) {
     say('reading room ' + scene.room);
     await fold(disc, 'DATA/ROOM/' + scene.room.toUpperCase() + '_ALL.ARC',
+               assets, true);
+    // The room's own effect library, for the sprites it alone uses.
+    await fold(disc, 'DATA/EFFECT/DI/EF_DI_' + scene.room.toUpperCase() + '.ARC',
                assets, true);
   }
 
@@ -157,6 +167,50 @@ async function assemble(THREE, disc, name, onProgress) {
     }
   }
 
+  // --- sprite effects: a block that named a texture rather than a model
+  //
+  // One camera-facing quad per emitter point.  A kind-2 block has no binds
+  // and sits where the block was placed; a kind-3 block carries one or more
+  // `0xCA` binds and each of those rides a bone, which is how e004 puts a
+  // spark on Allura's finger, hand, elbow and forearm at once.
+  //
+  // This is not the game's particle system -- `0xC8`/`0xC9` clearly steer a
+  // count and a spread that nothing here reads, so a trail of eight sparks
+  // comes out as one sprite at the emitter.  Size and colour over time are
+  // the game's own, straight off the keyframes.
+  const sprites = [];
+  for (const e of scene.entities) {
+    if (!e.sprite) continue;
+    const tex = texFor(e.sprite.texture);
+    if (!tex) { warnings.push('missing effect texture ' + e.sprite.texture); }
+    const points = e.binds.length ? e.binds : [null];
+    for (const bind of points) {
+      const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
+                                          : new THREE.BufferGeometry();
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        color: new THREE.Color(1, 1, 1), opacity: 0,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      root.add(mesh);
+      sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null });
+    }
+  }
+  // Resolve each bind to the actor that carries the bone, once.
+  for (const s of sprites) {
+    if (!s.bind) continue;
+    const want = s.bind[0].toLowerCase();
+    s.actor = actors.find((a) => a.file.toLowerCase().replace(/\.smi$/, '') === want)
+           || actors.find((a) => a.file.toLowerCase().startsWith(want)) || null;
+    if (!s.actor) { warnings.push('effect bound to ' + s.bind[0] + ', which is not in the scene'); continue; }
+    s.boneIndex = s.actor.model.nodes.findIndex((n) => n.name === s.bind[1]);
+    if (s.boneIndex < 0)
+      warnings.push('effect bound to bone ' + s.bind[1] + ', which ' + s.bind[0] + ' has not');
+  }
+
   // --- the room, static geometry under the same root
   let room = null;
   if (scene.room) {
@@ -200,7 +254,20 @@ async function assemble(THREE, disc, name, onProgress) {
   return { scene: scene, root: root, actors: actors, room: room,
            camera: camera, assets: assets, warnings: warnings,
            clipFor: clipFor, textures: texCache, lights: lights,
-           roomDir: roomDir };
+           roomDir: roomDir, sprites: sprites };
+}
+
+/**
+ * Turn every live sprite to face `eye`.  A billboard has to be re-aimed
+ * whenever the camera moves, and the viewer's free camera is not the camera
+ * `poseAt` knows about, so the page calls this again with the real one.
+ */
+function faceSprites(built, eye) {
+  if (!built.sprites || !eye) return;
+  for (const s of built.sprites) {
+    if (!s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
+    s.mesh.lookAt(eye[0], eye[1], eye[2]);
+  }
 }
 
 /**
@@ -225,6 +292,9 @@ function poseAt(built, frame) {
     // frame 0, looks right.
     const local = frame - cur.start + (cur.offset || 0);
     const mats = saiMod.worldMatrices(actor.model, clip, local);
+    // Kept because a sprite effect bound with `0xCA` rides one of these bones
+    // and needs the same pose the skin was built from, not a re-solve.
+    actor.lastMats = mats;
     const skinned = saiMod.skin(actor.model, mats);
     for (const child of actor.group.children) {
       const pn = skinned[child.userData.meshIndex];
@@ -239,8 +309,67 @@ function poseAt(built, frame) {
     posed++;
   }
 
-  const out = { posed: posed, skipped: skipped, camera: null, subtitle: null,
-                letterbox: 0, fade: 0 };
+  // --- sprite effects
+  //
+  // A block's keyframes are timed from the block, not from the cutscene, so
+  // everything here runs on `frame - e.start`.  Past the last key the sprite
+  // is gone: `ef_e004_30` ends its alpha on 0 at frame 240 and holding that
+  // forever would leave an invisible quad in the depth buffer.
+  let lit = 0;
+  for (const s of built.sprites || []) {
+    const e = s.entity;
+    const local = frame - e.start;
+    // A keyed sprite dies on its last key; an unkeyed one -- e004's sparks
+    // carry only `0x80` and the emitter -- dies with its track.
+    const keyed = e.colourKeys.length ? e.colourKeys[e.colourKeys.length - 1][0]
+                : (e.sizeKeys.length ? e.sizeKeys[e.sizeKeys.length - 1][0] : 0);
+    const life = keyed > 0 ? keyed
+               : (e.trackLen !== null ? e.trackLen : Infinity);
+    const live = local >= 0 && local <= life
+              && sceneMod.visibleAt(e, frame) && (e.end === null || frame < e.end);
+    s.mesh.visible = live;
+    if (!live) continue;
+    // `0x80` on a sprite block is the colour, the same way it is on a light,
+    // and it is all an unkeyed sprite has: e004's spark is (0.9, 0.3, 0.1).
+    const [r, g, b, a] = e.colourKeys.length ? sceneMod.colourAt(e, local)
+      : (e.scale ? e.scale : [1, 1, 1, 1]);
+    const [sx, sy] = sceneMod.sizeAt(e, local);
+    // The GS treats 0x80 as 1.0, and these colours run past 1 -- 1.5 and 1.8
+    // both occur -- so the excess is an overbright the additive blend wants
+    // rather than a value to clamp away.  Only alpha is clamped, because
+    // three.js reads opacity as 0..1.
+    s.mesh.material.color.setRGB(r, g, b);
+    s.mesh.material.opacity = Math.max(0, Math.min(1, a));
+    // Size is in the same units as the scene: the game's own numbers scaled
+    // by the sprite's cell, so a 64-pixel cell at size 4.5 is 4.5 units wide.
+    s.mesh.scale.set(sx || 1, sy || 1, 1);
+
+    let px = 0, py = 0, pz = 0;
+    if (s.actor && s.boneIndex >= 0 && s.actor.lastMats) {
+      const m = s.actor.lastMats[s.boneIndex];
+      px = m[12]; py = m[13]; pz = m[14];
+      px += s.actor.group.position.x;
+      py += s.actor.group.position.y;
+      pz += s.actor.group.position.z;
+    } else {
+      if (e.transform) { px = e.transform[0]; py = e.transform[1]; pz = e.transform[2]; }
+      if (e.origin) { px += e.origin[0]; py += e.origin[1]; pz += e.origin[2]; }
+    }
+    s.mesh.position.set(px, py, pz);
+    lit++;
+  }
+  // Face them at whatever is looking.  The scene's own camera is the default
+  // so a headless render is right without a page; `faceSprites` re-points
+  // them at a free camera when the viewer has taken one.
+  if (built.camera) {
+    const c = built.camera.sample(frame);
+    // `.cam` samples are `{position, target, roll, fov}` -- not `eye`, which
+    // is what the stage's camera calls it.
+    if (c && c.position) faceSprites(built, c.position);
+  }
+
+  const out = { posed: posed, skipped: skipped, sprites: lit,
+                camera: null, subtitle: null, letterbox: 0, fade: 0 };
   if (built.camera) out.camera = built.camera.sample(frame);
 
   // the cue on screen is the last one started, until the next one
@@ -267,7 +396,7 @@ function poseAt(built, frame) {
   return out;
 }
 
-const api = { assemble, poseAt, fold, COMMON, COSTUME };
+const api = { assemble, poseAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptPlay = api;
 })();

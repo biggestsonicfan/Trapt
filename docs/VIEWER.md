@@ -564,8 +564,10 @@ facade, but it will matter in a room the camera enters.
 * **`.slp` lip-sync is not decoded**, so mouths do not move. The 38 `.slp` in
   `RT_E001.ARC` pair one-to-one with `DATA/SOUND/VOICE/M####.ADX` and each has
   a known frame from the subtitle table — an ideal sample set for cracking it.
-* **Effects are not played.** The `ef_*.ssc` tracks are parsed and kept in
-  `Scene.events` but nothing renders them.
+* **Effects are played as billboards, not as particle systems.** Sprite
+  effects render — see §7 — but `0xC8`/`0xC9` clearly steer an emitter count
+  and a spread that nothing reads, so a burst of eight sparks comes out as one
+  sprite at the emitter rather than a trail.
 * **Alpha is a cutout, not a blend** (`discard` below 0.35). Hair sheen and
   similar translucent layers therefore read harder than they do on hardware.
 * **One artifact.** In `e001` a flesh-coloured wedge shows at Allura's hip in
@@ -575,3 +577,83 @@ facade, but it will matter in a room the camera enters.
 * **`rt_inf`'s direction is invented** (see above).
 * `--list` finds 149 cutscene directories against 154 registry entries, so a
   few ids share or lack an archive.
+
+---
+
+## 7. Sprite effects
+
+Reported as "e004 does not play the effect correctly", and it did not — nor
+did ten other cutscenes. `python tools/scene.py --effects` prints the state of
+it for the whole disc.
+
+**The cause was one thing.** A model effect names an `.smi` with `0x82`; a
+*sprite* effect names a **texture** with `0x68`, and only `0x82` was
+implemented. So the whole block compiled to an entity with nothing to draw.
+The correlation was one-to-one: 57 sprite blocks across 10 cutscenes against
+59 effect entities that drew nothing.
+
+### 7.1 The opcodes
+
+From the dispatch table at `0x00376660`, and from the data:
+
+| op | handler | what it is |
+|---|---|---|
+| `0x68` | `FUN_001C4C90` | texture + `(cell w, cell h, sheet w, sheet h)` |
+| `0x6D` | `FUN_001C47F0` | `(sx, sy, frame)` — a size keyframe |
+| `0x6E` | `FUN_001C46A0` | `(r, g, b, a, frame)` — a colour keyframe |
+| `0xCA` | `FUN_001C1D50` | `(actor, bone)` — bind the emitter to a bone |
+| `0xC8`, `0xC9` | | emitter parameters; structure only |
+
+The keyframes needed no guessing. In `ef_e004_30.ssc` the `0x6D` pairs run
+`(0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240` — always equal, always growing
+— while the `0x6E` quads hold `(1.5, 0.2, 0.1)` and move the fourth
+`0 → 1.8 → 1.8 → 0` over the same span. A sprite that swells while it fades up
+and out again.
+
+`0xCA`'s handler asserts the effect object's kind is 3, which is exactly the
+block kind these appear in, then resolves the actor by name, looks the bone up
+by name and hands the effect its matrix.
+
+The four ints on `0x68` are a sprite-sheet cell and the sheet it sits on:
+`ef_p_s_00.tm2` is `32 32 256 256`, an 8×8 grid of 32-pixel cells on a texture
+that really is 256×256. Five textures declare a sheet larger than the file,
+and in every one of those the cell *is* the sheet, so the UV rect is the whole
+image either way — no case is actually inconsistent.
+
+### 7.2 Two things that had to be fixed underneath
+
+**The textures were never loaded.** `spark.tm2`, `ef_s014c.tm2` and the rest
+live in `DATA/EFFECT/EF_COMMON.ARC`, with per-room ones in
+`DATA/EFFECT/DI/EF_DI_R??.ARC`. Neither was ever opened, so even a compiled
+sprite block had no picture.
+
+**129 TIM2 files decoded to nothing.** Byte 5 of a TIM2 is its `format`, and
+it moves the first picture header: 0 puts it after the 16-byte file header,
+anything else aligns it to 128. Reading `0x10` unconditionally made every
+format-1 file read as a 0×0 picture — 129 of the disc's 7668, among them
+`spark.tm2` itself and `rh01_21.tm2`, a wall in the first room of the House
+that stage mode renders. All 7668 decode now, up from 7539.
+
+### 7.3 What e004 actually does
+
+`ef_e004_11` and `_12` put `spark.tm2` on Allura's own right arm — bound to
+`yubi_2_1_R`, `te_R`, `hiji_R` and `ude_R`, her finger, hand, elbow and
+forearm — coloured `(0.9, 0.3, 0.1)` by `0x80`, spawned twice each from frame
+1172. `ef_e004_30` and `_31` add a keyframed flash from 1420. Seventeen
+billboards in total, fourteen of them bone-bound.
+
+### 7.4 What it cost, in numbers
+
+|  | before | after |
+|---|---|---|
+| corpus events ignored | 3910 (17.3%) | 3754 (16.6%) |
+| effect-track events ignored | 1461 (62.5%) | 1305 (55.8%) |
+| effect entities drawing nothing | 59 of 78 (75.6%) | **2 of 78 (2.6%)** |
+| TIM2 decoding | 7539 of 7668 | **7668 of 7668** |
+
+The two that still draw nothing are one block in `e129` and one in `e107`,
+neither of which names a texture or a model.
+
+A billboard is not a particle system, so this is not finished: the emitter
+parameters are carried and unused, which is why a spark is one sprite rather
+than a trail of eight.

@@ -86,7 +86,7 @@ uses the element's own aspect.
 ## 4. Tests
 
 ```
-node tools/web/test_all.js              # 622 checks with a disc
+node tools/web/test_all.js              # 649 checks with a disc
 node tools/web/test_all.js --no-disc    # 235 without
 ```
 

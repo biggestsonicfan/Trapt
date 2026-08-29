@@ -89,6 +89,11 @@ check('the AudioContext is resumed rather than left suspended',
 check('with a fallback for a browser that refuses without a gesture',
       /addEventListener\('pointerdown'/.test(fn('resumeAudio')));
 
+console.log('sprite effects follow the camera the viewer is actually using');
+check('applySceneFrame re-aims them at V.camera',
+      /TraptPlay\.faceSprites\(S\.built,/.test(fn('applySceneFrame')),
+      'poseAt aims at the scene camera; a free camera turns them edge-on');
+
 console.log('route mode hands control back when a scene ends');
 check('playScene exposes an end hook', fn('routeNext').includes('S.onEnd'));
 check('and tick fires it instead of looping',

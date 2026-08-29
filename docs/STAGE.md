@@ -502,7 +502,7 @@ stage keeps a way back into the route, and *Skip it* preserves the old
 behaviour for anyone walking the story for its cutscenes.
 
 ```
-node tools/web/test_all.js            # 622 checks with a disc
+node tools/web/test_all.js            # 649 checks with a disc
 node tools/web/test_all.js --no-disc  # 235 without
 ```
 

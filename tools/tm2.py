@@ -122,7 +122,13 @@ def decode(data):
         raise ValueError('not a TIM2 (%r)' % data[:4])
     npic = struct.unpack_from('<H', data, 6)[0]
     pics = []
-    o = 0x10
+    # Byte 5 is TIM2's `format`, and it moves the first picture header: 0 puts
+    # it straight after the 16-byte file header, anything else aligns it to
+    # 128.  129 of the 7668 TIM2 on the disc are format 1 and every one of
+    # them read as a 0x0 picture and decoded to nothing -- `spark.tm2`, which
+    # is the effect e004 draws on Allura's hand, and `rh01_21.tm2`, which is a
+    # wall in the first room of the House.
+    o = 0x10 if data[5] == 0 else 0x80
     for _ in range(npic):
         total, clut_sz, img_sz = struct.unpack_from('<3I', data, o)
         hdr_sz, ncol = struct.unpack_from('<2H', data, o + 0x0c)

@@ -1764,6 +1764,11 @@ function applySceneFrame() {
     }
     V.key.position.copy(V.camera.position);
   }
+  // `poseAt` aims the sprite billboards at the scene's own camera; when the
+  // viewer has dragged to a free one they have to be re-aimed at that, or an
+  // effect turns edge-on and disappears the moment you orbit off the shot.
+  TraptPlay.faceSprites(S.built, [V.camera.position.x, V.camera.position.y,
+                                  V.camera.position.z]);
 
   updateSubs(r);
 

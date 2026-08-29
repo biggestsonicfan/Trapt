@@ -60,6 +60,17 @@ OP_LIGHT_RANGE = 0xB5
 OP_ATTACH = 0xB7
 OP_CAMERA = 0xB9
 OP_FOG = 0xC7
+# Sprite effects.  Handlers, from the dispatch table at 0x00376660:
+#   0x68 FUN_001C4C90  string + 4 ints -> effect vtable +0x80
+#   0x6D FUN_001C47F0  two numbers + a frame -> a keyframe list
+#   0x6E FUN_001C46A0  four numbers + a frame -> another keyframe list
+#   0xCA FUN_001C1D50  actor + bone; asserts the effect's kind is 3
+OP_FX_TEXTURE = 0x68
+OP_FX_SIZE_KEY = 0x6D
+OP_FX_COLOUR_KEY = 0x6E
+OP_FX_EMIT_A = 0xC8
+OP_FX_EMIT_B = 0xC9
+OP_FX_BIND_BONE = 0xCA
 
 # `0x57 letterbox(mode, frames)` -- ELF 0x001C6570 -> 0x001E4600/0x001E4650,
 # tweened by 0x001E43F0.  The bars are two black 640-wide sprites in the same
@@ -89,6 +100,29 @@ NL = BS + 'n'
 NUL = BS + '0'
 
 
+def _sample(keys, t, default):
+    """Linear interpolation over `[(frame, *values), ...]`, held at both ends.
+
+    Keys arrive in script order, which is ascending on the disc, and the first
+    one is usually at frame 0.  Before the first and after the last the value
+    is held rather than extrapolated -- `ef_e004_30`'s alpha ends on 0 and an
+    extrapolated fifth frame would drive it negative.
+    """
+    if not keys:
+        return default
+    if t <= keys[0][0]:
+        return tuple(keys[0][1:])
+    if t >= keys[-1][0]:
+        return tuple(keys[-1][1:])
+    for i in range(len(keys) - 1):
+        a, b = keys[i], keys[i + 1]
+        if a[0] <= t <= b[0]:
+            span = b[0] - a[0]
+            f = 0.0 if span <= 0 else (t - a[0]) / span
+            return tuple(av + (bv - av) * f for av, bv in zip(a[1:], b[1:]))
+    return tuple(keys[-1][1:])
+
+
 class Entity:
     """One `0x64 ... 0x65` block: a model, a light or the camera."""
 
@@ -112,6 +146,25 @@ class Entity:
         self.tint = None          # (r, g, b, w) from `0x7E`; w is not alpha
         self.start = 0            # frame the block ran on
         self.end = None           # frame `0x67` destroyed it, if it ever did
+        # --- sprite effects: a block that names a texture instead of a model
+        self.sprite = None        # {'texture', 'cell': (w,h), 'sheet': (w,h)}
+        self.size_keys = []       # [(frame, sx, sy)]     from `0x6D`
+        self.colour_keys = []     # [(frame, r,g,b,a)]    from `0x6E`
+        self.binds = []           # [(actor, bone)]       from `0xCA`
+        self.emitter = None       # raw `0xC8` / `0xC9` parameters
+        self.track_len = None     # how long its track ran, in frames
+
+    @property
+    def is_sprite(self):
+        return self.sprite is not None
+
+    def size_at(self, local):
+        """Sprite size at `local` frames since the block began: `(sx, sy)`."""
+        return _sample(self.size_keys, local, (1.0, 1.0))
+
+    def colour_at(self, local):
+        """Sprite colour at `local`: `(r, g, b, a)`, unclamped."""
+        return _sample(self.colour_keys, local, (1.0, 1.0, 1.0, 1.0))
 
     @property
     def is_light(self):
@@ -357,6 +410,52 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             entity.start = frame
             entity.origin = origin
             scene.entities.append(entity)
+        # ---------------------------------------------------- sprite effects
+        # A sprite effect names a **texture** here where a model effect names
+        # an `.smi` with `0x82`.  Handler `FUN_001C4C90` reads one string and
+        # four ints and hands them to the effect object's vtable at +0x80.
+        #
+        # The four are (cell w, cell h, sheet w, sheet h): `ef_p_s_00.tm2` is
+        # `32 32 256 256`, an 8x8 grid of 32-pixel cells on a 256x256 sheet
+        # that really is 256x256, and `ef_e132d.tm2` is `32 32 128 32`, four
+        # cells in a row on a texture that really is 128x32.  Where the
+        # declared sheet disagrees with the file -- five textures do -- the
+        # cell is the whole sheet, so the UV rect is the whole image either
+        # way and nothing rests on the numbers.
+        elif code == OP_FX_TEXTURE and entity is not None and args:
+            nums = [_num(a) for a in args[1:5]]
+            while len(nums) < 4:
+                nums.append(0.0)
+            entity.sprite = {
+                'texture': ssc.sj(args[0]) if isinstance(args[0], bytes) else '',
+                'cell': (nums[0], nums[1]),
+                'sheet': (nums[2], nums[3]),
+            }
+        # `0x6D(sx, sy, frame)` and `0x6E(r, g, b, a, frame)` are keyframes,
+        # and the data says so plainly: in `ef_e004_30.ssc` the `0x6D` pairs
+        # are (0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240 -- always equal,
+        # always growing -- while the `0x6E` quads hold (1.5,0.2,0.1) and move
+        # the fourth 0 -> 1.8 -> 1.8 -> 0 across the same span.  A sprite that
+        # swells while it fades up and out again.
+        elif code == OP_FX_SIZE_KEY and entity is not None and len(args) >= 3:
+            entity.size_keys.append((_num(args[2]), _num(args[0]), _num(args[1])))
+        elif code == OP_FX_COLOUR_KEY and entity is not None and len(args) >= 5:
+            entity.colour_keys.append((_num(args[4]),) +
+                                      tuple(_num(a) for a in args[:4]))
+        # `0xCA(actor, bone, ?)` binds the emitter to a bone.  `FUN_001C1D50`
+        # requires the effect object's kind to be 3 -- which is exactly the
+        # block kind these appear in -- then resolves the actor by name, looks
+        # the bone up by name and hands its matrix to the effect.
+        elif code == OP_FX_BIND_BONE and entity is not None and len(args) >= 2:
+            entity.binds.append((
+                ssc.sj(args[0]) if isinstance(args[0], bytes) else '',
+                ssc.sj(args[1]) if isinstance(args[1], bytes) else ''))
+        elif code in (OP_FX_EMIT_A, OP_FX_EMIT_B) and entity is not None:
+            # Structure only: a count and three numbers, then four more.  What
+            # they steer is not established, so they are carried and not used.
+            if entity.emitter is None:
+                entity.emitter = {}
+            entity.emitter['%02x' % code] = [_num(a) for a in args]
         elif code == OP_TINT and entity is not None:
             # ELF 0x001C2CC0: four floats.  The first three are a colour --
             # (0.6, 0.2, 0.1) recurs, a torch orange.  The fourth is NOT
@@ -419,6 +518,16 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
     for e in scene.entities:
         if e.track == track_name:
             e.visibility = list(track_vis)
+            # How long the track ran.  A sprite block with no `0x6E` alpha
+            # keys has nothing else that says when it is over -- e004's spark
+            # tracks are thirty frames long and carry only `0x80` and the
+            # emitter -- so without this they would burn until the cutscene
+            # ended.  It is a *length* and not an end frame because the same
+            # track is spawned more than once: `ef_e004_12` runs at 1172 and
+            # again at 1182, and an absolute end would give the second spawn
+            # the first one's.
+            if e.track_len is None:
+                e.track_len = frame - frame_base
     return counter
 
 
@@ -578,13 +687,8 @@ HANDLED = frozenset((
     OP_LETTERBOX, OP_VOICE, OP_SUB_SHOW, OP_SUB_HIDE, OP_FOG, OP_BLOCK_BEGIN,
     OP_BLOCK_END, OP_BLOCK_DROP, OP_TINT, OP_VISIBLE, OP_MODEL, OP_ANIM,
     OP_ROOT_BONE, OP_ATTACH, OP_TRANSFORM, OP_SCALE, OP_LIGHT_TYPE,
-    OP_LIGHT_RANGE))
-
-# A sprite effect names a **texture** with `0x68` instead of a model with
-# `0x82`, so the block compiles to an entity with nothing to draw.  `0xCA`
-# binds such an emitter to an actor's bone.
-OP_FX_TEXTURE = 0x68
-OP_FX_BIND_BONE = 0xCA
+    OP_LIGHT_RANGE, OP_FX_TEXTURE, OP_FX_SIZE_KEY, OP_FX_COLOUR_KEY,
+    OP_FX_EMIT_A, OP_FX_EMIT_B, OP_FX_BIND_BONE))
 
 
 def effect_report(names=None):
@@ -603,7 +707,12 @@ def effect_report(names=None):
         except Exception:
             continue
         fx = [e for e in sc.events if e[1].startswith('ef_')]
-        blank = [e for e in sc.entities if e.track.startswith('ef_') and not e.models]
+        fx_ents = [e for e in sc.entities if e.track.startswith('ef_')]
+        sprites = [e for e in fx_ents if e.is_sprite]
+        # "Blank" is an effect block that draws neither a model nor a sprite.
+        # Before sprites were implemented this was every one of them that
+        # named a texture; what is left is whatever neither path covers.
+        blank = [e for e in fx_ents if not e.models and not e.is_sprite]
         tex = collections.Counter()
         binds = 0
         for _f, _t, code, args in sc.events:
@@ -617,19 +726,21 @@ def effect_report(names=None):
         totals['ignored'] += ignored
         totals['fx'] += len(fx)
         totals['fx_ignored'] += fx_ignored
-        totals['entities'] += sum(1 for e in sc.entities if e.track.startswith('ef_'))
+        totals['entities'] += len(fx_ents)
+        totals['sprites'] += len(sprites)
+        totals['bound'] += sum(len(e.binds) for e in sprites)
         totals['blank'] += len(blank)
         totals['tex'] += sum(tex.values())
         totals['binds'] += binds
-        if tex or binds or blank:
+        if tex or binds or blank or sprites:
             rows.append((name, len(sc.events), ignored, len(fx), fx_ignored,
-                         sum(tex.values()), binds, len(blank), sorted(tex)))
-    rows.sort(key=lambda r: -r[7])
-    print('%-10s %6s %6s %6s %6s %5s %5s %5s  %s'
-          % ('name', 'events', 'ign', 'fxev', 'fxign', '0x68', '0xca',
+                         len(sprites), binds, len(blank), sorted(tex)))
+    rows.sort(key=lambda r: -r[5])
+    print('%-10s %6s %6s %6s %6s %7s %5s %5s  %s'
+          % ('name', 'events', 'ign', 'fxev', 'fxign', 'sprites', 'bound',
              'blank', 'textures'))
     for r in rows:
-        print('%-10s %6d %6d %6d %6d %5d %5d %5d  %s'
+        print('%-10s %6d %6d %6d %6d %7d %5d %5d  %s'
               % (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], ' '.join(r[8])))
     pct = lambda a, b: (100.0 * a / b) if b else 0.0
     print('\n%d cutscenes with effect work; corpus %d events, %d ignored (%.1f%%)'
@@ -638,11 +749,11 @@ def effect_report(names=None):
     print('effect tracks: %d events, %d ignored (%.1f%%)'
           % (totals['fx'], totals['fx_ignored'],
              pct(totals['fx_ignored'], totals['fx'])))
-    print('effect entities: %d, of which %d draw nothing (%.1f%%)'
-          % (totals['entities'], totals['blank'],
+    print('effect entities: %d, of which %d are sprites and %d draw nothing (%.1f%%)'
+          % (totals['entities'], totals['sprites'], totals['blank'],
              pct(totals['blank'], totals['entities'])))
-    print('%d sprite blocks (0x68) and %d bone binds (0xca) are dropped'
-          % (totals['tex'], totals['binds']))
+    print('%d sprites, %d of them bound to a bone by 0xca'
+          % (totals['sprites'], totals['bound']))
     return 0
 
 

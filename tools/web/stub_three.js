@@ -51,8 +51,10 @@ function stubThree() {
       this.children = []; this.visible = true;
       this.position = new Vector3();
       this.rotation = new Vector3();
+      this.scale = new Vector3(1, 1, 1);
       this.userData = {};
     }
+    lookAt(x, y, z) { this.lookingAt = [x, y, z]; return this; }
     add(c) { this.children.push(c); return this; }
     remove(c) {
       const i = this.children.indexOf(c);
@@ -83,6 +85,22 @@ function stubThree() {
       constructor(g, m) { super(); this.geometry = g; this.material = m; }
     },
     LineBasicMaterial: class { constructor(o) { Object.assign(this, o); } },
+    // Sprite effects: a unit quad, a basic material and lookAt.  The aim is
+    // recorded rather than turned into a matrix -- what the tests need to
+    // know is that a billboard was pointed at the camera at all.
+    PlaneGeometry: class {
+      constructor(w, h) { this.width = w; this.height = h; this.attributes = {}; }
+      dispose() { this.disposed = true; }
+    },
+    MeshBasicMaterial: class {
+      constructor(o) {
+        Object.assign(this, o);
+        if (!this.color) this.color = { r: 1, g: 1, b: 1 };
+        this.color.setRGB = (r, g, b) => {
+          this.color.r = r; this.color.g = g; this.color.b = b;
+        };
+      }
+    },
     DataTexture: class {
       constructor(d, w, h) { this.image = { data: d, width: w, height: h }; }
     },

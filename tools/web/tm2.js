@@ -2,7 +2,7 @@
  * `.TM2` texture reader -- Sony TIM2, the PS2 standard. `tools/tm2.py` in JS.
  *
  * FILE HEADER (0x10)   'TIM2', u8 version, u8 format, u16 picture count
- * PICTURE HEADER (0x30, at 0x10 when format is 0)
+ * PICTURE HEADER (0x30, at 0x10 when format is 0, else at 0x80)
  *   +0x00 u32 total size of this picture, header included
  *   +0x04 u32 clut size          +0x08 u32 image size
  *   +0x0c u16 header size        +0x0e u16 clut colour count
@@ -125,7 +125,12 @@ function decode(data) {
     throw new Error('not a TIM2 (' + [...data.slice(0, 4)] + ')');
   const npic = u16(data, 6);
   const pics = [];
-  let o = 0x10;
+  // Byte 5 is TIM2's `format`, and it moves the first picture header: 0 puts
+  // it straight after the 16-byte file header, anything else aligns it to
+  // 128.  129 of the disc's 7668 TIM2 are format 1 and every one of them read
+  // as a 0x0 picture and decoded to nothing -- `spark.tm2`, the effect e004
+  // draws on Allura's hand, and `rh01_21.tm2`, a wall in the first room.
+  let o = data[5] === 0 ? 0x10 : 0x80;
   for (let i = 0; i < npic; i++) {
     const total = u32(data, o), clutSz = u32(data, o + 4), imgSz = u32(data, o + 8);
     const hdrSz = u16(data, o + 0x0c), ncol = u16(data, o + 0x0e);
