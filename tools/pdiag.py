@@ -23,6 +23,10 @@ Modes
 ``meshid``  one flat colour per mesh        ``uv``      UV, blue where outside [0,1]
 ``alpha``   sampled alpha as greyscale
 
+`shaded` also composites the letterbox and the game's own subtitle font on top,
+because the GS draws both into the same framebuffer; `--no-subs` and
+`--no-bars` leave them off.
+
 `--only` takes a comma-separated list; a `-name` entry excludes instead.
 
 `--legacy` restores the pre-fix shader (material colour modulated into the
@@ -520,6 +524,120 @@ def render(parts, eye, target, fov, roll, rig, size, mode='shaded',
     return Image.fromarray((np.clip(img, 0, 1)*255).astype(np.uint8))
 
 
+# -------------------------------------------------------------- the overlay
+# The GS draws the letterbox and then the dialogue straight into the 512x224
+# framebuffer, over everything else, so this composites them last.  Like
+# `shade()` above it is a port of what the page does -- `layout()` here is
+# `layout()` in player.html and the blend is its overlay shader -- and it reads
+# only the exported font block, never the ELF.  `tools/font.py` is the other
+# end of the same chain: it derives that block from the executable and
+# reproduces the hardware display list's vertex positions exactly.
+def cue_at(S, frame):
+    cur = None
+    for s in S.get('subtitles', ()):
+        if s['frame'] <= frame < (s['end'] if s['end'] is not None else 1e30):
+            cur = s
+    return cur
+
+
+def layout(FNT, raw):
+    """One `0x60` payload -> `[(slot, ui_x, ui_y, (r,g,b))]` in 640x448 units."""
+    bw, bh = FNT['box']
+    cw = FNT['cell'][0]
+    left, top = FNT['anchor'][0] - bw / 2.0, FNT['anchor'][1] - bh / 2.0
+    pen, line = left, 0
+    tint = saved = FNT['body']
+    out, i = [], 0
+    while i < len(raw):
+        if raw.startswith('%%SC', i) and i + 6 <= len(raw):
+            c = FNT['colours'].get(raw[i + 4:i + 6])
+            # an unrecognised code takes the same path as `%%RC`
+            tint, saved = (c, tint) if c else (saved, tint)
+            i += 6
+        elif raw.startswith('%%RC', i):
+            tint, saved = saved, tint
+            i += 4
+        elif raw.startswith('\\n', i):
+            line, pen, i = line + 1, left, i + 2
+        elif raw.startswith('\\0', i) or raw[i] == '\0':
+            break
+        else:
+            g = FNT['glyphs'].get(str(ord(raw[i])))
+            i += 1
+            if g:
+                out.append((g[0], pen, top + line * bh, tint))
+                pen += g[1] * (bw / float(cw))
+    return out
+
+
+def bar_open(LB, frame):
+    """`0x57`'s tween, replayed: 0 = bars gone, 1 = seated (player.html)."""
+    open_ = 0.0
+    for f, kind, n in LB.get('events', ()):
+        if frame < f:
+            break
+        t = min(1.0, (frame - f) / float(max(1, n)))
+        if kind == 'in':
+            open_ = t
+        elif kind == 'out':
+            open_ = 1.0 - t
+    return open_
+
+
+def overlay(img, S, frame, subs=True, bars=True):
+    a = np.asarray(img, np.float64) / 255.0
+    H, W = a.shape[:2]
+    LB = S.get('letterbox') or {'ui': [640, 448], 'bars': [50, 110], 'events': []}
+    if bars:
+        # 50 and 110 UI units, top and bottom, sliding in from off-screen --
+        # not the symmetric band it looks like.  See player.html.
+        open_ = bar_open(LB, frame)
+        top = LB['bars'][0] * H / LB['ui'][1]
+        bot = LB['bars'][1] * H / LB['ui'][1]
+        y0 = int(round(top * open_))
+        y1 = int(round(H - bot * open_))
+        a[:max(0, y0)] = 0.0
+        a[min(H, y1):] = 0.0
+    FNT = S.get('font')
+    cue = cue_at(S, frame) if subs else None
+    if not (FNT and cue):
+        return Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8))
+    atlas = decode_tex(FNT['atlas'])
+    ah, aw = atlas.shape[:2]
+    cw, ch = FNT['cell']
+    cols, pad = FNT['cols'], FNT['pad']
+    step = cw + 2 * pad
+    kx, ky = W / FNT['ui'][0], H / FNT['ui'][1]
+    gw, gh = FNT['box'][0] * kx, FNT['box'][1] * ky
+    for slot, ux, uy, tint in layout(FNT, cue['raw']):
+        # The GS samples at a pixel's integer coordinate, not its centre, so
+        # the quad moves half a pixel -- exactly `nudge` in player.html.
+        x0, y0 = ux * kx + 0.5, uy * ky + 0.5
+        px = np.arange(max(0, int(math.floor(x0))),
+                       min(W, int(math.ceil(x0 + gw))))
+        py = np.arange(max(0, int(math.floor(y0))),
+                       min(H, int(math.ceil(y0 + gh))))
+        if not len(px) or not len(py):
+            continue
+        fx = (px + 0.5 - x0) / gw
+        fy = (py + 0.5 - y0) / gh
+        mx, my = (fx >= 0) & (fx <= 1), (fy >= 0) & (fy <= 1)
+        px, fx, py, fy = px[mx], fx[mx], py[my], fy[my]
+        if not len(px) or not len(py):
+            continue
+        u0 = ((slot % cols) * step + pad) / float(aw)
+        v0 = ((slot // cols) * step + pad) / float(ah)
+        U, V = np.meshgrid(u0 + fx * cw / aw, v0 + fy * ch / ah)
+        t = sample(atlas, U.ravel(), V.ravel()).reshape(len(py), len(px), 4)
+        # TFX=MODULATE with TCC=RGBA, vertex alpha 0x80, then the standard
+        # ALPHA lerp.  The atlas is the CLUT already applied, and its 0x80
+        # alpha is the GS's 1.0.
+        al = np.clip(t[..., 3:4] * GS_ONE, 0, 1)
+        tile = a[py[0]:py[-1] + 1, px[0]:px[-1] + 1]
+        tile[:] = t[..., :3] * np.asarray(tint) * al + tile * (1.0 - al)
+    return Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8))
+
+
 # --------------------------------------------------------------------- gather
 def prime(S, B):
     """Attach typed-array views to every clip channel, once."""
@@ -718,8 +836,12 @@ def main():
         '  [legacy shader]' if o.legacy else ''))
     print('  camera %s -> %s, fov %.1f' % (tuple(np.round(eye, 2)),
                                            tuple(np.round(tgt, 2)), fov))
-    render(parts, eye, tgt, fov, roll, rig, _size(opt('--size', '640')),
-           opt('--mode', 'shaded')).save(out)
+    img = render(parts, eye, tgt, fov, roll, rig, _size(opt('--size', '640')),
+                 opt('--mode', 'shaded'))
+    if opt('--mode', 'shaded') == 'shaded':
+        img = overlay(img, S, frame, subs='--no-subs' not in a,
+                      bars='--no-bars' not in a)
+    img.save(out)
     print('wrote', out)
     return 0
 

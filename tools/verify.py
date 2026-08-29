@@ -23,6 +23,33 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 NODE = os.environ.get('NODE', 'node')
 
 
+def check_subs(sc, laid, problems):
+    """Diff the page's subtitle layout against `font.py`'s.
+
+    The page places glyph boxes in the game's 640x448 UI space from a table the
+    exporter bakes; `font.py` places them from the ELF's own width records and
+    reproduces the hardware display list's 12.4 vertex X bit for bit.  Any
+    disagreement between the two is a plumbing bug in the export.
+    """
+    if not laid:
+        return 0.0, 0
+    import font as font_mod
+    fo = font_mod.Font()
+    worst = 0.0
+    n = 0
+    for cue, theirs in zip(sc.subtitles, laid):
+        mine = list(fo.runs(cue.raw))
+        if len(mine) != len(theirs):
+            problems.append('subtitle at %d: %d glyphs vs %d'
+                            % (cue.frame, len(mine), len(theirs)))
+            continue
+        for (code, ux, uy, tint), (_, tx, ty, tt) in zip(mine, theirs):
+            n += 1
+            worst = max([worst, abs(ux - tx), abs(uy - ty)]
+                        + [abs(a - b) for a, b in zip(tint, tt)])
+    return worst, n
+
+
 def run(name, frame, bundle=None, tol_bone=2e-3, tol_vert=5e-2):
     tmp = None
     if bundle is None:
@@ -88,13 +115,19 @@ def run(name, frame, bundle=None, tol_bone=2e-3, tol_vert=5e-2):
                         if d > worst_vert:
                             worst_vert, worst_where = d, '%s/%s mesh %d' % (ename, key, mi)
 
+    worst_sub, checked_subs = check_subs(sc, js.get('subs'), problems)
+
     print('frame %s: %d entities, %d bone values, %d vertex values compared'
           % (frame, len(js['entities']), checked_bones, checked_verts))
     print('  worst bone-matrix delta   %.6g' % worst_bone)
     print('  worst vertex delta        %.6g   (%s)' % (worst_vert, worst_where))
+    if checked_subs:
+        print('  worst subtitle delta      %.6g   (%d glyph placements)'
+              % (worst_sub, checked_subs))
     for p in problems:
         print('  ! %s' % p)
-    ok = (not problems and worst_bone <= tol_bone and worst_vert <= tol_vert)
+    ok = (not problems and worst_bone <= tol_bone and worst_vert <= tol_vert
+          and worst_sub <= 1e-4)
     print('  %s' % ('PASS' if ok else 'FAIL'))
     return ok
 

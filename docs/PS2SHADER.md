@@ -312,7 +312,7 @@ setting makes the other three look wrong:
 | colour | 8-bit gamma-space multiply, `COLCLAMP` | sRGB decode, linear lighting, ACES tonemap, re-encode |
 | alpha test | `GEQUAL 120/128`, paired with the FB_ONLY depth rule | ordinary `0.5` cutout |
 | sampler | bilinear, `MXL=0`, no mipmaps | trilinear + max anisotropy |
-| resolution | 512x224 letterboxed to 4:3 | full canvas, native aspect |
+| resolution | 512x224 fitted to 4:3 | full canvas, native aspect |
 
 The post pass still runs in Modern mode, against a canvas-sized target, so the
 Look panel keeps working. With its defaults the pass is a straight copy, so
@@ -326,8 +326,10 @@ linear-space lighting does not reproduce.
 
 ### The output stage
 
-The world renders into a **512x224** target, then a post pass puts it on a 4:3
-letterboxed screen. That pass is also where the tweakables live, since the
+The world renders into a **512x224** target, then a post pass fits that to a
+4:3 screen, padding whatever the canvas has left over. (That padding is not the
+game's letterbox — the `0x57` bars are drawn *into* the 512x224 by the overlay
+pass, and do not touch the aspect ratio. See [`VIEWER.md`](VIEWER.md) §1.5.) That pass is also where the tweakables live, since the
 "Look" panel is the point at which deviating from hardware becomes deliberate:
 
 | control | default | what it is |

@@ -67,7 +67,7 @@ OPS = {
     0x54: 'fade_out',         # (frames, 0)
     0x55: 'play_anim',        # ("x.sai", 1)
     0x56: 'scene_ready',
-    0x57: 'letterbox',        # (on, 1)
+    0x57: 'letterbox',        # (mode: 0 in / 1 out, tween frames)
     0x59: 'play_voice',       # ("m0001_c01f_a", "none", c2(1, 1))
     0x5A: 'bgm_start',        # (id, c2(1,1), fade)
     0x5B: 'bgm_stop',         # (id, fade)

@@ -58,6 +58,23 @@ OP_ATTACH = 0xB7
 OP_CAMERA = 0xB9
 OP_FOG = 0xC7
 
+# `0x57 letterbox(mode, frames)` -- ELF 0x001C6570 -> 0x001E4600/0x001E4650,
+# tweened by 0x001E43F0.  The bars are two black 640-wide sprites in the same
+# 640x448 UI space the subtitles are laid out in, and the handler re-sets their
+# heights every time it brings them in: (48, 48) when the master script's name
+# starts with `rt_di`, (50, 110) otherwise -- which is every cutscene on the
+# disc.  Scaled into the 512x224 framebuffer by (0.8, 0.5) that is a 25-line
+# band at the top and a 55-line one from y=169 down, which is exactly what a
+# PCSX2 capture of `e001` at 7422 measures.
+#
+# `mode` 0 slides them in over `frames`, 1 slides them out, anything else
+# leaves them where they are.  All 149 cutscenes do the same thing: `(0, 1)`
+# on the first frame and `(1, 1)` on the last (`e017` never closes).
+LETTERBOX_UI = (640.0, 448.0)
+LETTERBOX_BARS = (50.0, 110.0)
+LETTERBOX_BARS_DI = (48.0, 48.0)   # scripts named `rt_di...`; none are cutscenes
+LETTERBOX_MODES = {0: 'in', 1: 'out'}
+
 KIND_MODEL = 4
 KIND_LIGHT = 6
 KIND_CAMERA = 7
@@ -138,14 +155,20 @@ class Entity:
 
 
 class Subtitle:
-    __slots__ = ('frame', 'end', 'speaker', 'lines', 'voice')
+    # `raw` is the cue exactly as the script stores it -- full-width Shift-JIS
+    # with its `%%SCSV` / `%%RC` / `\n` markup intact.  `speaker` and `lines`
+    # are that same text folded to ASCII, which is what a modern renderer wants
+    # and what the game's own font cannot be driven from: the PS2 face is
+    # indexed by Shift-JIS and every glyph in a cue is a full-width one.
+    __slots__ = ('frame', 'end', 'speaker', 'lines', 'voice', 'raw')
 
-    def __init__(self, frame, speaker, lines, voice):
+    def __init__(self, frame, speaker, lines, voice, raw=''):
         self.frame = frame
         self.end = None
         self.speaker = speaker
         self.lines = lines
         self.voice = voice
+        self.raw = raw
 
     def __repr__(self):
         return '<Subtitle %d %r %r>' % (self.frame, self.speaker, self.lines)
@@ -160,6 +183,8 @@ class Scene:
         self.subtitles = []
         self.bgm = []             # [(frame, 'start'|'stop', id)]
         self.fades = []           # [(frame, 'in'|'out', frames)]
+        self.letterbox = []       # [(frame, 'in'|'out'|'hold', frames)]
+        self.bars = LETTERBOX_BARS  # (top, bottom) heights in 640x448 UI units
         self.camera = None        # cam.Track
         self.camera_file = None
         self.fog = None           # (near, far, r, g, b)
@@ -285,11 +310,17 @@ def _run(scene, track_name, blob):
             scene.fades.append((frame, 'in', args[0]))
         elif code == OP_FADE_OUT:
             scene.fades.append((frame, 'out', args[0]))
+        elif code == OP_LETTERBOX:
+            scene.letterbox.append(
+                (frame, LETTERBOX_MODES.get(_int(args[0]), 'hold'),
+                 max(1, _int(args[1]) if len(args) > 1 else 1)))
         elif code == OP_VOICE:
             pending_voice = ssc.sj(args[0])
         elif code == OP_SUB_SHOW:
-            speaker, lines = _text(ssc.sj(args[0]))
-            scene.subtitles.append(Subtitle(frame, speaker, lines, pending_voice))
+            cue = ssc.sj(args[0])
+            speaker, lines = _text(cue)
+            scene.subtitles.append(
+                Subtitle(frame, speaker, lines, pending_voice, cue))
             pending_voice = None
         elif code == OP_SUB_HIDE:
             if scene.subtitles and scene.subtitles[-1].end is None:
@@ -423,6 +454,8 @@ def load(name, disc=None):
     if master is None:
         raise ValueError('no master track rt_%s.ssc' % name)
 
+    scene.bars = (LETTERBOX_BARS_DI if name.lower().startswith('di')
+                  else LETTERBOX_BARS)
     counts = {'rt_%s.ssc' % name: _run(scene, 'rt_%s.ssc' % name, master)}
     queued = list(scene.tracks)
     seen = set()
@@ -490,6 +523,7 @@ def main():
     print(sc)
     print('camera: %s -> %s' % (sc.camera_file, sc.camera))
     print('bgm:', sc.bgm, '| fades:', sc.fades)
+    print('letterbox:', sc.letterbox, '| bars:', sc.bars)
     print('\ntracks: %s' % ', '.join(sorted(sc.opcounts)))
     print('\nentities:')
     for e in sc.entities:

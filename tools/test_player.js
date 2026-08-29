@@ -58,7 +58,26 @@ const M = sandbox.TraptMath(BIN, S);
   console.error('shader convention check: mat4(rows) * v === v * M  ok');
 })();
 
-const result = { frame, entities: {} };
+// The subtitle layout is the other piece with a hardware ground truth, so pull
+// it out of the page the same way and run every cue through it.  `verify.py`
+// diffs the result against `font.py`, which reproduces the GS display list's
+// 12.4 vertex X exactly.
+const subs = (() => {
+  if (!S.font) return null;
+  const s = html.indexOf('// ===8<=== TRAPT SUBS ===8<===');
+  const e = html.indexOf('// ===8<=== END TRAPT SUBS ===8<===');
+  if (s < 0 || e < 0) throw new Error('TRAPT SUBS markers not found in player.html');
+  const box = { FNT: S.font, layout: null };
+  vm.createContext(box);
+  vm.runInContext(html.slice(s, e) + '\nthis.layout = layout;', box,
+                  { filename: 'player.html:TRAPT_SUBS' });
+  const out = S.subtitles.map((cue) => box.layout(cue.raw).map(
+    ([slot, x, y, t]) => [slot, +x.toFixed(6), +y.toFixed(6), t.map((v) => +v.toFixed(6))]));
+  console.error('laid out %d subtitle cues', out.length);
+  return out;
+})();
+
+const result = { frame, entities: {}, subs };
 for (const ent of S.entities) {
   if (!(frame >= ent.start && M.visibleAt(ent, frame))) continue;
   const cur = M.clipFor(ent, frame);
