@@ -569,8 +569,88 @@ def clip(scene, filename):
     return sai_mod.parse(blob) if blob else None
 
 
+# The opcodes `_run` actually acts on.  Everything else in a track is parsed,
+# counted and then dropped, which is fine for the ones that do not change what
+# is on screen and is not fine for the ones that do -- see `--effects`.
+HANDLED = frozenset((
+    OP_END, OP_AT_TIME, OP_CUE, OP_SPAWN, OP_SPAWN_FX, OP_SPAWN_FX_AT,
+    OP_SET_ROOM, OP_CAMERA, OP_BGM_START, OP_BGM_STOP, OP_FADE_IN, OP_FADE_OUT,
+    OP_LETTERBOX, OP_VOICE, OP_SUB_SHOW, OP_SUB_HIDE, OP_FOG, OP_BLOCK_BEGIN,
+    OP_BLOCK_END, OP_BLOCK_DROP, OP_TINT, OP_VISIBLE, OP_MODEL, OP_ANIM,
+    OP_ROOT_BONE, OP_ATTACH, OP_TRANSFORM, OP_SCALE, OP_LIGHT_TYPE,
+    OP_LIGHT_RANGE))
+
+# A sprite effect names a **texture** with `0x68` instead of a model with
+# `0x82`, so the block compiles to an entity with nothing to draw.  `0xCA`
+# binds such an emitter to an actor's bone.
+OP_FX_TEXTURE = 0x68
+OP_FX_BIND_BONE = 0xCA
+
+
+def effect_report(names=None):
+    """How much of each cutscene's effect work survives compilation.
+
+    Prints one row per cutscene that has any, so the claim "the effects in
+    <x> are wrong" can be checked rather than argued about.
+    """
+    import order as order_mod
+    names = names or order_mod.Story().names
+    rows = []
+    totals = collections.Counter()
+    for name in names:
+        try:
+            sc = load(name)
+        except Exception:
+            continue
+        fx = [e for e in sc.events if e[1].startswith('ef_')]
+        blank = [e for e in sc.entities if e.track.startswith('ef_') and not e.models]
+        tex = collections.Counter()
+        binds = 0
+        for _f, _t, code, args in sc.events:
+            if code == OP_FX_TEXTURE and args and isinstance(args[0], bytes):
+                tex[args[0].decode('latin1')] += 1
+            elif code == OP_FX_BIND_BONE:
+                binds += 1
+        ignored = sum(1 for e in sc.events if e[2] not in HANDLED)
+        fx_ignored = sum(1 for e in fx if e[2] not in HANDLED)
+        totals['events'] += len(sc.events)
+        totals['ignored'] += ignored
+        totals['fx'] += len(fx)
+        totals['fx_ignored'] += fx_ignored
+        totals['entities'] += sum(1 for e in sc.entities if e.track.startswith('ef_'))
+        totals['blank'] += len(blank)
+        totals['tex'] += sum(tex.values())
+        totals['binds'] += binds
+        if tex or binds or blank:
+            rows.append((name, len(sc.events), ignored, len(fx), fx_ignored,
+                         sum(tex.values()), binds, len(blank), sorted(tex)))
+    rows.sort(key=lambda r: -r[7])
+    print('%-10s %6s %6s %6s %6s %5s %5s %5s  %s'
+          % ('name', 'events', 'ign', 'fxev', 'fxign', '0x68', '0xca',
+             'blank', 'textures'))
+    for r in rows:
+        print('%-10s %6d %6d %6d %6d %5d %5d %5d  %s'
+              % (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], ' '.join(r[8])))
+    pct = lambda a, b: (100.0 * a / b) if b else 0.0
+    print('\n%d cutscenes with effect work; corpus %d events, %d ignored (%.1f%%)'
+          % (len(rows), totals['events'], totals['ignored'],
+             pct(totals['ignored'], totals['events'])))
+    print('effect tracks: %d events, %d ignored (%.1f%%)'
+          % (totals['fx'], totals['fx_ignored'],
+             pct(totals['fx_ignored'], totals['fx'])))
+    print('effect entities: %d, of which %d draw nothing (%.1f%%)'
+          % (totals['entities'], totals['blank'],
+             pct(totals['blank'], totals['entities'])))
+    print('%d sprite blocks (0x68) and %d bone binds (0xca) are dropped'
+          % (totals['tex'], totals['binds']))
+    return 0
+
+
 def main():
     import sys
+    if '--effects' in sys.argv:
+        rest = [a for a in sys.argv[1:] if not a.startswith('--')]
+        return effect_report(rest or None)
     name = sys.argv[1] if len(sys.argv) > 1 else 'e001'
     sc = load(name)
     print(sc)
@@ -584,8 +664,9 @@ def main():
               % (e.track, e.kind, ','.join(e.models) or '-', e.root_bone,
                  len(e.clips), len(e.visibility),
                  ','.join(a[0] for a in e.attachments) or '-'))
-        for f, c in e.clips[:3]:
-            print('        clip @%-6d %s' % (f, c))
+        for f, c, off in e.clips[:3]:
+            print('        clip @%-6d %s%s'
+                  % (f, c, ' +%d' % off if off else ''))
     unknown = collections.Counter()
     for f, t, code, a in sc.events:
         if code not in ssc.OPS:
