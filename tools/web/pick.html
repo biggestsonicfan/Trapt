@@ -74,6 +74,22 @@
   #look label b { flex: 0 0 34px; text-align: right; font-weight: 400;
     font-variant-numeric: tabular-nums; opacity: .6; }
   #transport button.on { background: #3a5a8a; border-color: #4a72ad; }
+  #routes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  #card { position: absolute; inset: 0; z-index: 6; display: none;
+    background: #05050788; backdrop-filter: blur(2px); }
+  #card.on { display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; }
+  #card canvas { max-width: min(100%, 760px); height: auto; border-radius: 4px;
+    box-shadow: 0 10px 40px #000b; image-rendering: auto; }
+  #card .plain { text-align: center; padding: 26px 34px; background: #121216ee;
+    border: 1px solid #2e2e36; border-radius: 10px; max-width: 70%; }
+  #card .plain b { display: block; font-size: 19px; font-weight: 600;
+    margin-bottom: 4px; }
+  #card .plain i { font-style: normal; opacity: .55; font-size: 12.5px; }
+  .cardbar { display: flex; gap: 8px; }
+  .cardbar button { background: #3a5a8a; color: inherit; border: 1px solid #4a72ad;
+    border-radius: 6px; padding: 7px 16px; font: inherit; cursor: pointer; }
+  .cardbar button + button { background: #232329; border-color: #34343c; }
   #transport { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
   #transport button { background: #232329; color: inherit; border: 1px solid #34343c;
     border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
@@ -100,6 +116,8 @@
 
   <div id="stage">
     <div id="rows"></div>
+    <h2>Play a route</h2>
+    <div id="routes"></div>
     <h2 id="listHead">Cutscenes on the disc</h2>
     <div id="list"></div>
     <div id="detail"></div>
@@ -130,6 +148,8 @@
 <script src="adx.js"></script>
 <script src="audio.js"></script>
 <script src="model.js"></script>
+<script src="story.js"></script>
+<script src="cards.js"></script>
 <script src="play.js"></script>
 <script>
 'use strict';
@@ -144,6 +164,8 @@ let V = null;        // the three.js viewer, created once
 let M = null;        // the model on screen, and its clip
 let S = null;        // the whole cutscene, when one is playing
 let FONT = null;     // the PS2 kernel face, out of the ELF
+let TABLES = null;   // the story tables, out of the same ELF
+let HAVE = null;     // the cutscenes this disc actually carries
 
 function row(label, value, cls) {
   const d = document.createElement('div');
@@ -201,6 +223,23 @@ async function load(file) {
     row('subtitle font', err.message, 'bad');
   }
 
+  try {
+    TABLES = TraptStory2.read(DISC);
+    HAVE = new Set(names.filter((n) => DISC.has(
+      'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC')));
+    const ref = TraptStory2.referenced(TABLES);
+    const unplayed = names.filter((n, i) => !ref.has(i) && HAVE.has(n));
+    row('story order', TABLES.chapters.length + ' chapters, '
+        + TABLES.groups.length + ' cutscene groups, ' + TABLES.flows.length
+        + ' ending flows', 'good');
+    row('never played', unplayed.length + ' on the disc that no table reaches: '
+        + unplayed.join(' '), unplayed.length ? '' : 'good');
+    buildRoutePanel();
+  } catch (err) {
+    TABLES = null;
+    row('story order', err.message, 'bad');
+  }
+
   for (const n of names) {
     const path = 'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC';
     const el = document.createElement('div');
@@ -223,6 +262,7 @@ async function openCutscene(name, path, el) {
     + '<div id="view">'
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
+    + '<div id="card"></div>'
     + '<div id="look"></div><div id="vinfo"></div></div>'
     + '<div id="transport"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
@@ -566,14 +606,25 @@ function fitOutput() {
     V.rt.setSize(Math.round(w * px), Math.round(h * px));
   }
   V.postMat.uniforms.texel.value.set(1 / V.rt.width, 1 / V.rt.height);
-  // fit the 4:3 output into the element without stretching it
-  const want = TraptGs.OUT_ASPECT, have = w / h;
-  V.postMat.uniforms.fit.value.set(
-    have > want ? want / have : 1, have > want ? 1 : have / want);
+  // Native is anamorphic -- 512x224 stretched to 4:3 -- so it is pillarboxed
+  // into the element to keep that shape.  Modern has no such obligation: it
+  // renders at the element's own aspect and fills it.
+  if (V.look.native) {
+    const want = TraptGs.OUT_ASPECT, have = w / h;
+    V.postMat.uniforms.fit.value.set(
+      have > want ? want / have : 1, have > want ? 1 : have / want);
+  } else {
+    V.postMat.uniforms.fit.value.set(1, 1);
+  }
 }
 
 function setPs2(on) {
   V.ps2 = on;
+  // The game's own font is laid out in the 512x224 framebuffer, so it only
+  // makes sense while we are rendering at it.  In Modern the DOM subtitles
+  // reflow to whatever shape the element is.  Follow the switch unless the
+  // Subs button has been pressed, exactly as player.html does.
+  if (V.subsPick === undefined && V.subsPass !== undefined) setSubsPs2(on);
   if (V.group)
     V.group.traverse((o) => {
       if (o.material && o.material.uniforms && o.material.uniforms.ps2)
@@ -711,6 +762,147 @@ function setSubsPs2(on) {
   }
 }
 
+// ------------------------------------------------------------- route mode
+// Auto-play a whole route: the chapter title card the game shows (SLD01-15,
+// with the chapter number and name already drawn into the art), then that
+// chapter's cutscenes in the order the tables give, then the next.  A stage
+// gets a card too -- there is no room to play here, so it is announced and
+// stepped over.
+let R = null;                            // the running route
+
+function routeBeats(opts) {
+  return TraptStory2.route(TABLES, Object.assign({ have: HAVE }, opts || {}));
+}
+
+async function startRoute(opts) {
+  if (!TABLES) { alert('open a disc first'); return; }
+  R = { beats: routeBeats(opts), at: -1, paused: false };
+  detail.innerHTML =
+      '<h2 id="routeHead">Route</h2><div id="members"></div>'
+    + '<div id="view">'
+    + '<div id="lbTop"></div><div id="lbBot"></div>'
+    + '<div id="subs"></div><div id="fade"></div>'
+    + '<div id="card"></div>'
+    + '<div id="look"></div><div id="vinfo"></div></div>'
+    + '<div id="transport"></div>'
+    + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
+  ensureViewer();
+  routeNext();
+}
+
+function routeSummary() {
+  if (!R) return '';
+  const n = R.beats.filter((b) => b.kind === 'cutscene').length;
+  const done = R.beats.slice(0, R.at + 1).filter((b) => b.kind === 'cutscene').length;
+  return done + ' of ' + n + ' cutscenes · beat ' + (R.at + 1) + ' of ' + R.beats.length;
+}
+
+/** Advance to the next beat: a card to show, a stage to announce, or a scene. */
+async function routeNext() {
+  if (!R) return;
+  R.at += 1;
+  const head = document.getElementById('routeHead');
+  if (R.at >= R.beats.length) {
+    showCard({ title: 'The end', subtitle: routeSummary() }, null);
+    R = null;
+    return;
+  }
+  const b = R.beats[R.at];
+  if (head) head.textContent = 'Route — ' + routeSummary();
+
+  if (b.kind === 'card') {
+    const pic = b.card ? await TraptCards.load(DISC, b.card) : null;
+    showCard(b, pic);
+    return;
+  }
+  if (b.kind === 'stage') {
+    showCard({ title: 'Stage ' + b.stage.toString(16).toUpperCase().padStart(2, '0'),
+               subtitle: 'played here in the game; there is no room to play in '
+                       + 'the viewer, so the route steps over it' }, null);
+    return;
+  }
+  // a cutscene: hand it to the scene player, and come back when it ends
+  const card = document.getElementById('card');
+  if (card) card.className = '';
+  await playScene(b.name);
+  if (S) { S.onEnd = () => { S.onEnd = null; routeNext(); }; }
+}
+
+/**
+ * Put a card on screen and wait for the viewer.  The chapter cards are
+ * 512x256 art with their text already in the picture, so this only has to
+ * show them at the framebuffer's own shape.
+ */
+function showCard(beat, pic) {
+  const el = document.getElementById('card');
+  if (!el) return;
+  el.innerHTML = '';
+  if (pic) {
+    const cv = document.createElement('canvas');
+    cv.width = pic.width; cv.height = pic.height;
+    cv.getContext('2d').putImageData(
+      new ImageData(new Uint8ClampedArray(pic.rgba), pic.width, pic.height), 0, 0);
+    el.appendChild(cv);
+  } else {
+    const box = document.createElement('div');
+    box.className = 'plain';
+    box.innerHTML = '<b></b><i></i>';
+    box.querySelector('b').textContent = beat.title || '';
+    box.querySelector('i').textContent = beat.subtitle || '';
+    el.appendChild(box);
+  }
+  const bar = document.createElement('div');
+  bar.className = 'cardbar';
+  const go = document.createElement('button');
+  go.textContent = R ? 'Continue' : 'Done';
+  go.onclick = () => { el.className = ''; if (R) routeNext(); };
+  bar.appendChild(go);
+  if (R) {
+    const stop = document.createElement('button');
+    stop.textContent = 'Leave the route';
+    stop.onclick = () => { R = null; el.className = ''; };
+    bar.appendChild(stop);
+  }
+  el.appendChild(bar);
+  el.className = 'on';
+
+  // The game holds a chapter card for a beat before moving on; do the same,
+  // but let a click take it early.
+  if (R && beat.kind === 'card') {
+    clearTimeout(R.timer);
+    R.timer = setTimeout(() => {
+      if (R && el.classList.contains('on')) { el.className = ''; routeNext(); }
+    }, 3200);
+  }
+}
+
+/** The route picker: every chapter, and every ending each chapter can take. */
+function buildRoutePanel() {
+  const host = document.getElementById('routes');
+  if (!host || host.dataset.built) return;
+  host.dataset.built = '1';
+  const mk = (label, title, opts) => {
+    const b = document.createElement('div');
+    b.className = 'cut';
+    b.textContent = label;
+    b.title = title;
+    b.onclick = () => startRoute(opts);
+    host.appendChild(b);
+    return b;
+  };
+  const full = mk('▶ the whole story', 'all 15 chapters, then the finale', {});
+  full.style.background = '#3a5a8a';
+  full.style.borderColor = '#4a72ad';
+  for (const [g, why] of TraptStory2.FINALES)
+    mk('finale ' + g.toString(16).toUpperCase(), why, { finale: g });
+  for (let c = 0; c < TABLES.chapters.length; c++)
+    for (let r = 0; r < 2; r++)
+      mk('ch ' + (c + 1) + ' → ending ' + r,
+         'chapters 1-' + (c + 1) + ', then flow '
+         + TABLES.routes[c][r].toString(16).toUpperCase(),
+         { chapters: c + 1, ending: TABLES.routes[c][r] });
+}
+
 // ------------------------------------------------------------- scene mode
 // The whole cutscene: room, cast, camera, subtitles and letterbox, assembled
 // from the disc by play.js and driven here.
@@ -781,7 +973,10 @@ function sceneTransport() {
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
   document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
-  document.getElementById('subsBtn').onclick = () => setSubsPs2(!V.subsPs2);
+  document.getElementById('subsBtn').onclick = () => {
+    V.subsPick = !V.subsPs2;           // an explicit choice stops it following
+    setSubsPs2(V.subsPick);
+  };
   const mb = document.getElementById('muteBtn');
   const syncMute = () => {
     mb.textContent = S && S.audio && S.audio.muted ? 'Muted' : 'Sound';
@@ -800,8 +995,10 @@ function sceneTransport() {
     panel.classList.toggle('on');
     e.target.classList.toggle('on', panel.classList.contains('on'));
   };
+  ensureSubsPass();
+  setSubsPs2(V.subsPick !== undefined ? V.subsPick
+             : (V.ps2 === undefined ? true : V.ps2));
   setPs2(V.ps2 === undefined ? true : V.ps2);
-  setSubsPs2(V.subsPs2 === undefined ? true : V.subsPs2);
   const btn = document.getElementById('playBtn');
   const cam = document.getElementById('camBtn');
   const seek = document.getElementById('seek');
@@ -910,7 +1107,10 @@ function tick() {
   if (S) {
     if (S.playing) {
       S.frame += dt * 60;                     // the game runs these at 60 fps
-      if (S.frame > S.built.scene.duration) { S.frame = 1; S.seeked = true; }
+      if (S.frame > S.built.scene.duration) {
+        if (S.onEnd) { S.playing = false; const f = S.onEnd; S.onEnd = null; f(); }
+        else { S.frame = 1; S.seeked = true; }
+      }
     }
     applySceneFrame();
     if (V.sceneTick === undefined) V.sceneTick = 0;
