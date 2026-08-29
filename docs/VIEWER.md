@@ -724,6 +724,20 @@ camera words hold whatever was last there, often denormals of order 1e37 — so
 those are reported as such instead of being matched to the nearest track by
 accident.
 
+### 8.0 Catching a cutscene as it plays
+
+`--watch` sits on PINE, matches the live camera against one cutscene's track
+and saves a state the moment it appears -- so a capture can be aimed at a
+moment somebody has to *play* to, rather than hunted for:
+
+```
+python tools/oracle.py --watch e004 --from 1172 --to 1212 --slot 5
+```
+
+Matching a single track keeps each poll cheap enough to leave running. PCSX2
+takes **one** PINE client, so nothing else may hold it -- the MCP server does
+when it is running, and this will be refused while it is.
+
 ### 8.1 What is still missing
 
 None of the four savestates on this machine is in a cutscene that has sprite

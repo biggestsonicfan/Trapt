@@ -172,6 +172,138 @@ def identify(disc, path, names=None):
     return out
 
 
+class Pine:
+    """The smallest possible PINE client: batched 64-bit reads, and save-state.
+
+    PCSX2 listens on 28011 and takes **one** client, so nothing else may hold
+    it -- the MCP server does when it is running.  The protocol is
+    `[u32 size][cmd]...` in and `[u32 size][u8 status][data]...` back, and
+    many commands ride in one message.
+
+        MsgRead64  = 0x03, payload u8 op + u32 addr -> 8 bytes
+        MsgSaveState = 0x09, payload u8 slot
+    """
+
+    READ64 = 0x03
+    SAVESTATE = 0x09
+
+    def __init__(self, host='127.0.0.1', port=28011, timeout=15.0):
+        import socket
+        self.sock = socket.create_connection((host, port), timeout)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+    def _send(self, payload):
+        head = struct.pack('<I', len(payload) + 4)
+        self.sock.sendall(head + payload)
+        acc = b''
+        while len(acc) < 4:
+            acc += self.sock.recv(4096)
+        size = struct.unpack_from('<I', acc, 0)[0]
+        while len(acc) < size:
+            acc += self.sock.recv(65536)
+        if acc[4] != 0:
+            raise IOError('PINE status 0x%02x' % acc[4])
+        return acc[5:size]
+
+    def read(self, addr, length):
+        words = (length + 7) // 8
+        out = b''
+        per = 512
+        for i in range(0, words, per):
+            n = min(per, words - i)
+            req = b''.join(struct.pack('<BI', self.READ64, addr + (i + k) * 8)
+                           for k in range(n))
+            got = self._send(req)
+            if len(got) < n * 8:
+                raise IOError('short PINE reply')
+            out += got[:n * 8]
+        return out[:length]
+
+    def camera(self):
+        b = self.read(CAM_EYE, 0x20)
+        eye = struct.unpack_from('<3f', b, 0)
+        target = struct.unpack_from('<3f', b, 0x10)
+        for v in (eye, target):
+            for c in v:
+                if not (-SANE < c < SANE):
+                    return None
+        return eye, target
+
+    def save_state(self, slot):
+        self._send(struct.pack('<BB', self.SAVESTATE, slot & 0xFF))
+
+
+def track_for(disc, name):
+    """One cutscene's `.cam`, or None."""
+    import arc as arc_mod
+    import cam as cam_mod
+    up = name.upper()
+    blob = disc.read('DATA/RT/%s/RT_%s.ARC' % (up, up))
+    if blob is None:
+        return None
+    members = {n.lower(): (o, s) for n, o, s in arc_mod.entries(blob)}
+    got = members.get('%s.cam' % name.lower())
+    if got is None:
+        return None
+    return cam_mod.parse(blob[got[0]:got[0] + got[1]])
+
+
+def watch(disc, name, slot=5, lo=None, hi=None, timeout=600.0):
+    """Wait until the game is playing `name`, then save a state.
+
+    Matching only that one cutscene's track makes each poll cheap, so this can
+    sit on the wire while somebody plays towards the moment wanted.  `lo`/`hi`
+    narrow it to a frame window -- an effect is usually only up for a second
+    or two, and `--effects` says when.
+    """
+    import time
+    track = track_for(disc, name)
+    if track is None:
+        raise ValueError('no camera track for %s' % name)
+    n = int(track.duration())
+    pine = Pine()
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            live = pine.camera()
+            if live is None:
+                time.sleep(0.15)
+                continue
+            eye, target = live
+            best = None
+            for f in range(1, n + 1, COARSE):
+                s = track.sample(f)
+                if not s or not s.get('position') or not s.get('target'):
+                    continue
+                r = _dist(s['position'], eye) + _dist(s['target'], target)
+                if best is None or r < best[1]:
+                    best = (f, r)
+            if best and best[1] < 1.0:
+                f0 = max(1, best[0] - COARSE)
+                for f in range(f0, min(n, best[0] + COARSE) + 1):
+                    s = track.sample(f)
+                    if not s or not s.get('position') or not s.get('target'):
+                        continue
+                    r = _dist(s['position'], eye) + _dist(s['target'], target)
+                    if r < best[1]:
+                        best = (f, r)
+                frame = best[0]
+                if (lo is None or frame >= lo) and (hi is None or frame <= hi):
+                    pine.save_state(slot)
+                    return {'cutscene': name, 'frame': frame,
+                            'residual': best[1], 'slot': slot}
+            time.sleep(0.1)
+    finally:
+        pine.close()
+    return None
+
+
 def state_dir():
     for d in (STATE_DIR, ALT_STATE_DIR):
         if os.path.isdir(d):
@@ -221,7 +353,38 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import scene as scene_mod
     disc = scene_mod.Disc()
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    argv = sys.argv[1:]
+
+    def opt(flag, default=None, cast=str):
+        if flag not in argv:
+            return default
+        i = argv.index(flag)
+        return cast(argv[i + 1]) if i + 1 < len(argv) else default
+
+    # Every flag that takes a value, so its value is not mistaken for a path.
+    VALUED = ('--shot', '--watch', '--from', '--to', '--slot', '--timeout')
+    taken = {argv.index(f) + 1 for f in VALUED if f in argv}
+    args = [a for i, a in enumerate(argv)
+            if not a.startswith('--') and i not in taken]
+
+    if '--watch' in argv:
+        name = opt('--watch')
+        lo, hi = opt('--from', None, int), opt('--to', None, int)
+        slot = opt('--slot', 5, int)
+        print('waiting for %s%s -- play towards it; ctrl-c to give up'
+              % (name, '' if lo is None else ' frames %s..%s' % (lo, hi)))
+        try:
+            got = watch(disc, name, slot=slot, lo=lo, hi=hi,
+                        timeout=opt('--timeout', 600.0, float))
+        except Exception as exc:
+            print('could not watch: %s' % exc)
+            return 1
+        if not got:
+            print('timed out without seeing it')
+            return 1
+        print('caught %s frame %d (residual %.2e) -> slot %d'
+              % (got['cutscene'], got['frame'], got['residual'], got['slot']))
+        return 0
 
     if '--effects' in sys.argv:
         print('%-9s %-16s %7s %7s %8s  %s'
@@ -235,11 +398,7 @@ def main():
                          binds or ''))
         return 0
 
-    shot = None
-    if '--shot' in sys.argv:
-        i = sys.argv.index('--shot')
-        shot = sys.argv[i + 1] if i + 1 < len(sys.argv) else 'shot.png'
-
+    shot = opt('--shot', 'shot.png' if '--shot' in argv else None)
     paths = args or all_states()
     if not paths:
         print('no savestates found; looked in %s' % (state_dir() or STATE_DIR))
