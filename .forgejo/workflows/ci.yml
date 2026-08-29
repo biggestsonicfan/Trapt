@@ -18,11 +18,13 @@
 #   * pick.html's initialisation order, which broke route mode's play button
 #     and its audio in one line.
 #
-# One job on one small image, because the runner shares a 25 GB disk with
-# Forgejo and decomp.me: node:20-bookworm-slim is about 240 MB, against a
-# gigabyte each for the full node and python images.  git and python3 go in
-# before the checkout -- the slim image has neither, and installing them does
-# not need the repository.
+# One job on one small image.  The droplet has disk to spare (48 GB, about 18
+# free) but only 1 GB of memory, already with swap in use, so the point is to
+# be cheap while running rather than small on disk: one container instead of
+# two, node:20-bookworm-slim at about 240 MB, and a measured 256 MB cap on the
+# job -- the suites peak near 50 MB of RSS.  git and python3 go in before the
+# checkout, because the slim image has neither and installing them does not
+# need the repository.
 #
 # Forgejo reads .forgejo/workflows first and falls back to .github/workflows.
 # It needs a registered runner; see deploy/docker-compose.runner.yml.

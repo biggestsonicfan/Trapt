@@ -1,10 +1,10 @@
 # A Forgejo Actions runner for code.robkrum.com, on the same droplet.
 #
-# Register once, then bring it up:
+# Register once, then bring it up.  Run both from ~/forgejo so the runner sits
+# beside the stack it serves:
 #
-#   # 1. get a token: Forgejo -> Site administration -> Actions -> Runners
-#   #    -> Create new runner, or for one repository, the repo's
-#   #    Settings -> Actions -> Runners
+#   # a token from the repo's Settings -> Actions -> Runners
+#   # (or Site administration -> Actions -> Runners for a shared one)
 #   mkdir -p runner
 #   docker run --rm -it -v "$PWD/runner:/data" \
 #     data.forgejo.org/forgejo/runner:13.0.0 \
@@ -13,20 +13,33 @@
 #       --token <TOKEN> --name droplet \
 #       --labels 'docker:docker://node:20-bookworm-slim'
 #
-#   # 2. run it
 #   cp runner-config.yml runner/config.yml
 #   docker compose -f docker-compose.runner.yml up -d
 #
-# The label has to match what the workflow asks for: `runs-on: docker` in
-# .forgejo/workflows/ci.yml matches the label named `docker`, and the image
-# after `docker://` is what a job gets when it does not name its own.
+# The public URL, on purpose.  Registering against `http://server:3000` would
+# keep the traffic inside the host and skip Cloudflare, but the URL is handed
+# to the *job* container too -- that is where `actions/checkout` clones from --
+# and job containers sit on the default bridge, where `server` does not
+# resolve.  Doing it internally means committing to the network name in two
+# more places:
 #
-# **This mounts the host's Docker socket.** That is the light option -- a
-# docker-in-docker sidecar wants its own daemon and a storage layer, which is
-# a lot on a 1 GB box -- but it is not a small permission: a job can talk to
-# the host daemon, and that is effectively root on the droplet.  For a private
-# instance where you write all the workflows that is a considered trade; it
-# would not be for a repository that takes pull requests from strangers.
+#   --instance http://server:3000   when registering,
+#   docker run ... --network forgejo_forgejo   for the register step,
+#   container.network: forgejo_forgejo   in runner/config.yml,
+#   and this service on that network as well.
+#
+# `forgejo_forgejo` is what compose names the `external: false` network in
+# ~/forgejo/docker-compose.yml -- project directory plus network key -- but
+# confirm with `docker network ls` before relying on it.  The public route
+# needs none of that and costs a round trip on a job that runs for a minute.
+#
+# **This mounts the host's Docker socket.**  That is the light option -- a
+# docker-in-docker sidecar wants its own daemon and storage layer, and memory
+# is the scarce thing on this box, not disk -- but it is not a small
+# permission: a job can talk to the host daemon, which is effectively root on
+# the droplet.  For a private instance whose workflows you write yourself that
+# is a considered trade; it would not be for a repository that takes pull
+# requests from strangers.
 name: forgejo-runner
 
 services:
@@ -42,9 +55,10 @@ services:
       - ./runner:/data
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
-    # The runner itself does almost nothing -- it hands work to the daemon --
-    # but it shares 1 GB with Forgejo and decomp.me, so box it in.
-    mem_limit: 256m
+    # The runner hands work to the host daemon and otherwise idles, and it
+    # shares 1 GB with Forgejo, Caddy and decomp.me on a box already using
+    # swap.  A ceiling, not a reservation.
+    mem_limit: 128m
     healthcheck:
       test: ["CMD", "forgejo-runner", "--version"]
       interval: 60s

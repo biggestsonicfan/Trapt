@@ -83,10 +83,11 @@ account rather than yours.
 
 ## 3. The droplet that already runs Forgejo and decomp.me
 
-`marketplace-s-1vcpu-1gb-sfo3` is a **1 vCPU / 1 GB / 25 GB** box, and
-`~/forgejo/Caddyfile` already fronts `code.robkrum.com`, `rpcn.sonicthefighte.rs`
-and `decomp.sonicthefighte.rs`. Adding this site means one Caddy block and one
-container:
+`marketplace-s-1vcpu-1gb-sfo3` is **1 vCPU / 1 GB / 48 GB**, about 18 GB free.
+**Memory, not disk, is the constraint** — it runs near 57% with swap already in
+use. `~/forgejo/Caddyfile` already fronts `code.robkrum.com`,
+`rpcn.sonicthefighte.rs` and `decomp.sonicthefighte.rs`. Adding this site means
+one Caddy block and one container:
 
 ```
 trapt.robkrum.com {
@@ -95,30 +96,28 @@ trapt.robkrum.com {
 ```
 
 ```sh
-# on the droplet, joined to the network Caddy is already on
-NET=forgejo_default TRAPT_SITE=/srv/trapt-site \
-  docker compose -f docker-compose.droplet.yml up -d
-docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+# on the droplet, joined to the `proxy` network Caddy is already on
+TRAPT_SITE=/srv/trapt-site docker compose -f docker-compose.droplet.yml up -d
+docker compose -f ~/forgejo/docker-compose.yml exec caddy \
+  caddy reload --config /etc/caddy/Caddyfile
 ```
+
+`proxy` is declared `external: true` in your compose file, so it already exists
+and is not owned by the Forgejo stack — it is how `decompme-nginx` is reached,
+and joining it disturbs nothing.
 
 `deploy/docker-compose.droplet.yml` is the **bind-mounted** shape, not the
 baked image, and `deploy/deploy-droplet.sh` rsyncs the site up **without** the
-`.gz` sidecars. Both choices are about the 25 GB disk: a baked image would put
-a ~0.95 GB layer on top of the ~0.89 GB it already has to store, and the
-sidecars are another ~0.45 GB. Cloudflare caches the compressed response at
-the edge, so the origin compresses almost nothing. The container is capped at
-`mem_limit: 128m` — static file serving needs far less, and the box has 1 GB
-to share three ways.
+`.gz` sidecars. With 18 GB free either would fit, so the reasons are smaller
+ones: a baked image is a second copy of bytes already on disk, and the sidecars
+buy nothing because Cloudflare caches the compressed response at the edge, so
+the origin compresses almost nothing. The container is capped at
+`mem_limit: 128m`, which is a ceiling and not a reservation — Caddy serving
+static files sits nearer 20 MB.
 
-**Check the disk before you start.** 0.89 GB is not much, but decomp.me's
-compiler images are not small:
-
-```sh
-df -h /            # needs ~1 GB free, comfortably
-docker system df   # what the existing stacks are holding
-```
-
-If it is tight, §2 is the better answer — Pages costs the droplet nothing.
+> An earlier draft of this file said 25 GB, inferred from the droplet's size
+> rather than measured. The box reports 48 GB with 18 GB free, so disk was
+> never the pressure; memory is.
 
 > Unrelated but worth knowing: `rpcn.sonicthefighte.rs` resolves straight to
 > `<droplet-ip>` while everything else is proxied, so the origin IP is
@@ -169,7 +168,12 @@ registered. `deploy/docker-compose.runner.yml` is one, on the same droplet:
 ```sh
 # a token from the repo's Settings -> Actions -> Runners, or site admin
 mkdir -p runner
-docker run --rm -it -v "$PWD/runner:/data"   data.forgejo.org/forgejo/runner:13.0.0   forgejo-runner register --no-interactive     --instance https://code.robkrum.com     --token <TOKEN> --name droplet     --labels 'docker:docker://node:20-bookworm-slim'
+docker run --rm -it -v "$PWD/runner:/data" \
+  data.forgejo.org/forgejo/runner:13.0.0 \
+  forgejo-runner register --no-interactive \
+    --instance https://code.robkrum.com \
+    --token <TOKEN> --name droplet \
+    --labels 'docker:docker://node:20-bookworm-slim'
 
 cp deploy/runner-config.yml runner/config.yml
 docker compose -f deploy/docker-compose.runner.yml up -d
@@ -187,14 +191,16 @@ For a private instance whose workflows you write yourself that is a considered
 trade; it would not be one for a repository taking pull requests from
 strangers.
 
-Sized for the box: one job at a time, a 15 minute timeout, 512 MB and one CPU
+Sized for the box: one job at a time, a 15 minute timeout, 256 MB and one CPU
 per job, and a single ~240 MB image rather than the gigabyte-each official
-node and python ones. `git` and `python3` are installed in the first step,
-before the checkout, because the slim image has neither and installing them
-does not need the repository.
+node and python ones. The memory cap is measured rather than guessed — each
+suite peaks near 50 MB of RSS and they run one at a time — and it is a ceiling,
+not a reservation. `git` and `python3` are installed in the first step, before
+the checkout, because the slim image has neither and installing them does not
+need the repository.
 
 Job containers are removed as they finish but pulled images are not, so
-`docker image prune -f` is worth a weekly cron entry on a 25 GB disk.
+`docker image prune -f` is worth a weekly cron entry.
 
 ### What it can actually test
 

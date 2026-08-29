@@ -19,7 +19,7 @@ node tools/web/test_all.js   every suite the disc allows
 
 `tools/site.py` builds a gallery of all 149 cutscenes ([`VIEWER.md`](VIEWER.md)
 §2.1) and it works well, but it is **0.89 GB of somebody else's assets**. Every
-hosting question that followed — a 25 GB droplet, Cloudflare Pages, git
+hosting question that followed — the droplet, Cloudflare Pages, git
 storage — was really the same question, and the answer that dissolves all of
 them is to ship no assets at all.
 

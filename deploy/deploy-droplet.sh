@@ -4,9 +4,9 @@
 #   TRAPT_SITE='E:/.../trapt-site' HOST=root@<droplet-ip> sh deploy/deploy-droplet.sh
 #
 # Sends originals only.  The .gz/.br sidecars deploy/precompress.py writes are
-# skipped on purpose: they are ~0.45 GB more on a 25 GB disk, Cloudflare caches
-# the compressed response at the edge anyway, and Caddy's `encode` covers the
-# rare origin miss.  Drop --exclude if you ever serve this unproxied.
+# skipped on purpose: Cloudflare caches the compressed response at the edge, so
+# the origin compresses almost nothing, and Caddy's `encode` covers the rare
+# miss.  They would also be ~0.45 GB of duplicate bytes on the droplet.  Drop --exclude if you ever serve this unproxied.
 #
 # --delete-after removes files that no longer exist in the build *after* the
 # new ones are in place, so the site is never briefly incomplete.  It only

@@ -1,10 +1,18 @@
 # Forgejo runner config -- copy to runner/config.yml beside the .runner file
 # that `forgejo-runner register` writes.
 #
-# Sized for a 1 vCPU / 1 GB / 25 GB droplet that is already carrying Forgejo
-# and decomp.me: one job at a time, short timeouts, and no image it does not
-# need.  `docker system prune` is worth a cron entry -- job containers are
-# removed, but pulled images are not.
+# Sized for a 1 vCPU / 1 GB droplet already carrying Forgejo, Caddy and
+# decomp.me, and already using swap.  Disk is not the constraint (48 GB, about
+# 18 GB free); memory is.
+#
+# The job cap is measured, not guessed: each suite peaks around 50 MB of RSS
+# and they run one at a time, so 256 MB is comfortable headroom for node plus
+# the apt-get in the first step.  These are ceilings, not reservations -- the
+# runner idles at a few tens of megabytes and only spends anything while a job
+# is actually running.
+#
+# `docker image prune -f` is worth a cron entry: job containers are removed as
+# they finish, pulled images are not.
 
 log:
   level: info
@@ -31,11 +39,13 @@ cache:
   enabled: false
 
 container:
-  # Job containers get no extra network; they only need to reach the Forgejo
-  # instance, which is public.
+  # The default bridge.  A job needs to reach the Forgejo instance to clone,
+  # and the runner is registered against the public URL, so the bridge is
+  # enough.  Registering internally instead would mean putting jobs on
+  # `forgejo_forgejo` here so `server` resolves for them too.
   network: ""
   privileged: false
-  options: "--memory=512m --cpus=1"
+  options: "--memory=256m --cpus=1"
   # Only the workspace is shared in.
   valid_volumes: []
   docker_host: "unix:///var/run/docker.sock"

@@ -1,27 +1,32 @@
 # trapt.robkrum.com on the droplet that already runs Forgejo and decomp.me.
 #
 # This does NOT terminate TLS and does NOT publish a port.  It joins the
-# network your existing Caddy is already on and answers to the name `trapt`,
-# exactly like `server:3000` and `decompme-nginx:80` do in your Caddyfile.
-# Add one block to ~/forgejo/Caddyfile:
+# `proxy` network your Caddy is already on -- the same one `decompme-nginx` is
+# reached over -- and answers to the name `trapt`.  Add one block to
+# ~/forgejo/Caddyfile:
 #
 #     trapt.robkrum.com {
 #         reverse_proxy trapt:8080
 #     }
 #
-# then `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`
-# (or restart the caddy service).
+# then reload Caddy:
 #
-# Deliberately the bind-mounted shape, not the baked image: on a 25 GB droplet
-# a ~0.95 GB image layer on top of a ~0.89 GB directory is a gigabyte spent
-# for nothing, and rsync updates the site without a rebuild.
+#     docker compose -f ~/forgejo/docker-compose.yml exec caddy \
+#       caddy reload --config /etc/caddy/Caddyfile
 #
-#   NET=forgejo_default TRAPT_SITE=/srv/trapt-site \
-#     docker compose -f docker-compose.droplet.yml up -d
+# and bring this up:
 #
-# Check the network name first -- it is the compose project directory plus
-# `_default`, so `docker network ls | grep -i caddy` or inspect the caddy
-# container: `docker inspect caddy --format '{{json .NetworkSettings.Networks}}'`
+#     TRAPT_SITE=/srv/trapt-site docker compose -f docker-compose.droplet.yml up -d
+#
+# `proxy` is declared `external: true` in ~/forgejo/docker-compose.yml, so it
+# already exists and is not owned by that stack -- joining it disturbs nothing.
+# `docker network ls` if anything ever moves.
+#
+# Bind-mounted rather than a baked image.  The disk has room for either (48 GB,
+# about 18 GB free), but the image would be a second copy of bytes already on
+# disk and rsync updates the site without a rebuild.  Memory is the tighter
+# resource here: 1 GB, around 57% used with swap already in play, which is why
+# this is capped -- though serving static files barely registers.
 name: trapt
 
 services:
@@ -33,10 +38,8 @@ services:
       - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
       - ${TRAPT_SITE:-/srv/trapt-site}:/srv/trapt-site:ro
     networks:
-      - web
+      - proxy
     restart: unless-stopped
-    # 1 GB of RAM shared with Forgejo and decomp.me: keep this one boxed in.
-    # Static file serving needs almost nothing.
     mem_limit: 128m
     healthcheck:
       test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/index.html"]
@@ -45,6 +48,6 @@ services:
       retries: 3
 
 networks:
-  web:
+  proxy:
     external: true
-    name: ${NET:-forgejo_default}
+    name: ${NET:-proxy}
