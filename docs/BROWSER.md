@@ -85,9 +85,12 @@ disc data. They work under two loaders — `require` in the tests and a classic
   is on **right-drag** or alt-drag. Any of them takes the shot off the
   cutscene's own camera, the same way the drag always did.
 
-  Speed follows the orbit distance, and that is set from the size of whatever
-  was loaded, so the same keys cross a face and cross a courtyard in about the
-  same time -- floored so a close-up does not crawl. Keys are ignored while
+  Speed follows the orbit distance, so the same keys suit a face and a
+  courtyard, and it is anchored on the game's own locomotion: the player walks
+  at 10 units a second and runs at 34 ([`STAGE.md`](STAGE.md), from her
+  animation strides), so the camera takes a quarter of the orbit distance,
+  capped at 60 -- a little under twice a run. Floored so a close-up does not
+  crawl. Keys are ignored while
   something is being typed into and whenever ctrl, meta or alt is down, and a
   stage keeps its own follow camera: flying is skipped entirely while one is
   running, so the two never fight for the frame.

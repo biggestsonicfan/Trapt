@@ -626,18 +626,27 @@ function camAxes(o) {
 }
 
 /**
- * Move the free camera for one frame.  Speed scales with the orbit distance,
- * which is set from the size of whatever was loaded, so the same keys cross a
- * character in about the same time as they cross a room.
+ * Move the free camera for one frame.
+ *
+ * Speed scales with the orbit distance, which is set from the size of
+ * whatever was loaded, so the same keys suit a face and a courtyard.  What it
+ * is scaled *to* comes from the game: the player's own locomotion, derived
+ * from her animation strides in STAGE.md, is 10 units a second walking and 34
+ * running.  A camera that crosses a room appreciably faster than the girl
+ * being chased through it is not a camera you can aim, which is what a
+ * quarter of the orbit distance -- capped at 60, a little under twice a run
+ * -- is picked to avoid.  Shift trebles it for getting somewhere.
  */
 function flyMove(dt) {
+  const FLY_SCALE = 0.25, FLY_MAX = 60, FLY_BOOST = 3;
   const k = V.keys, o = V.orbit;
   const x = (k.d ? 1 : 0) - (k.a ? 1 : 0);
   const z = (k.w ? 1 : 0) - (k.s ? 1 : 0);
   const y = (k.e ? 1 : 0) - (k.q ? 1 : 0);
   if (!x && !y && !z) return false;
   const ax = camAxes(o);
-  const speed = Math.max(o.dist, 1) * 1.5 * (k.boost ? 4 : 1) * dt;
+  const speed = Math.min(Math.max(o.dist, 1) * FLY_SCALE, FLY_MAX)
+              * (k.boost ? FLY_BOOST : 1) * dt;
   for (let i = 0; i < 3; i++) {
     o.target[i] += (ax.fwd[i] * z + ax.right[i] * x + ax.up[i] * y) * speed;
   }

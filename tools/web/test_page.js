@@ -305,25 +305,25 @@ console.log('the free camera flies where it is pointed');
   V.keys.w = true;
   cam.flyMove(1);
   const after = cam.orbitEye(V.orbit);
-  check('W flies forward, 1.5 x the orbit distance per second',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-15]',
+  check('W flies forward at a quarter of the orbit distance per second',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-2.5]',
         JSON.stringify(r3(V.orbit.target)));
   check('and the eye travels exactly with it',
         JSON.stringify(r3([after[0] - before[0], after[1] - before[1],
-                           after[2] - before[2]])) === '[0,0,-15]');
+                           after[2] - before[2]])) === '[0,0,-2.5]');
   V.keys.w = false;
 
   // Strafe and lift, on the axes camAxes named.
   V.orbit.target = [0, 0, 0];
   V.keys.d = true; cam.flyMove(1); V.keys.d = false;
-  check('D strafes right', JSON.stringify(r3(V.orbit.target)) === '[15,0,0]',
+  check('D strafes right', JSON.stringify(r3(V.orbit.target)) === '[2.5,0,0]',
         JSON.stringify(r3(V.orbit.target)));
   V.orbit.target = [0, 0, 0];
   V.keys.e = true; cam.flyMove(1); V.keys.e = false;
-  check('E rises', JSON.stringify(r3(V.orbit.target)) === '[0,15,0]');
+  check('E rises', JSON.stringify(r3(V.orbit.target)) === '[0,2.5,0]');
   V.orbit.target = [0, 0, 0];
   V.keys.q = true; cam.flyMove(1); V.keys.q = false;
-  check('Q sinks', JSON.stringify(r3(V.orbit.target)) === '[0,-15,0]');
+  check('Q sinks', JSON.stringify(r3(V.orbit.target)) === '[0,-2.5,0]');
 
   // Opposed keys cancel rather than fighting.
   V.orbit.target = [0, 0, 0];
@@ -336,8 +336,8 @@ console.log('the free camera flies where it is pointed');
   // Shift is a multiplier, not a second speed.
   V.orbit.target = [0, 0, 0];
   V.keys.w = true; V.keys.boost = true; cam.flyMove(1);
-  check('shift hurries by exactly four',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-60]',
+  check('shift hurries by exactly three',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-7.5]',
         JSON.stringify(r3(V.orbit.target)));
   V.keys.boost = false; V.keys.w = false;
 
@@ -346,7 +346,16 @@ console.log('the free camera flies where it is pointed');
   V.orbit.target = [0, 0, 0]; V.orbit.dist = 0.05;
   V.keys.w = true; cam.flyMove(1); V.keys.w = false;
   check('and it never crawls when zoomed right in',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-1.5]',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-0.25]',
+        JSON.stringify(r3(V.orbit.target)));
+
+  // A big room must not turn into a slingshot.  The player runs at 34 units
+  // a second (STAGE.md, from the animation strides), and the cap keeps the
+  // camera under twice that however large the room it was fitted to.
+  V.orbit.target = [0, 0, 0]; V.orbit.dist = 4000;
+  V.keys.w = true; cam.flyMove(1); V.keys.w = false;
+  check('and a huge room does not turn it into a slingshot',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-60]',
         JSON.stringify(r3(V.orbit.target)));
 
   // Looking under pointer lock must not shift the eye: that is the whole
