@@ -269,5 +269,128 @@ check('the canvas and projection are recomputed after the browser resizes us',
 check('and the subtitle overlay is rebuilt at the new size',
       fc.includes('V.subKey = null'));
 
+
+// The free camera's arithmetic is pure, so it can be run rather than pattern
+// matched: pull the four functions out of the page and give them a `V`.
+console.log('the free camera flies where it is pointed');
+{
+  const V = { keys: Object.create(null),
+              orbit: { yaw: 0, pitch: 0, dist: 10, target: [0, 0, 0] } };
+  const src = ['orbitEye', 'lookFrom', 'camAxes', 'flyMove'].map(fn).join('\n');
+  const cam = new Function('V', src
+    + '\nreturn { orbitEye, lookFrom, camAxes, flyMove };')(V);
+  const r3 = (a) => a.map((n) => +n.toFixed(3));
+
+  // Facing down -z from +z: the axes have to agree with the orbit formula, or
+  // W and D go somewhere other than where the camera is looking.
+  check('the eye sits where the orbit puts it',
+        JSON.stringify(r3(cam.orbitEye(V.orbit))) === '[0,0,10]');
+  const ax = cam.camAxes(V.orbit);
+  check('forward is into the screen and right is to the right',
+        JSON.stringify([r3(ax.fwd), r3(ax.right)]) === '[[0,0,-1],[1,0,0]]',
+        JSON.stringify([r3(ax.fwd), r3(ax.right)]));
+  check('and they stay unit as it turns',
+        [0.3, 1.1, -2.0].every((y) => {
+          const a = cam.camAxes({ yaw: y, pitch: 0.4, dist: 1, target: [0, 0, 0] });
+          return Math.abs(Math.hypot.apply(null, a.fwd) - 1) < 1e-9
+              && Math.abs(Math.hypot.apply(null, a.right) - 1) < 1e-9;
+        }));
+
+  // Nothing held must not drift the shot -- this runs every frame.
+  check('no key held moves nothing', cam.flyMove(1) === false);
+
+  // W flies along the view, and the eye comes with it: the offset from target
+  // to eye is fixed, which is what keeps the framing while you fly.
+  const before = cam.orbitEye(V.orbit);
+  V.keys.w = true;
+  cam.flyMove(1);
+  const after = cam.orbitEye(V.orbit);
+  check('W flies forward, 1.5 x the orbit distance per second',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-15]',
+        JSON.stringify(r3(V.orbit.target)));
+  check('and the eye travels exactly with it',
+        JSON.stringify(r3([after[0] - before[0], after[1] - before[1],
+                           after[2] - before[2]])) === '[0,0,-15]');
+  V.keys.w = false;
+
+  // Strafe and lift, on the axes camAxes named.
+  V.orbit.target = [0, 0, 0];
+  V.keys.d = true; cam.flyMove(1); V.keys.d = false;
+  check('D strafes right', JSON.stringify(r3(V.orbit.target)) === '[15,0,0]',
+        JSON.stringify(r3(V.orbit.target)));
+  V.orbit.target = [0, 0, 0];
+  V.keys.e = true; cam.flyMove(1); V.keys.e = false;
+  check('E rises', JSON.stringify(r3(V.orbit.target)) === '[0,15,0]');
+  V.orbit.target = [0, 0, 0];
+  V.keys.q = true; cam.flyMove(1); V.keys.q = false;
+  check('Q sinks', JSON.stringify(r3(V.orbit.target)) === '[0,-15,0]');
+
+  // Opposed keys cancel rather than fighting.
+  V.orbit.target = [0, 0, 0];
+  V.keys.a = V.keys.d = true;
+  cam.flyMove(1);
+  check('A and D together hold still',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,0]');
+  V.keys.a = V.keys.d = false;
+
+  // Shift is a multiplier, not a second speed.
+  V.orbit.target = [0, 0, 0];
+  V.keys.w = true; V.keys.boost = true; cam.flyMove(1);
+  check('shift hurries by exactly four',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-60]',
+        JSON.stringify(r3(V.orbit.target)));
+  V.keys.boost = false; V.keys.w = false;
+
+  // Speed follows the orbit distance so the same keys suit a face and a room,
+  // but it floors at 1 or a close-up would crawl.
+  V.orbit.target = [0, 0, 0]; V.orbit.dist = 0.05;
+  V.keys.w = true; cam.flyMove(1); V.keys.w = false;
+  check('and it never crawls when zoomed right in',
+        JSON.stringify(r3(V.orbit.target)) === '[0,0,-1.5]',
+        JSON.stringify(r3(V.orbit.target)));
+
+  // Looking under pointer lock must not shift the eye: that is the whole
+  // difference between it and a drag, which orbits about the target.
+  V.orbit = { yaw: 0.3, pitch: 0.2, dist: 7, target: [1, 2, 3] };
+  const stood = cam.orbitEye(V.orbit);
+  cam.lookFrom(V.orbit, 0.5, -0.3);
+  check('lookFrom turns without moving the eye',
+        JSON.stringify(r3(cam.orbitEye(V.orbit))) === JSON.stringify(r3(stood)),
+        JSON.stringify(r3(cam.orbitEye(V.orbit))) + ' vs ' + JSON.stringify(r3(stood)));
+  check('and it really did turn',
+        +V.orbit.yaw.toFixed(2) === 0.8 && +V.orbit.pitch.toFixed(2) === -0.1);
+  cam.lookFrom(V.orbit, 0, -99);
+  check('pitch stops short of straight down', V.orbit.pitch === -1.4);
+}
+
+console.log('movement keys yield to typing and to the shortcuts');
+{
+  const mk = fn('movementKey');
+  check('an input, textarea, select or contenteditable swallows the key',
+        /INPUT/.test(mk) && /TEXTAREA/.test(mk) && /SELECT/.test(mk)
+        && /isContentEditable/.test(mk));
+  check('and so does any of ctrl, meta or alt',
+        /ctrlKey/.test(mk) && /metaKey/.test(mk) && /altKey/.test(mk));
+  check('only wasdqe move', /'wasdqe'/.test(mk));
+  check('a lost keyup cannot leave the camera flying',
+        /addEventListener\('blur'/.test(script)
+        && /V\.keys = Object\.create\(null\)/.test(script));
+  // Stage mode drives its own follow camera, so `tick` has to return before
+  // it flies -- otherwise the two fight for the frame, which is the bug that
+  // stranded route mode once already.
+  const tk = fn('tick');
+  check('flying is skipped in stage mode, which drives its own camera',
+        tk.indexOf('if (G) {') >= 0
+        && tk.indexOf('if (G) {') < tk.indexOf('flyMove(')
+        && /if \(G\) \{[^}]*return;/s.test(tk));
+  check('and skipped while the cutscene camera still has the shot',
+        tk.indexOf('S.sceneCam') < tk.indexOf('flyMove('));
+  check('and moving switches off the cutscene camera like a drag does',
+        fn('goFreeCam').includes('S.sceneCam = false'));
+  check('pointer lock looks from the eye, a drag still orbits the target',
+        fn('bindOrbit').includes('lookFrom(V.orbit')
+        && fn('bindOrbit').includes('requestPointerLock'));
+}
+
 console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);
 process.exit(failures ? 1 : 0);

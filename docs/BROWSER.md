@@ -76,7 +76,20 @@ disc data. They work under two loaders — `require` in the tests and a classic
 * **PS2 / Modern** — the GS fixed function at 512x224 with the letterbox and
   the game's font, or a modern render filling the element with DOM subtitles
   and no bars.
-* **Fullscreen**, orbit, scrub, and a Look panel of grading knobs.
+* **Fullscreen**, scrub, and a Look panel of grading knobs.
+* **The camera.** `WASD` flies, `Q`/`E` drop and rise, `shift` hurries by four,
+  the wheel zooms. Dragging orbits the point you are looking at, which is what
+  you want for a model; **double-click** takes pointer lock and looks from
+  where you are standing, which is what you want in a room (`Esc` releases it).
+  Any of them takes the shot off the cutscene's own camera, the same way the
+  drag always did.
+
+  Speed follows the orbit distance, and that is set from the size of whatever
+  was loaded, so the same keys cross a face and cross a courtyard in about the
+  same time -- floored so a close-up does not crawl. Keys are ignored while
+  something is being typed into and whenever ctrl, meta or alt is down, and a
+  stage keeps its own follow camera: flying is skipped entirely while one is
+  running, so the two never fight for the frame.
 
 Two projection rules are worth restating because both have been got wrong
 here before: a `.cam` FOV is **vertical**, and the 512x224 target is

@@ -50,6 +50,7 @@
     border-radius: 10px; height: 460px; margin: 10px 0 14px; overflow: hidden; }
   #view canvas { display: block; width: 100%; height: 100%; cursor: grab; }
   #view.grabbing canvas { cursor: grabbing; }
+  #view.locked canvas { cursor: none; }
   #vinfo { font: 11.5px/1.6 ui-monospace, monospace; color: #a9a7a3;
     background: #101014; border: 1px solid #2e2e36; border-radius: 8px;
     padding: 8px 10px; margin: 0 0 14px; white-space: pre-wrap;
@@ -479,6 +480,8 @@ function ensureViewer() {
     V.key = new THREE.DirectionalLight(0xffffff, 0.75);
     V.scene.add(V.key);
     V.orbit = { yaw: 0.6, pitch: 0.25, dist: 10, target: [0, 0, 0] };
+    V.keys = Object.create(null);       // which movement keys are held
+    V.locked = false;                   // pointer lock: look without dragging
     V.posterAspect = TraptGs.OUT_ASPECT;   // stills keep the display shape
     V.setEye = setEye;
     V.group = null;
@@ -526,20 +529,139 @@ function bindOrbit(host) {
     host.classList.remove('grabbing');
   });
   host.addEventListener('pointermove', (e) => {
+    // Under pointer lock there is no drag to test and no cursor position to
+    // difference: the browser reports movement directly, and the turn is
+    // about the eye rather than about the target.
+    if (V.locked) {
+      goFreeCam();
+      lookFrom(V.orbit, -e.movementX * 0.004, e.movementY * 0.003);
+      return;
+    }
     if (!drag) return;
-    if (S) { S.sceneCam = false;
-             const b = document.getElementById('camBtn');
-             if (b) b.textContent = 'Free cam'; }
+    goFreeCam();
     V.orbit.yaw -= (e.clientX - drag.x) * 0.008;
     V.orbit.pitch = Math.max(-1.4, Math.min(1.4,
       V.orbit.pitch + (e.clientY - drag.y) * 0.006));
     drag = { x: e.clientX, y: e.clientY };
+  });
+  // Double-click to look around without holding a button; Escape releases it,
+  // which the browser handles itself.
+  host.addEventListener('dblclick', () => {
+    if (host.requestPointerLock) host.requestPointerLock();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    V.locked = document.pointerLockElement === host;
+    host.classList.toggle('locked', V.locked);
+    if (!V.locked) V.keys = Object.create(null);
   });
   host.addEventListener('wheel', (e) => {
     e.preventDefault();
     V.orbit.dist *= 1 + Math.sign(e.deltaY) * 0.12;
   }, { passive: false });
 }
+
+// --------------------------------------------------------------- free cam
+// The free camera is an orbit -- yaw, pitch and a distance from a target --
+// and it stays one, because fitting a model or a room to the view sets the
+// target and the distance and everything downstream reads them.  Flying is
+// therefore a translation of the *target*: the eye sits at a fixed offset
+// from it, so moving the target moves the eye with it and the shot keeps its
+// framing.
+//
+// The one place that model is wrong is looking around while stationary.
+// Orbiting swings the eye through space, which is what you want when you are
+// inspecting a model and exactly not what you want when you are standing in a
+// room.  So a drag still orbits, and pointer lock -- double-click the view --
+// looks from where you are: `lookFrom` rotates and then puts the target back
+// under the eye, leaving the eye untouched.
+
+/** Where the eye sits for an orbit state. */
+function orbitEye(o) {
+  const cp = Math.cos(o.pitch);
+  return [o.target[0] + Math.sin(o.yaw) * cp * o.dist,
+          o.target[1] + Math.sin(o.pitch) * o.dist,
+          o.target[2] + Math.cos(o.yaw) * cp * o.dist];
+}
+
+/** Turn by (dyaw, dpitch) about the eye rather than about the target. */
+function lookFrom(o, dyaw, dpitch) {
+  const eye = orbitEye(o);
+  o.yaw += dyaw;
+  o.pitch = Math.max(-1.4, Math.min(1.4, o.pitch + dpitch));
+  const cp = Math.cos(o.pitch);
+  o.target = [eye[0] - Math.sin(o.yaw) * cp * o.dist,
+              eye[1] - Math.sin(o.pitch) * o.dist,
+              eye[2] - Math.cos(o.yaw) * cp * o.dist];
+}
+
+/**
+ * The unit axes of the view: where forward, right and up point in world
+ * space for an orbit state.  Forward is the way the camera looks, so W flies
+ * into the screen rather than along the floor.
+ */
+function camAxes(o) {
+  const cp = Math.cos(o.pitch), sp = Math.sin(o.pitch);
+  const sy = Math.sin(o.yaw), cy = Math.cos(o.yaw);
+  return { fwd: [-sy * cp, -sp, -cy * cp],
+           right: [cy, 0, -sy],
+           up: [0, 1, 0] };
+}
+
+/**
+ * Move the free camera for one frame.  Speed scales with the orbit distance,
+ * which is set from the size of whatever was loaded, so the same keys cross a
+ * character in about the same time as they cross a room.
+ */
+function flyMove(dt) {
+  const k = V.keys, o = V.orbit;
+  const x = (k.d ? 1 : 0) - (k.a ? 1 : 0);
+  const z = (k.w ? 1 : 0) - (k.s ? 1 : 0);
+  const y = (k.e ? 1 : 0) - (k.q ? 1 : 0);
+  if (!x && !y && !z) return false;
+  const ax = camAxes(o);
+  const speed = Math.max(o.dist, 1) * 1.5 * (k.boost ? 4 : 1) * dt;
+  for (let i = 0; i < 3; i++) {
+    o.target[i] += (ax.fwd[i] * z + ax.right[i] * x + ax.up[i] * y) * speed;
+  }
+  return true;
+}
+
+/** Movement and look both mean "stop following the cutscene's own camera". */
+function goFreeCam() {
+  if (!S || !S.sceneCam) return;
+  S.sceneCam = false;
+  const b = document.getElementById('camBtn');
+  if (b) b.textContent = 'Free cam';
+}
+
+// A key is only movement when nothing is being typed into and no modifier is
+// down, so Ctrl-S still saves the page and the filter box still takes a "w".
+function movementKey(e) {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+            || t.tagName === 'SELECT' || t.isContentEditable)) return null;
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  const c = e.key.toLowerCase();
+  return 'wasdqe'.indexOf(c) >= 0 ? c : null;
+}
+
+addEventListener('keydown', (e) => {
+  if (!V) return;
+  V.keys.boost = e.shiftKey;
+  const c = movementKey(e);
+  if (!c) return;
+  V.keys[c] = true;
+  goFreeCam();
+});
+addEventListener('keyup', (e) => {
+  if (!V) return;
+  V.keys.boost = e.shiftKey;
+  const c = movementKey(e);
+  if (c) V.keys[c] = false;
+});
+// Holding a key and then leaving the page never delivers the keyup, which
+// would leave the camera flying by itself when you came back.
+addEventListener('blur', () => { if (V) V.keys = Object.create(null); });
 
 function showModel(entry, chip) {
   S = null;                                   // leave scene mode
@@ -685,7 +807,8 @@ function info() {
     + (M.clip ? ' · ' + M.clipName + ': ' + M.clip.nodes.length + ' animated nodes, '
                 + M.clip.duration + ' frames, skin ' + M.ms.toFixed(1) + ' ms/frame'
               : ' · bind pose')
-    + ' · drag to orbit, wheel to zoom';
+    + ' · WASD to fly, QE up/down, shift to hurry, drag to orbit,'
+    + ' double-click to look, wheel to zoom';
 }
 
 // ------------------------------------------------------------ the GS look
@@ -1763,7 +1886,8 @@ function sceneInfo() {
     + (S.audio ? ' · ' + S.audio.voiceCount + ' voice clips'
                  + (S.audio.bgm ? ' + BGM' : '') : '')
     + (S.built.warnings.length ? ' · ' + S.built.warnings.length + ' warnings' : '')
-    + ' · drag to orbit (switches to free cam)';
+    + ' · WASD to fly, drag to orbit, double-click to look'
+    + ' (any of them switches to free cam)';
 }
 
 /** Camera, subtitle and letterbox for the current frame. */
@@ -1876,6 +2000,7 @@ function tick() {
 
   if (S && S.sceneCam) { drawFrame(); return; }
   if (!V.group) { drawFrame(); return; }
+  flyMove(dt);
   const o = V.orbit;
   const cp = Math.cos(o.pitch);
   V.camera.position.set(
