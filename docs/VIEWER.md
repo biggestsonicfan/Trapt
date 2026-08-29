@@ -856,7 +856,51 @@ Confirmation for the sheet fields came from EE RAM. Scanning a savestate for
 `+0x1c = (64, 16)` and `+0x20 = (256, 256)`: `0x68`'s four numbers, on
 hardware, exactly as read.
 
-### 9.4 What is still not right
+### 9.4 e004's sparks, and what the disassembler settled
+
+e004's sparks use `0xC8`/`0xC9` where the torch uses `0x9F`, and chasing them
+through the debugger produced more negative results than positive ones. All of
+it is worth keeping, because each cost time.
+
+**`0xC8` and `0xC9` only store.** The effect object's vtable is `0x004758A0`
+and the two entries those opcodes call are eight instructions between them:
+
+```
++0x5c  0x0018CEE0   sw   a1,  0x210(a0)     <- 0xC8's count
+                    swc1 f12, 0x214(a0)
+                    swc1 f13, 0x218(a0)
+                    swc1 f14, 0x21C(a0)
++0x60  0x0018CF00   swc1 f12..f15, 0x220..0x22C(a0)   <- 0xC9's four
+```
+
+Read live, a spark object holds `+0x210 = 8` with `+0x21c = 2.0`, and another
+`16` with `3.0` — exactly `ef_e004_11`'s `0xC8 8 0 0.8 2` and `_12`'s
+`16 0 0.8 3`. The count is real. What *spends* it is not in the effect module:
+scanning the whole ELF for `lw ?, 0x210(?)` finds no reader in
+`0x00188000`–`0x0018E000`, which is what you would expect if the consumer
+holds a base pointer shifted by some other offset — the one case an offset
+scan cannot find.
+
+**The 16-slot region at `+0x188` is not a particle array.** It is written once
+at setup, to `0x80808080`, and never touched again; a write-watchpoint across
+the whole effect never fired.
+
+**Watchpoints on heap addresses are unreliable here.** A read-watchpoint on
+the count broke inside a `lq`/`sq` memcpy whose backtrace runs
+`memcpy ← 0x0017F8B0 ← 0x00309350 ← 0x003086E0 ← … ← 0x00178520` — the
+resource loader streaming over the region once the cutscene moved on, not a
+consumer. The allocation is reused the moment e004 ends.
+
+The next probe should be on the effect module's **own code** at a fixed ELF
+address — the per-frame updater each object carries at `+0x2c`, `0x00188B30` —
+inspecting the object from there rather than watching heap data.
+
+Also: across four hardware frames of e004, at poses including the exact
+arm-raise the `0xCA` bones describe, **no sparks were visible on screen**.
+Either they are briefer than the sampling, or they fire at a moment the frame
+estimate has not found.
+
+### 9.5 What is still not right
 
 **Where the particles go.** `0x9E 20 96 96 0.008 0 1 0`, `0x74 -0.001` and
 `0x77 2 0 0 0 1` carry the spawn spread and the rise, and none of them is
