@@ -891,9 +891,39 @@ the count broke inside a `lq`/`sq` memcpy whose backtrace runs
 resource loader streaming over the region once the cutscene moved on, not a
 consumer. The allocation is reused the moment e004 ends.
 
-The next probe should be on the effect module's **own code** at a fixed ELF
-address — the per-frame updater each object carries at `+0x2c`, `0x00188B30` —
-inspecting the object from there rather than watching heap data.
+**What `0x00188B30` turned out to be.** Each object carries a behaviour
+function at `+0x2c`, and it differs by effect: `0x9F` sets `0x00188930`, while
+the spark objects carry `0x00188B30`. Disassembled, the latter is a
+**keyframe evaluator**, not a spawner — it wraps a time with
+`a2 % [a1+0x98]`, then walks a table of 8-byte records from `a1+0x18`,
+`[a1+0x14]` of them, picking by threshold.
+
+Just above it, `0x001887F0`–`0x001888A0` computes **scrolling UVs**, the same
+shape twice for U and V:
+
+```
+lbu    v0, 0x0C(a1)        a cell base, one byte
+mtc1   a2                  the time
+lwc1   f03, 0xA4(a1)       a rate
+madd.s f01, f03, f02       base + rate * time
+div.s  f04, f01, f00       / the dimension
+```
+
+So the module animates a sprite by scrolling its UVs and interpolating a
+keyframe table — and `a1` there is a **texture-animation descriptor**, a
+sub-object, not the effect object. An earlier reading that put `+0xa0` at
+`object+0x210` was chaining off that confusion and is wrong.
+
+**Which leaves a tension worth stating rather than resolving by guess.**
+Nothing found in this module spawns or updates a set of particles: what it
+has is one quad, scrolling UVs, and a keyframe table. If that is the whole
+story then a "cloud" is the wrong model, `0xC8`'s count is not a particle
+count, and the viewer's one-quad-per-emission-point is closer to the hardware
+than the 32-particle staggering the torch now uses. Against that: `0xC8`'s
+value really is 8 and 16 on exactly the two tracks that differ in intensity.
+
+Both readings are still live. The way to settle it is a frame of e004 with
+the sparks actually visible, which four captures have not yet produced.
 
 Also: across four hardware frames of e004, at poses including the exact
 arm-raise the `0xCA` bones describe, **no sparks were visible on screen**.
