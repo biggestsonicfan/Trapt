@@ -43,6 +43,13 @@
     background: repeating-conic-gradient(#1a1a20 0% 25%, #141419 0% 50%) 50%/14px 14px; }
   figcaption { font: 11px ui-monospace, monospace; opacity: .5; margin-top: 6px;
     word-break: break-all; }
+  #view { position: relative; background: #08080a; border: 1px solid #22222a;
+    border-radius: 10px; height: 460px; margin: 10px 0 14px; overflow: hidden; }
+  #view canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  #view.grabbing canvas { cursor: grabbing; }
+  #vinfo { position: absolute; left: 10px; bottom: 8px; font: 11.5px ui-monospace,
+    monospace; opacity: .5; pointer-events: none; }
+  #models { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .note { font-size: 12.5px; opacity: .5; border-left: 2px solid #2e2e36;
     padding-left: 12px; margin-top: 30px; }
 </style>
@@ -79,6 +86,9 @@
 <script src="disc.js"></script>
 <script src="arc.js"></script>
 <script src="tm2.js"></script>
+<script src="smi.js"></script>
+<script src="../vendor/three.min.js"></script>
+<script src="model.js"></script>
 <script>
 'use strict';
 const drop = document.getElementById('drop');
@@ -87,6 +97,8 @@ const rows = document.getElementById('rows');
 const list = document.getElementById('list');
 const detail = document.getElementById('detail');
 let DISC = null;
+let CUR = null;      // the archive currently open
+let V = null;        // the three.js viewer, created once
 
 function row(label, value, cls) {
   const d = document.createElement('div');
@@ -149,51 +161,192 @@ async function load(file) {
 async function openCutscene(name, path, el) {
   for (const c of list.querySelectorAll('.cut.on')) c.classList.remove('on');
   el.classList.add('on');
-  detail.innerHTML = '<h2>' + name + '</h2><div id="members">reading…</div>'
-                   + '<div id="tex"></div>';
-  const members = document.getElementById('members');
-  const tex = document.getElementById('tex');
+  detail.innerHTML =
+      '<h2>' + name + '</h2><div id="members">reading…</div>'
+    + '<div id="view"><div id="vinfo"></div></div>'
+    + '<div id="models"></div><div id="tex"></div>';
 
   const t0 = performance.now();
   const blob = await DISC.read(path);
   const read = performance.now() - t0;
-
   const ents = TraptArc.entries(blob);
+
+  CUR = { blob: blob, byName: new Map(), tex: new Map() };
+  for (const e of ents) CUR.byName.set(e.name.toLowerCase(), e);
+
   const byExt = {};
   for (const e of ents) {
     const ext = (e.name.split('.').pop() || '').toLowerCase();
     byExt[ext] = (byExt[ext] || 0) + 1;
   }
+
+  // --- every texture in the bundle, decoded here in the page
+  const tex = document.getElementById('tex');
   const t1 = performance.now();
   let pictures = 0, pixels = 0;
   for (const e of ents) {
     if (!e.name.toLowerCase().endsWith('.tm2')) continue;
     let pics;
-    try {
-      pics = TraptTm2.decode(blob.subarray(e.offset, e.offset + e.size));
-    } catch (err) { continue; }
-    for (const p of pics) {
-      pictures++; pixels += p.width * p.height;
+    try { pics = TraptTm2.decode(sub(e)); } catch (err) { continue; }
+    for (const pic of pics) {
+      pictures++; pixels += pic.width * pic.height;
       const fig = document.createElement('figure');
       const cv = document.createElement('canvas');
-      cv.width = p.width; cv.height = p.height;
+      cv.width = pic.width; cv.height = pic.height;
       cv.getContext('2d').putImageData(
-        new ImageData(new Uint8ClampedArray(p.rgba), p.width, p.height), 0, 0);
+        new ImageData(new Uint8ClampedArray(pic.rgba), pic.width, pic.height), 0, 0);
       const cap = document.createElement('figcaption');
-      cap.textContent = e.name + '  ' + p.width + '×' + p.height;
+      cap.textContent = e.name + '  ' + pic.width + '×' + pic.height;
       fig.appendChild(cv); fig.appendChild(cap);
       tex.appendChild(fig);
     }
   }
   const decode = performance.now() - t1;
 
-  members.textContent =
+  document.getElementById('members').textContent =
     (blob.length / 1e6).toFixed(1) + ' MB archive read in ' + read.toFixed(0)
     + ' ms · ' + ents.length + ' members ('
     + Object.entries(byExt).sort((a, b) => b[1] - a[1])
         .map(([k, v]) => v + ' ' + k).join(', ')
-    + ') · ' + pictures + ' textures, '
-    + (pixels / 1e6).toFixed(1) + ' Mpx decoded in ' + decode.toFixed(0) + ' ms';
+    + ') · ' + pictures + ' textures, ' + (pixels / 1e6).toFixed(1)
+    + ' Mpx decoded in ' + decode.toFixed(0) + ' ms';
+
+  // --- the models in it
+  const models = document.getElementById('models');
+  const smis = ents.filter((e) => e.name.toLowerCase().endsWith('.smi'));
+  for (const e of smis) {
+    const chip = document.createElement('div');
+    chip.className = 'cut';
+    chip.textContent = e.name.replace(/\.smi$/i, '');
+    chip.onclick = () => showModel(e, chip);
+    models.appendChild(chip);
+  }
+  ensureViewer();
+  if (smis.length) showModel(smis[0], models.firstChild);
+  else document.getElementById('vinfo').textContent = 'no models in this bundle';
+}
+
+const sub = (e) => CUR.blob.subarray(e.offset, e.offset + e.size);
+
+/** Decode a texture out of the archive that is open, once. */
+function textureFor(fileName) {
+  const key = fileName.toLowerCase();
+  if (CUR.tex.has(key)) return CUR.tex.get(key);
+  const e = CUR.byName.get(key);
+  let t = null;
+  if (e) {
+    try {
+      const pics = TraptTm2.decode(sub(e));
+      if (pics.length) t = TraptModel.makeTexture(THREE, pics[0]);
+    } catch (err) { t = null; }
+  }
+  CUR.tex.set(key, t);
+  return t;
+}
+
+// --------------------------------------------------------------- three.js
+function ensureViewer() {
+  const host = document.getElementById('view');
+  if (!V) {
+    V = {};
+    V.renderer = new THREE.WebGLRenderer({ antialias: true });
+    V.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    V.renderer.setClearColor(0x08080a, 1);
+    V.scene = new THREE.Scene();
+    V.camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100000);
+    V.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    V.key = new THREE.DirectionalLight(0xffffff, 0.75);
+    V.scene.add(V.key);
+    V.orbit = { yaw: 0.6, pitch: 0.25, dist: 10, target: [0, 0, 0] };
+    V.group = null;
+    tick();
+  }
+  host.appendChild(V.renderer.domElement);
+  bindOrbit(host);
+  resize();
+}
+
+function resize() {
+  const host = document.getElementById('view');
+  if (!host || !V) return;
+  const w = host.clientWidth, h = host.clientHeight;
+  if (!w || !h) return;
+  V.renderer.setSize(w, h, false);
+  V.camera.aspect = w / h;
+  V.camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+function bindOrbit(host) {
+  if (host.dataset.bound) return;
+  host.dataset.bound = '1';
+  let drag = null;
+  host.addEventListener('pointerdown', (e) => {
+    drag = { x: e.clientX, y: e.clientY };
+    host.classList.add('grabbing');
+    host.setPointerCapture(e.pointerId);
+  });
+  host.addEventListener('pointerup', () => {
+    drag = null;
+    host.classList.remove('grabbing');
+  });
+  host.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    V.orbit.yaw -= (e.clientX - drag.x) * 0.008;
+    V.orbit.pitch = Math.max(-1.4, Math.min(1.4,
+      V.orbit.pitch + (e.clientY - drag.y) * 0.006));
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  host.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    V.orbit.dist *= 1 + Math.sign(e.deltaY) * 0.12;
+  }, { passive: false });
+}
+
+function showModel(entry, chip) {
+  const models = document.getElementById('models');
+  for (const c of models.querySelectorAll('.cut.on')) c.classList.remove('on');
+  if (chip) chip.classList.add('on');
+
+  const t0 = performance.now();
+  let model, posed;
+  try {
+    model = TraptSmi.parse(sub(entry));
+    posed = TraptSmi.bindPose(model);
+  } catch (err) {
+    document.getElementById('vinfo').textContent = entry.name + ': ' + err.message;
+    return;
+  }
+  const group = TraptModel.build(THREE, model, posed, textureFor);
+  const b = TraptModel.bounds(posed);
+
+  if (V.group) V.scene.remove(V.group);
+  V.group = group;
+  V.scene.add(group);
+  V.orbit.target = b.center;
+  V.orbit.dist = b.radius * 3.2;
+
+  let tris = 0, verts = 0;
+  for (const me of model.meshes) { tris += me.tris.length; verts += me.vcount; }
+  document.getElementById('vinfo').textContent =
+    entry.name + ' · ' + model.nodes.length + ' bones, ' + model.meshes.length
+    + ' meshes, ' + verts.toLocaleString() + ' verts, ' + tris.toLocaleString()
+    + ' tris, ' + model.materials.length + ' materials · built in '
+    + (performance.now() - t0).toFixed(0) + ' ms · drag to orbit, wheel to zoom';
+}
+
+function tick() {
+  requestAnimationFrame(tick);
+  if (!V || !V.group) return;
+  const o = V.orbit;
+  const cp = Math.cos(o.pitch);
+  V.camera.position.set(
+    o.target[0] + Math.sin(o.yaw) * cp * o.dist,
+    o.target[1] + Math.sin(o.pitch) * o.dist,
+    o.target[2] + Math.cos(o.yaw) * cp * o.dist);
+  V.camera.lookAt(o.target[0], o.target[1], o.target[2]);
+  V.key.position.copy(V.camera.position);
+  V.renderer.render(V.scene, V.camera);
 }
 </script>
 </body>
