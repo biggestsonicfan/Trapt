@@ -749,6 +749,13 @@ The live `--watch` path reads every slot too, for the same reason: during a
 story cutscene the attract slot can still hold a stale but plausible camera,
 and taking the first one would wait for ever.
 
+**`--watch` needs PINE to itself.** PINE serves one client at a time, and when
+somebody else already holds it the socket still *accepts* and then never
+answers -- which arrives as a bare `timed out` fifteen minutes later and looks
+exactly like "nobody played to the cutscene". A PCSX2 MCP server holds it. The
+error says so now. With MCP attached, read `0x0081B730` through it instead and
+match by hand.
+
 A state that is **not** in a cutscene reads as garbage rather than zero — the
 camera words hold whatever was last there, often denormals of order 1e37 — so
 those are reported as such instead of being matched to the nearest track by

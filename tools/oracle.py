@@ -230,8 +230,18 @@ class Pine:
         head = struct.pack('<I', len(payload) + 4)
         self.sock.sendall(head + payload)
         acc = b''
-        while len(acc) < 4:
-            acc += self.sock.recv(4096)
+        try:
+            while len(acc) < 4:
+                acc += self.sock.recv(4096)
+        except Exception:
+            # PINE takes one client at a time.  The socket still *accepts*
+            # when somebody else already has it -- a debug server, an MCP
+            # bridge -- and then simply never answers, which reads as a plain
+            # timeout and has cost fifteen minutes of waiting before now.
+            raise IOError(
+                'PINE accepted the connection but never replied.  It takes '
+                'one client at a time, so close whatever else is attached '
+                '(a PCSX2 MCP server holds it) and try again.')
         size = struct.unpack_from('<I', acc, 0)[0]
         while len(acc) < size:
             acc += self.sock.recv(65536)
