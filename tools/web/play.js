@@ -189,8 +189,12 @@ async function assemble(THREE, disc, name, onProgress) {
     // the whole animation on screen at once -- which is what a giant red
     // rectangle over a third of the frame turned out to be.
     //
-    // So the quad takes one cell's UV rect, and its aspect: a 64x16 cell is
-    // four times as wide as it is tall, and a square quad stretches it.
+    // So the quad takes one cell's UV rect.  It does **not** take the cell's
+    // aspect: the shape is the size keys' job, and they disagree with the
+    // cell.  e001's torch is a 64x16 cell -- four times as wide as tall --
+    // and its `0xAB` keys are (1, 2) growing to (4, 7), which is *taller*
+    // than wide.  A hardware capture of frame 10834 shows a tall narrow
+    // plume, so the keys are right and the cell aspect is not a shape.
     //
     // **Which** cell is not known.  `0x69` is the only per-block scalar left
     // and it is -1 on the 64-cell sheets as well as the 1-cell ones, so it is
@@ -200,11 +204,9 @@ async function assemble(THREE, disc, name, onProgress) {
     const cellW = e.sprite.cell[0] || 1, cellH = e.sprite.cell[1] || 1;
     const sheetW = e.sprite.sheet[0] || cellW, sheetH = e.sprite.sheet[1] || cellH;
     const u = Math.min(1, cellW / sheetW), v = Math.min(1, cellH / sheetH);
-    const longest = Math.max(cellW, cellH) || 1;
-    const qw = cellW / longest, qh = cellH / longest;
     const points = e.binds.length ? e.binds : [null];
     for (const bind of points) {
-      const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(qw, qh)
+      const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
                                           : new THREE.BufferGeometry();
       // Cell 0 is the top-left of the sheet.  `.SMI` V runs top-down and so
       // does a TIM2, so v0 is 0 and the cell grows downwards.
@@ -358,23 +360,31 @@ function poseAt(built, frame) {
     // single frame.
     const life = keyed > 0 ? keyed
                : (e.trackLen ? e.trackLen : Infinity);
-    const live = local >= 0 && local <= life
+    // A block whose track never ends is an emitter that never stops -- e001's
+    // three torches burn for the whole scene.  Its keys describe one
+    // particle's life, so playing them once and holding the last (alpha 0)
+    // leaves the torch lit for two seconds and then dark.  Looping is the
+    // closest a single billboard gets to a thing that keeps emitting; it is
+    // an approximation of the emitter (0x9E/0x9F), not the emitter itself.
+    const loops = keyed > 0 && !e.trackLen;
+    const t = loops ? local % (keyed + 1) : local;
+    const live = local >= 0 && (loops || local <= life)
               && sceneMod.visibleAt(e, frame) && (e.end === null || frame < e.end);
     s.mesh.visible = live;
     if (!live) continue;
     // `0x80` on a sprite block is the colour, the same way it is on a light,
     // and it is all an unkeyed sprite has: e004's spark is (0.9, 0.3, 0.1).
-    const [r, g, b, a] = e.colourKeys.length ? sceneMod.colourAt(e, local)
+    const [r, g, b, a] = e.colourKeys.length ? sceneMod.colourAt(e, t)
       : (e.scale ? e.scale : [1, 1, 1, 1]);
-    const [sx, sy] = sceneMod.sizeAt(e, local);
+    const [sx, sy] = sceneMod.sizeAt(e, t);
     // The GS treats 0x80 as 1.0, and these colours run past 1 -- 1.5 and 1.8
     // both occur -- so the excess is an overbright the additive blend wants
     // rather than a value to clamp away.  Only alpha is clamped, because
     // three.js reads opacity as 0..1.
     s.mesh.material.color.setRGB(r, g, b);
     s.mesh.material.opacity = Math.max(0, Math.min(1, a));
-    // Size is in the same units as the scene: the game's own numbers scaled
-    // by the sprite's cell, so a 64-pixel cell at size 4.5 is 4.5 units wide.
+    // Size is in scene units and carries the shape: e001's torch runs from
+    // 1 x 2 to 4 x 7, a plume taller than it is wide.
     s.mesh.scale.set(sx || 1, sy || 1, 1);
 
     let px = 0, py = 0, pz = 0;

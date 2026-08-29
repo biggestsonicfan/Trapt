@@ -68,6 +68,13 @@ OP_FOG = 0xC7
 OP_FX_TEXTURE = 0x68
 OP_FX_SIZE_KEY = 0x6D
 OP_FX_COLOUR_KEY = 0x6E
+# `0xAA` and `0xAB` dispatch to the *same handlers* as `0x6E` and `0x6D`
+# (FUN_001C46A0 and FUN_001C47F0), so they are aliases, not new opcodes: one
+# keyframe implementation shared by the sprite path and the particle path.
+# e001's torch flame uses the `0xAA`/`0xAB` spelling exclusively, which is why
+# it had no colour ramp and no growth until these were read.
+OP_FX_COLOUR_KEY2 = 0xAA
+OP_FX_SIZE_KEY2 = 0xAB
 OP_FX_EMIT_A = 0xC8
 OP_FX_EMIT_B = 0xC9
 OP_FX_BIND_BONE = 0xCA
@@ -437,9 +444,11 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
         # always growing -- while the `0x6E` quads hold (1.5,0.2,0.1) and move
         # the fourth 0 -> 1.8 -> 1.8 -> 0 across the same span.  A sprite that
         # swells while it fades up and out again.
-        elif code == OP_FX_SIZE_KEY and entity is not None and len(args) >= 3:
+        elif (code in (OP_FX_SIZE_KEY, OP_FX_SIZE_KEY2)
+              and entity is not None and len(args) >= 3):
             entity.size_keys.append((_num(args[2]), _num(args[0]), _num(args[1])))
-        elif code == OP_FX_COLOUR_KEY and entity is not None and len(args) >= 5:
+        elif (code in (OP_FX_COLOUR_KEY, OP_FX_COLOUR_KEY2)
+              and entity is not None and len(args) >= 5):
             entity.colour_keys.append((_num(args[4]),) +
                                       tuple(_num(a) for a in args[:4]))
         # `0xCA(actor, bone, ?)` binds the emitter to a bone.  `FUN_001C1D50`
@@ -688,7 +697,8 @@ HANDLED = frozenset((
     OP_BLOCK_END, OP_BLOCK_DROP, OP_TINT, OP_VISIBLE, OP_MODEL, OP_ANIM,
     OP_ROOT_BONE, OP_ATTACH, OP_TRANSFORM, OP_SCALE, OP_LIGHT_TYPE,
     OP_LIGHT_RANGE, OP_FX_TEXTURE, OP_FX_SIZE_KEY, OP_FX_COLOUR_KEY,
-    OP_FX_EMIT_A, OP_FX_EMIT_B, OP_FX_BIND_BONE))
+    OP_FX_EMIT_A, OP_FX_EMIT_B, OP_FX_BIND_BONE, OP_FX_COLOUR_KEY2,
+    OP_FX_SIZE_KEY2))
 
 
 def effect_report(names=None):

@@ -14,6 +14,7 @@ import net from 'node:net';
 
 const MsgRead64 = 0x03;
 const MsgWrite64 = 0x07;
+const MsgSaveState = 0x09;   // payload: u8 slot
 
 export class Pine {
   constructor(host = '127.0.0.1', port = 28011) { this.host = host; this.port = port; }
@@ -67,6 +68,23 @@ export class Pine {
       res.copy(out, i * 8, 0, n * 8);
     }
     return out.subarray(0, length);
+  }
+
+  /**
+   * Ask PCSX2 to write a savestate to `slot`.
+   *
+   * This is the cheap way to get an oracle out of a *running* game: the state
+   * carries `eeMemory.bin` and the `Screenshot.png` the GS actually drew, and
+   * `tools/oracle.py` turns those into "which frame of which cutscene".
+   * Reading the framebuffer over PINE would be far more work for less.
+   *
+   * It writes a file, so pick a slot that is not wanted.
+   */
+  async saveState(slot) {
+    const req = Buffer.alloc(2);
+    req[0] = MsgSaveState;
+    req[1] = slot & 0xff;
+    await this._send(req);
   }
 
   async write64(addr, valueBigInt) {

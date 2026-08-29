@@ -672,14 +672,18 @@ async function main() {
               +s.mesh.geometry.width.toFixed(3),
               +s.mesh.geometry.height.toFixed(3)];
     };
-    check('a single-cell sheet takes the whole texture, square',
+    check('a single-cell sheet takes the whole texture',
           rect(built.sprites.find(
             (s) => s.entity.sprite.texture === 'ef_s014c.tm2')),
           [0, 1, 0, 1, 1, 1]);
-    check("and spark.tm2's 128x64 cell makes a 2:1 quad",
+    // The quad is always unit -- the shape is the size keys' job, and they
+    // disagree with the cell.  e001's torch is a 64x16 cell, four times as
+    // wide as tall, whose keys run (1, 2) to (4, 7): taller than wide, which
+    // is what a hardware capture of frame 10834 shows.
+    check('spark.tm2 too, and the quad is unit either way',
           rect(built.sprites.find(
             (s) => s.entity.sprite.texture === 'spark.tm2')),
-          [0, 1, 0, 1, 1, 0.5]);
+          [0, 1, 0, 1, 1, 1]);
     check('every live billboard is aimed at the camera',
           built.sprites.filter((s) => s.mesh.visible && !s.mesh.lookingAt).length, 0);
     check('a spark rides the bone rather than sitting at the origin',
@@ -710,9 +714,28 @@ async function main() {
     check('and a sixteenth of the height, from the top',
           [+Math.min(...vs).toFixed(3), +Math.max(...vs).toFixed(3)],
           [0.938, 1]);
-    check('the quad is 4:1, not square',
+    check('the quad stays unit -- the size keys carry the shape',
           [+s.mesh.geometry.width.toFixed(3),
-           +s.mesh.geometry.height.toFixed(3)], [1, 0.25]);
+           +s.mesh.geometry.height.toFixed(3)], [1, 1]);
+    // 0xAA and 0xAB dispatch to the same handlers as 0x6E and 0x6D, so they
+    // are aliases.  e001's torch uses only that spelling, and until they were
+    // read it had no colour ramp and no growth -- an invisible flame.
+    check('the torch has the keys 0xAA/0xAB gave it',
+          [s.entity.colourKeys.length, s.entity.sizeKeys.length], [4, 2]);
+    check('it is taller than it is wide, and grows',
+          [s.entity.sizeKeys[0].slice(1), s.entity.sizeKeys[1].slice(1)],
+          [[1, 2], [4, 7]]);
+    play.poseAt(built, s.entity.start);
+    check('it starts bright', +s.mesh.material.opacity.toFixed(2), 0.9);
+    play.poseAt(built, s.entity.start + 100);
+    check('and has faded by frame 100',
+          +s.mesh.material.opacity.toFixed(2) < 0.2, true);
+    // A track that never ends is an emitter that never stops; looping is the
+    // closest a single billboard gets to that.
+    play.poseAt(built, s.entity.start + 129);
+    check('then re-ignites, because the torch burns all scene',
+          [+s.mesh.material.opacity.toFixed(2), +s.mesh.scale.y.toFixed(2)],
+          [0.9, 2]);
     // Its track carries no `at_time` after the block, so its length is 0 --
     // which means "the script never says it stops", not "one frame".
     check('a zero-length track is not a one-frame sprite',

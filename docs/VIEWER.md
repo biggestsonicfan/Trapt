@@ -570,6 +570,8 @@ facade, but it will matter in a room the camera enters.
   sprite at the emitter rather than a trail.
 * **A flipbook sheet shows its first frame and does not advance.** Nothing
   found so far selects or animates the cell (§7.1).
+* **An emitter emits one sprite, not a cloud.** `0x9E`, `0x9F`, `0x74` and
+  `0x77` are a particle system that is read but not run (§9.2).
 * **Alpha is a cutout, not a blend** (`discard` below 0.35). Hair sheen and
   similar translucent layers therefore read harder than they do on hardware.
 * **One artifact.** In `e001` a flesh-coloured wedge shows at Allura's hip in
@@ -605,6 +607,14 @@ From the dispatch table at `0x00376660`, and from the data:
 | `0x6E` | `FUN_001C46A0` | `(r, g, b, a, frame)` — a colour keyframe |
 | `0xCA` | `FUN_001C1D50` | `(actor, bone)` — bind the emitter to a bone |
 | `0xC8`, `0xC9` | | emitter parameters; structure only |
+| `0xAA` | `FUN_001C46A0` | **the same handler as `0x6E`** -- an alias |
+| `0xAB` | `FUN_001C47F0` | **the same handler as `0x6D`** -- an alias |
+
+`0xAA`/`0xAB` are not new opcodes: they resolve to the very same handlers as
+`0x6E`/`0x6D`, so the sprite path and the particle path share one keyframe
+implementation and the script may spell it either way.  e001's torches use
+only the `0xAA` spelling, which is why they had **no colour ramp and no
+growth** until both were read -- an invisible flame.
 
 The keyframes needed no guessing. In `ef_e004_30.ssc` the `0x6D` pairs run
 `(0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240` — always equal, always growing
@@ -735,3 +745,77 @@ forward.
 PINE takes a single client, so anything holding it locks everything else out,
 and it reads one byte per round trip. A savestate is free, repeatable, and
 works offline. `docs/PS2SHADER.md` makes the same point about the GS state.
+
+---
+
+## 9. The torch flames, and what the oracle said
+
+Reported as "the flame effects don't work in our e001 room". They did not, and
+§8's oracle is what settled why — this is the first part of the effect work
+checked against the machine rather than against the script.
+
+### 9.1 They are the room's torches
+
+`e001` spawns `ef_p_s_01.tm2` exactly three times, and `rp03.sli` has exactly
+three `taimatu` (松明, *torch*) point lights:
+
+| sprite spawn | torch light | colour |
+|---|---|---|
+| (0.0, 49.5, −134.0) | `taimatu2_2` (−0.2, 45, −119.8) | 0.5, 0.35, 0.3 |
+| (−66.1, 49.5, −117.0) | `taimatu_2` (−80.2, 40, −119.8) | warm orange |
+| (68.0, 49.5, −117.0) | `taimatu1_2` (79.8, 40, −119.8) | warm orange |
+
+The sprite is the visible flame and the light is what it casts; they are
+placed independently, at the same three torches.
+
+A capture pinned to `e001` frame **10834** (residual 9.5e-07) shows one on
+hardware: a tall narrow plume, bright yellow at the base, above a dark
+brazier. Peak RGB in the patch is (255, 221, 129).
+
+### 9.2 Three things were wrong
+
+**`0xAA` and `0xAB` were not read.** They resolve to the *same handler
+addresses* as `0x6E` and `0x6D` — `FUN_001C46A0` and `FUN_001C47F0` — so they
+are aliases, one keyframe implementation shared by the sprite and particle
+paths. e001's torch spells it only the `0xAA` way, so it had no colour ramp
+and no growth. It does now:
+
+```
+0xAA  (1, 1, 1, 0.9)@0  (0.6, 0.5, 0.5, 0.8)@32
+      (0.2, 0.05, 0.05, 0.3)@64  (0, 0, 0, 0)@128
+0xAB  (1, 2)@0  (4, 7)@100
+```
+
+white and bright, fading through dull red to nothing over 128 frames, while
+growing from 1×2 to 4×7.
+
+**The quad was taking the cell's aspect.** A 64×16 cell is four times as wide
+as it is tall, and the flame is *taller* than wide. The size keys say so —
+(1, 2) to (4, 7) — and so does the capture. The shape is the keys' job; the
+cell only picks the UV rect.
+
+**A never-ending track was played once.** These three tracks carry no
+`at_time` after their block, so a single pass left each torch lit for two
+seconds and then dark. A track that never ends is an emitter that never
+stops, so the keyframes loop.
+
+### 9.3 What is still not right
+
+The flame is **one billboard, and it should be a cloud**. Reading the script
+out, `ef_e001_20.ssc` is a particle emitter:
+
+```
+9f  4 4 8 0 0 0
+9e  20 96 96 0.008 0 1 0
+77  2 0 0 0 1
+74  -0.001
+```
+
+and the sheet is built for it: the scanline gaps fall at every 16 rows in the
+top half and every 32 in the bottom, so the page holds eight 64×16 wisps and
+four 64×32 puffs — small, wide, short pieces that a plume is *made of*, not a
+flame each. `0xC8`'s count in `e004` is 8 and 16, which is how many.
+
+So what renders now is one wisp with the right colour, size and timing where
+the hardware has a column of them. `0x9E`, `0x9F`, `0x74` and `0x77` are the
+emitter and none of them is run.

@@ -44,6 +44,12 @@ const OP_LIGHT_RANGE = 0xB5, OP_ATTACH = 0xB7, OP_CAMERA = 0xB9, OP_FOG = 0xC7;
 //   0xCA FUN_001C1D50  actor + bone; asserts the effect's kind is 3
 const OP_FX_TEXTURE = 0x68, OP_FX_SIZE_KEY = 0x6D, OP_FX_COLOUR_KEY = 0x6E;
 const OP_FX_EMIT_A = 0xC8, OP_FX_EMIT_B = 0xC9, OP_FX_BIND_BONE = 0xCA;
+// `0xAA` and `0xAB` dispatch to the *same handlers* as `0x6E` and `0x6D`
+// (FUN_001C46A0 and FUN_001C47F0), so they are aliases and not new opcodes:
+// one keyframe implementation shared by the sprite and particle paths.
+// e001's torch flame uses only the `0xAA`/`0xAB` spelling, which is why it had
+// no colour ramp and no growth until these were read.
+const OP_FX_COLOUR_KEY2 = 0xAA, OP_FX_SIZE_KEY2 = 0xAB;
 
 const KIND_MODEL = 4, KIND_LIGHT = 6, KIND_CAMERA = 7;
 const LIGHT_KINDS = { 0: 'directional', 1: 'point', 4: 'ambient', 5: 'black' };
@@ -186,9 +192,11 @@ function run(scene, trackName, blob, frameBase, origin) {
     // (0.5,0.5)@0 (2,2)@10 (4,4)@140 (4.5,4.5)@240 -- always equal, always
     // growing -- while the `0x6E` quads hold (1.5,0.2,0.1) and move the
     // fourth 0 -> 1.8 -> 1.8 -> 0 over the same span.
-    } else if (code === OP_FX_SIZE_KEY && entity && args.length >= 3) {
+    } else if ((code === OP_FX_SIZE_KEY || code === OP_FX_SIZE_KEY2)
+               && entity && args.length >= 3) {
       entity.sizeKeys.push([num(args[2]), num(args[0]), num(args[1])]);
-    } else if (code === OP_FX_COLOUR_KEY && entity && args.length >= 5) {
+    } else if ((code === OP_FX_COLOUR_KEY || code === OP_FX_COLOUR_KEY2)
+               && entity && args.length >= 5) {
       entity.colourKeys.push([num(args[4]), num(args[0]), num(args[1]),
                               num(args[2]), num(args[3])]);
     // `0xCA(actor, bone, ?)` binds the emitter to a bone.  `FUN_001C1D50`
