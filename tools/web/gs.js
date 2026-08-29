@@ -18,6 +18,24 @@
 // The GS renders this game at 512x224 and the display hardware stretches it.
 const RT_W = 512, RT_H = 224, OUT_ASPECT = 4 / 3;
 
+/**
+ * The aspect to project a `.cam` FOV at.
+ *
+ * The FOV in the track is **vertical**, and the 512x224 target is
+ * **anamorphic** -- the video hardware stretches it to 4:3 -- so the
+ * horizontal half-angle comes from the *display* aspect, never from the
+ * width/height of whatever element the canvas happens to be in.  Using the
+ * element's aspect widens the field: at a 2.24 viewport that is 78.5 degrees
+ * horizontal instead of 51.8, and e001 frame 7422 puts Catalina 76 px away
+ * from where the hardware has her, 15% of the frame's width.
+ *
+ * `pdiag.py` carries the same note, having been caught by the same thing when
+ * it was first asked to render at the hardware's own resolution.
+ */
+function cameraAspect(native, width, height) {
+  return native ? OUT_ASPECT : (width / height);
+}
+
 // Skinning already happened on the CPU, so this only has to hand the fragment
 // stage the same varyings the player's vertex shader does.  RawShaderMaterial
 // declares nothing for you, but three still binds these names.
@@ -338,7 +356,8 @@ function makePost(THREE) {
 }
 
 const api = { VERT, FRAG, POST_V, POST_F, makeMaterial, makePost, lightsFor,
-              defaultLights, LOOK, AREF_OPAQUE, RT_W, RT_H, OUT_ASPECT };
+              defaultLights, cameraAspect, LOOK, AREF_OPAQUE,
+              RT_W, RT_H, OUT_ASPECT };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptGs = api;
 })();

@@ -349,7 +349,10 @@ function resize() {
   const w = host.clientWidth, h = host.clientHeight;
   if (!w || !h) return;
   V.renderer.setSize(w, h, false);
-  V.camera.aspect = w / h;
+  // The .cam FOV is vertical and the 512x224 target is anamorphic, so the
+  // projection uses the display aspect, not the element's.  See gs.js.
+  V.camera.aspect = TraptGs.cameraAspect(
+    V.look ? !!V.look.native : true, w, h);
   V.camera.updateProjectionMatrix();
   fitOutput();
 }
@@ -580,6 +583,7 @@ function setPs2(on) {
   V.look.native = on ? 1 : 0;
   applyLook();
   fitOutput();
+  resize();                            // the projection aspect moves with it
   const b = document.getElementById('ps2Btn');
   if (b) {
     b.textContent = on ? 'PS2' : 'Modern';
@@ -621,7 +625,7 @@ function buildLookPanel() {
     V.look[k] = parseFloat(e.target.value);
     e.target.nextElementSibling.textContent = V.look[k];
     applyLook();
-    if (k === 'native') fitOutput();
+    if (k === 'native') { fitOutput(); resize(); }
   });
 }
 

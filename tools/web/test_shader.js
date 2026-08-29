@@ -115,5 +115,26 @@ check('the directional takes its colour from the block and its aim from the room
 check('a camera-parented point light is flagged', rig.points[0].cam === true);
 check('the rig is padded to the two the shader declares', rig.points.length === 2);
 
+console.log('the projection aspect');
+// The .cam FOV is vertical and the 512x224 target is anamorphic -- the video
+// hardware stretches it to 4:3.  Taking the aspect from the element instead
+// widens the field and slides everything toward the centre: measured on e001
+// frame 7422, Catalina lands 76 px of 512 from where the hardware has her.
+check('native renders at the display aspect, not the element',
+      gs.cameraAspect(true, 1032, 460) === 4 / 3);
+check('modern renders at the element aspect',
+      Math.abs(gs.cameraAspect(false, 1032, 460) - 1032 / 460) < 1e-9);
+const tanHalf = Math.tan(40 * Math.PI / 180 / 2);
+const hfov = (a) => Math.round(2 * Math.atan(tanHalf * a) * 180 / Math.PI * 10) / 10;
+check('40 deg vertical is 51.8 horizontal at 4:3, not 78.5 at 2.24',
+      [hfov(4 / 3), hfov(1032 / 460)].join(), '51.8,78.5');
+
+// player.html and pdiag.py both carry this rule; if either stops, say so.
+check('player.html still uses OUT_ASPECT when native',
+      /camera\.aspect = FX\.native \? OUT_ASPECT/.test(html));
+const pdiag = fs.readFileSync(path.join(__dirname, '..', 'pdiag.py'), 'utf8');
+check('pdiag.py still divides the horizontal focal by the display aspect',
+      /fx = \(W\*0\.5\)\/\(t\*DISPLAY_ASPECT\)/.test(pdiag));
+
 console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);
 process.exit(failures ? 1 : 0);
