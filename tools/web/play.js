@@ -183,10 +183,39 @@ async function assemble(THREE, disc, name, onProgress) {
     if (!e.sprite) continue;
     const tex = texFor(e.sprite.texture);
     if (!tex) { warnings.push('missing effect texture ' + e.sprite.texture); }
+    // `0x68`'s four numbers are a **cell** on a **sheet**, and a sheet is
+    // often a flipbook: `ef_p_s_01.tm2` is sixteen rows of four 64x16 frames
+    // of an explosion on one 256x256 page.  Drawing the page as one quad puts
+    // the whole animation on screen at once -- which is what a giant red
+    // rectangle over a third of the frame turned out to be.
+    //
+    // So the quad takes one cell's UV rect, and its aspect: a 64x16 cell is
+    // four times as wide as it is tall, and a square quad stretches it.
+    //
+    // **Which** cell is not known.  `0x69` is the only per-block scalar left
+    // and it is -1 on the 64-cell sheets as well as the 1-cell ones, so it is
+    // not an index, and no opcode keyframes one.  Cell 0 it is, which is
+    // exact for the eleven single-cell textures and the first frame of the
+    // three flipbooks.
+    const cellW = e.sprite.cell[0] || 1, cellH = e.sprite.cell[1] || 1;
+    const sheetW = e.sprite.sheet[0] || cellW, sheetH = e.sprite.sheet[1] || cellH;
+    const u = Math.min(1, cellW / sheetW), v = Math.min(1, cellH / sheetH);
+    const longest = Math.max(cellW, cellH) || 1;
+    const qw = cellW / longest, qh = cellH / longest;
     const points = e.binds.length ? e.binds : [null];
     for (const bind of points) {
-      const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
+      const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(qw, qh)
                                           : new THREE.BufferGeometry();
+      // Cell 0 is the top-left of the sheet.  `.SMI` V runs top-down and so
+      // does a TIM2, so v0 is 0 and the cell grows downwards.
+      if (geo.attributes && geo.attributes.uv) {
+        const uv = geo.attributes.uv.array;
+        for (let k = 0; k < uv.length; k += 2) {
+          uv[k] *= u;
+          uv[k + 1] = 1 - (1 - uv[k + 1]) * v;
+        }
+        geo.attributes.uv.needsUpdate = true;
+      }
       const mat = new THREE.MeshBasicMaterial({
         map: tex, transparent: true, depthWrite: false,
         blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
@@ -323,8 +352,12 @@ function poseAt(built, frame) {
     // carry only `0x80` and the emitter -- dies with its track.
     const keyed = e.colourKeys.length ? e.colourKeys[e.colourKeys.length - 1][0]
                 : (e.sizeKeys.length ? e.sizeKeys[e.sizeKeys.length - 1][0] : 0);
+    // A track with no `at_time` after the block has a length of 0, which is
+    // not "one frame" -- it is "the script never says it stops".  e001's
+    // sprite is that case, and treating 0 as a lifetime made it flash for a
+    // single frame.
     const life = keyed > 0 ? keyed
-               : (e.trackLen !== null ? e.trackLen : Infinity);
+               : (e.trackLen ? e.trackLen : Infinity);
     const live = local >= 0 && local <= life
               && sceneMod.visibleAt(e, frame) && (e.end === null || frame < e.end);
     s.mesh.visible = live;

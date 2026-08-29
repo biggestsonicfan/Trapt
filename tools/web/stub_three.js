@@ -88,8 +88,18 @@ function stubThree() {
     // Sprite effects: a unit quad, a basic material and lookAt.  The aim is
     // recorded rather than turned into a matrix -- what the tests need to
     // know is that a billboard was pointed at the camera at all.
+    // Real UVs, because the sprite code rewrites them to pick one cell out of
+    // a sheet and a stub with no `uv` attribute would silently skip that --
+    // which is the bug it exists to catch.  three.js orders a plane's corners
+    // top-left, top-right, bottom-left, bottom-right.
     PlaneGeometry: class {
-      constructor(w, h) { this.width = w; this.height = h; this.attributes = {}; }
+      constructor(w, h) {
+        this.width = w; this.height = h;
+        this.attributes = {
+          uv: { array: new Float32Array([0, 1, 1, 1, 0, 0, 1, 0]),
+                itemSize: 2, needsUpdate: false },
+        };
+      }
       dispose() { this.disposed = true; }
     },
     MeshBasicMaterial: class {

@@ -661,6 +661,25 @@ async function main() {
           [+spark.mesh.material.color.r.toFixed(2),
            +spark.mesh.material.color.g.toFixed(2),
            +spark.mesh.material.color.b.toFixed(2)], [0.9, 0.3, 0.1]);
+    // `0x68`'s four numbers are a cell on a sheet, and a sheet is often a
+    // flipbook.  Drawing the sheet put all sixteen rows of e001's explosion
+    // on screen as one quad -- a red rectangle over a third of the frame.
+    const rect = (s) => {
+      const uv = s.mesh.geometry.attributes.uv.array;
+      const us = [uv[0], uv[2], uv[4], uv[6]], vs = [uv[1], uv[3], uv[5], uv[7]];
+      return [+Math.min(...us).toFixed(3), +Math.max(...us).toFixed(3),
+              +Math.min(...vs).toFixed(3), +Math.max(...vs).toFixed(3),
+              +s.mesh.geometry.width.toFixed(3),
+              +s.mesh.geometry.height.toFixed(3)];
+    };
+    check('a single-cell sheet takes the whole texture, square',
+          rect(built.sprites.find(
+            (s) => s.entity.sprite.texture === 'ef_s014c.tm2')),
+          [0, 1, 0, 1, 1, 1]);
+    check("and spark.tm2's 128x64 cell makes a 2:1 quad",
+          rect(built.sprites.find(
+            (s) => s.entity.sprite.texture === 'spark.tm2')),
+          [0, 1, 0, 1, 1, 0.5]);
     check('every live billboard is aimed at the camera',
           built.sprites.filter((s) => s.mesh.visible && !s.mesh.lookingAt).length, 0);
     check('a spark rides the bone rather than sitting at the origin',
@@ -670,6 +689,36 @@ async function main() {
             play.poseAt(built, 1200);
             return Math.abs(spark.mesh.position.z - a) > 1;
           })(), true);
+  }
+
+  // e001 is the case that was reported: sixteen rows of four 64x16 explosion
+  // frames on one 256x256 page, drawn as a single quad.
+  console.log('a flipbook sheet takes one cell, not the page');
+  {
+    const THREE = stubThree();
+    const built = await play.assemble(THREE, disc, 'e001', () => {});
+    const s = built.sprites.find(
+      (x) => x.entity.sprite.texture === 'ef_p_s_01.tm2');
+    check('e001 has the explosion sheet', !!s, true);
+    check('its cell is 64x16 on a 256x256 page',
+          [s.entity.sprite.cell, s.entity.sprite.sheet],
+          [[64, 16], [256, 256]]);
+    const uv = s.mesh.geometry.attributes.uv.array;
+    const us = [uv[0], uv[2], uv[4], uv[6]], vs = [uv[1], uv[3], uv[5], uv[7]];
+    check('so it takes a quarter of the width',
+          [+Math.min(...us).toFixed(3), +Math.max(...us).toFixed(3)], [0, 0.25]);
+    check('and a sixteenth of the height, from the top',
+          [+Math.min(...vs).toFixed(3), +Math.max(...vs).toFixed(3)],
+          [0.938, 1]);
+    check('the quad is 4:1, not square',
+          [+s.mesh.geometry.width.toFixed(3),
+           +s.mesh.geometry.height.toFixed(3)], [1, 0.25]);
+    // Its track carries no `at_time` after the block, so its length is 0 --
+    // which means "the script never says it stops", not "one frame".
+    check('a zero-length track is not a one-frame sprite',
+          s.entity.trackLen, 0);
+    play.poseAt(built, s.entity.start + 200);
+    check('so it is still on screen 200 frames later', s.mesh.visible, true);
   }
 
   console.log('a whole cutscene assembled, against tools/scene.py');

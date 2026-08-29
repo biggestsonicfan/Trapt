@@ -568,6 +568,8 @@ facade, but it will matter in a room the camera enters.
   effects render — see §7 — but `0xC8`/`0xC9` clearly steer an emitter count
   and a spread that nothing reads, so a burst of eight sparks comes out as one
   sprite at the emitter rather than a trail.
+* **A flipbook sheet shows its first frame and does not advance.** Nothing
+  found so far selects or animates the cell (§7.1).
 * **Alpha is a cutout, not a blend** (`discard` below 0.35). Hair sheen and
   similar translucent layers therefore read harder than they do on hardware.
 * **One artifact.** In `e001` a flesh-coloured wedge shows at Allura's hip in
@@ -619,6 +621,19 @@ The four ints on `0x68` are a sprite-sheet cell and the sheet it sits on:
 that really is 256×256. Five textures declare a sheet larger than the file,
 and in every one of those the cell *is* the sheet, so the UV rect is the whole
 image either way — no case is actually inconsistent.
+
+**Three of the sheets are flipbooks, and the cell matters.** `ef_p_s_01.tm2`
+is sixteen rows of four 64×16 frames of an explosion on one 256×256 page;
+`ef_p_s_00.tm2` is an 8×8 grid of 32×32; `ef_g004a.tm2` and `ef_e132d.tm2` are
+four 32×32 in a row. Drawing the *page* as one quad puts the whole animation
+on screen at once — which is what a red rectangle over a third of `e001`
+turned out to be. The quad takes one cell's UV rect and its aspect: a 64×16
+cell is four times as wide as it is tall, and a square quad stretches it.
+
+**Which** cell is not known. `0x69` is the only per-block scalar left and it
+reads `-1` on the 64-cell sheets as well as the single-cell ones, so it is not
+an index, and no opcode keyframes one. Cell 0 is what is drawn — exact for the
+eleven single-cell textures, the first frame for the three flipbooks.
 
 ### 7.2 Two things that had to be fixed underneath
 
