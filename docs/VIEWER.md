@@ -914,16 +914,53 @@ keyframe table — and `a1` there is a **texture-animation descriptor**, a
 sub-object, not the effect object. An earlier reading that put `+0xa0` at
 `object+0x210` was chaining off that confusion and is wrong.
 
-**Which leaves a tension worth stating rather than resolving by guess.**
-Nothing found in this module spawns or updates a set of particles: what it
-has is one quad, scrolling UVs, and a keyframe table. If that is the whole
-story then a "cloud" is the wrong model, `0xC8`'s count is not a particle
-count, and the viewer's one-quad-per-emission-point is closer to the hardware
-than the 32-particle staggering the torch now uses. Against that: `0xC8`'s
-value really is 8 and 16 on exactly the two tracks that differ in intensity.
+### 9.5 The instance model, read off the running game
 
-Both readings are still live. The way to settle it is a frame of e004 with
-the sparks actually visible, which four captures have not yet produced.
+Breaking on `0x00188B30` while an effect was drawing settled it. The caller
+at `0x00190780` is a **per-instance** update:
+
+```
+s0 = the instance
+a1 = [s0+0x04]        its descriptor
+a2 = lhu [s0+0x10]    its AGE
+jalr [a1+0x10]        -> 0x00188B30, writes a UV rect to sp+0x20..0x2c
+[s0+0x10] += 1                          age++
+if [s0+0x16] and age >= [s0+0x1c]:      loop flag, lifetime
+    [s0+0x10] = 0                       restart
+```
+
+So an effect is a **linked list of instances** — `+0x00` next, `+0x04`
+descriptor, `+0x10` age, `+0x16` loop, `+0x1c` lifetime — each carrying its
+own age and all sharing one animation. Three live instances read back
+sharing descriptor `0x015D06FC` at ages **7, 6 and 6**, lifetime 32 apiece.
+
+The descriptor is the animation:
+
+```
++0x00 u16 cell w    +0x04 u16 sheet w    +0x10 u32 behaviour fn
++0x02 u16 cell h    +0x06 u16 sheet h    +0x14 u8  key count (max 16)
++0x18     key[count], 8 bytes: { u32 frame, u16 u, u16 v }
++0x98 u32 loop length                    +0x9c u8  loop flag
+```
+
+and the live one holds eight keys walking four columns by two rows of 32x16
+cells on a 128x64 sheet, one every four frames, looping at 32:
+
+```
+ 0 -> (0,0)    4 -> (32,0)    8 -> (64,0)   12 -> (96,0)
+16 -> (0,16)  20 -> (32,16)  24 -> (64,16)  28 -> (96,16)
+```
+
+**Three things fall out.** The flipbook is an explicit `(frame -> u, v)` table
+rather than a rate the viewer derives — close to the same result, but the
+game tabulates it. `0x68`'s four numbers are cell and sheet size, confirmed a
+third time and now from the struct the animation itself reads. And the
+staggered-age model the torch uses is **the game's own**: many instances, one
+animation, different ages. The `+0xA0`/`+0xA4` scroll-rate fields are unset
+filler for these effects, so scrolling is not the mechanism.
+
+That resolves 9.4's tension in favour of the cloud. What is still unproven is
+only whether `0xC8`'s 8 and 16 are that instance count.
 
 Also: across four hardware frames of e004, at poses including the exact
 arm-raise the `0xCA` bones describe, **no sparks were visible on screen**.
