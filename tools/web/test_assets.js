@@ -27,6 +27,7 @@ const sscMod = require('./ssc.js');
 const cam = require('./cam.js');
 const sceneMod = require('./scene.js');
 const play = require('./play.js');
+const { stubThree } = require('./stub_three.js');
 const arcMod = arc;
 const ssc = sscMod;
 
@@ -57,44 +58,6 @@ const ARCHIVES = [
   'DATA/RT/COSTUME/RT_C01F_A_HL.ARC',
   'DATA/RT/E429_04/RT_E429_04.ARC',
 ];
-
-/** Just enough THREE for model.js: no WebGL, but the same object shapes. */
-function stubThree() {
-  class BufferAttribute {
-    constructor(array, itemSize) { this.array = array; this.itemSize = itemSize; }
-  }
-  class BufferGeometry {
-    constructor() { this.attributes = {}; this.index = null; this.computed = false; }
-    setAttribute(n, a) { this.attributes[n] = a; }
-    setIndex(a) { this.index = a; }
-    computeVertexNormals() { this.computed = true; }
-  }
-  class Vec3 {
-    constructor() { this.x = 0; this.y = 0; this.z = 0; }
-    set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
-  }
-  class Group {
-    constructor() {
-      this.children = []; this.visible = true; this.position = new Vec3();
-    }
-    add(c) { this.children.push(c); }
-  }
-  return {
-    BufferAttribute, BufferGeometry, Group,
-    Mesh: class {
-      constructor(g, m) {
-        this.geometry = g; this.material = m; this.visible = true;
-      }
-    },
-    Color: class { constructor(r, g, b) { this.r = r; this.g = g; this.b = b; } },
-    DataTexture: class {
-      constructor(d, w, h, f) { this.image = { data: d, width: w, height: h }; }
-    },
-    MeshLambertMaterial: class { constructor(o) { Object.assign(this, o); } },
-    RGBAFormat: 1023, RepeatWrapping: 1000, LinearFilter: 1006,
-    DoubleSide: 2, AdditiveBlending: 2,
-  };
-}
 
 async function main() {
   if (!fs.existsSync(ISO)) {
@@ -405,13 +368,21 @@ async function main() {
     check('every attribute and index is in range', problems.slice(0, 4), []);
 
     // The alpha-test rule is the one that deletes scenery when it is wrong.
+    // The GS material does the test in the shader, so it lives in a uniform
+    // rather than three's own alphaTest.
     const wantTested = model.materials.filter((m) => m.atest).length;
-    const gotTested = group.children.filter((m) => m.material.alphaTest > 0).length;
+    const gotTested = group.children.filter(
+      (m) => m.material.uniforms.aTest.value === 1).length;
     check('alpha test only where the render word asks for it',
           [wantTested > 0, gotTested > 0, group.children.every(
-            (m) => m.material.alphaTest === 0
-                || Math.abs(m.material.alphaTest - 120 / 255) < 1e-6)],
+            (m) => Math.abs(m.material.uniforms.alphaRef.value - 120 / 128) < 1e-9)],
           [true, true, true]);
+    check('every mesh opts out of frustum culling',
+          group.children.every((m) => m.frustumCulled === false), true);
+    check('rooms take vertex colours, characters take normals',
+          group.children.every((m) => !!m.geometry.attributes.vcol
+            && (m.material.uniforms.lit.value === 1)
+               === !!m.geometry.attributes.normal), true);
 
     const b = model_.bounds(posed);
     check('bounds are finite and non-degenerate',

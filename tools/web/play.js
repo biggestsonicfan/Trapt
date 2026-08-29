@@ -29,6 +29,8 @@ const saiMod = req ? require('./sai.js') : window.TraptSai;
 const camMod = req ? require('./cam.js') : window.TraptCam;
 const sceneMod = req ? require('./scene.js') : window.TraptScene;
 const modelMod = req ? require('./model.js') : window.TraptModel;
+const sliMod = req ? require('./sli.js') : window.TraptSli;
+const gsMod = req ? require('./gs.js') : window.TraptGs;
 
 const COMMON = 'DATA/RT/COMMON/RT_COMMON.ARC';
 const COSTUME = 'DATA/RT/COSTUME/RT_C01F_A_HL.ARC';
@@ -52,6 +54,8 @@ async function assemble(THREE, disc, name, onProgress) {
   const say = onProgress || (() => {});
   const up = name.toUpperCase();
   const assets = new Map();
+
+  const warningsEarly = [];
 
   say('reading archives');
   await fold(disc, COMMON, assets, false);
@@ -99,10 +103,24 @@ async function assemble(THREE, disc, name, onProgress) {
     return t;
   };
 
+  // A directional light's aim is not in the script -- FUN_001D4430 sums the
+  // room's own .sli entries and normalises.  Without it every scene falls back
+  // to an invented direction.
+  let roomDir = null;
+  if (scene.room) {
+    const sliBlob = assets.get(scene.room.toLowerCase() + '.sli');
+    if (sliBlob) {
+      try { roomDir = sliMod.infiniteDirection(sliMod.parse(sliBlob)); }
+      catch (e) { warningsEarly.push('sli: ' + e.message); }
+    }
+  }
+  const lights = gsMod.lightsFor(
+    THREE, scene.entities.filter((e) => e.kind === sceneMod.KIND_LIGHT), roomDir);
+
   say('building models');
   const root = new THREE.Group();
   const actors = [];
-  const warnings = [];
+  const warnings = warningsEarly;
 
   for (const e of scene.entities) {
     if (e.kind !== sceneMod.KIND_MODEL) continue;
@@ -116,7 +134,11 @@ async function assemble(THREE, disc, name, onProgress) {
         model = smiMod.parse(blob);
         posed = smiMod.bindPose(model);
       } catch (err) { warnings.push(file + ': ' + err.message); continue; }
-      const group = modelMod.build(THREE, model, posed, texFor);
+      const group = modelMod.build(THREE, model, posed, texFor, {
+        lights: lights, fog: scene.fog,
+        // `0x80` on a model block is a material multiplier, not a scale
+        tint: e.scale ? e.scale.slice(0, 3) : null,
+      });
       if (e.transform) group.position.set(e.transform[0], e.transform[1],
                                           e.transform[2]);
       root.add(group);
@@ -133,7 +155,8 @@ async function assemble(THREE, disc, name, onProgress) {
       try {
         const model = smiMod.parse(blob);
         const posed = smiMod.bindPose(model);
-        room = modelMod.build(THREE, model, posed, texFor);
+        room = modelMod.build(THREE, model, posed, texFor,
+                              { lights: lights, fog: scene.fog });
         root.add(room);
       } catch (err) { warnings.push('room: ' + err.message); }
     } else {
@@ -166,7 +189,8 @@ async function assemble(THREE, disc, name, onProgress) {
 
   return { scene: scene, root: root, actors: actors, room: room,
            camera: camera, assets: assets, warnings: warnings,
-           clipFor: clipFor, textures: texCache };
+           clipFor: clipFor, textures: texCache, lights: lights,
+           roomDir: roomDir };
 }
 
 /**

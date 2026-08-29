@@ -18,6 +18,8 @@
 (function () {
 'use strict';
 
+const gs = (typeof require !== 'undefined') ? require('./gs.js') : window.TraptGs;
+
 const AREF = 120 / 255;
 
 /** `{width, height, rgba}` -> THREE.DataTexture, oriented the way the GS is. */
@@ -33,9 +35,11 @@ function makeTexture(THREE, pic) {
 
 /**
  * `model` from smi.parse, `posed` from smi.bindPose, `texFor(name)` returning
- * a THREE.Texture or null.  Returns a THREE.Group of one Mesh per SMI mesh.
+ * a THREE.Texture or null, and `opts` = `{lights, tint, fog, ps2}` for the GS
+ * material.  Returns a THREE.Group of one Mesh per SMI mesh.
  */
-function build(THREE, model, posed, texFor) {
+function build(THREE, model, posed, texFor, opts) {
+  const o = opts || {};
   const group = new THREE.Group();
   model.meshes.forEach((me, i) => {
     if (!me.tris.length) return;
@@ -52,6 +56,18 @@ function build(THREE, model, posed, texFor) {
       }
       g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     }
+    // Environment geometry ships baked vertex colours and no normals;
+    // characters ship normals and no colours.  0x80 is 1.0 on the GS, so 128
+    // is the neutral default for a mesh that carries none.
+    const col = new Uint8Array(me.vcount * 4);
+    if (me.col.length)
+      for (let v = 0; v < me.vcount; v++) {
+        col[4 * v] = me.col[v][0]; col[4 * v + 1] = me.col[v][1];
+        col[4 * v + 2] = me.col[v][2]; col[4 * v + 3] = me.col[v][3];
+      }
+    else col.fill(128);
+    g.setAttribute('vcol', new THREE.BufferAttribute(col, 4, true));
+
     const idx = new Uint32Array(me.tris.length * 3);
     me.tris.forEach((t, k) => {
       idx[3 * k] = t[0]; idx[3 * k + 1] = t[1]; idx[3 * k + 2] = t[2];
@@ -61,23 +77,23 @@ function build(THREE, model, posed, texFor) {
 
     const mt = model.materials[me.material] || { diffuse: [255, 255, 255, 255] };
     const map = mt.texture ? texFor(mt.texture) : null;
-    const mat = new THREE.MeshLambertMaterial({
-      map: map,
-      color: new THREE.Color(mt.diffuse[0] / 255, mt.diffuse[1] / 255,
-                             mt.diffuse[2] / 255),
-      transparent: !!mt.blend,
-      opacity: mt.blend ? mt.diffuse[3] / 255 : 1,
-      alphaTest: mt.atest ? AREF : 0,
-      depthWrite: !mt.blend,
-      side: THREE.DoubleSide,
+    // The GS pipeline out of player.html, with `lit` picking which half runs:
+    // characters shade from normals, rooms take their baked vertex colours.
+    const mat = gs.makeMaterial(THREE, mt, {
+      map: map, lights: o.lights, tint: o.tint, fog: o.fog,
+      lit: me.nrm.length > 0, ps2: o.ps2 !== false,
     });
-    if (mt.add) mat.blending = THREE.AdditiveBlending;
 
     const mesh = new THREE.Mesh(g, mat);
     mesh.name = 'mesh' + i;
     // Meshes with no triangles are skipped, so the child index is not the SMI
     // mesh index -- posing has to write back through this.
     mesh.userData = { meshIndex: i };
+    // The bounding sphere is computed from the bind pose and never updated
+    // as the rig moves, so three.js would cull an actor the moment it walked
+    // out of the bounds it was authored in -- which is what made half of
+    // e001's cast blink out.  player.html disables it for the same reason.
+    mesh.frustumCulled = false;
     mesh.renderOrder = mt.blend ? 1 : 0;
     group.add(mesh);
   });

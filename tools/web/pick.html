@@ -61,6 +61,19 @@
     letter-spacing: .05em; }
   #subs .txt { font-size: clamp(13px, 1.5vw, 19px); white-space: pre-line;
     line-height: 1.35; }
+  #look { position: absolute; right: 10px; top: 10px; width: 232px; z-index: 5;
+    background: #16161ae8; border: 1px solid #2e2e36; border-radius: 8px;
+    padding: 8px 10px; display: none; }
+  #look.on { display: block; }
+  #look h4 { margin: 2px 0 6px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; opacity: .6; font-weight: 600; }
+  #look label { display: flex; align-items: center; gap: 8px; margin: 4px 0;
+    font-size: 11.5px; }
+  #look label span { flex: 0 0 88px; opacity: .75; }
+  #look input[type=range] { flex: 1; accent-color: #d8b06a; }
+  #look label b { flex: 0 0 34px; text-align: right; font-weight: 400;
+    font-variant-numeric: tabular-nums; opacity: .6; }
+  #transport button.on { background: #3a5a8a; border-color: #4a72ad; }
   #transport { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
   #transport button { background: #232329; color: inherit; border: 1px solid #34343c;
     border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
@@ -111,6 +124,8 @@
 <script src="ssc.js"></script>
 <script src="cam.js"></script>
 <script src="scene.js"></script>
+<script src="sli.js"></script>
+<script src="gs.js"></script>
 <script src="model.js"></script>
 <script src="play.js"></script>
 <script>
@@ -192,7 +207,7 @@ async function openCutscene(name, path, el) {
     + '<div id="view">'
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
-    + '<div id="vinfo"></div></div>'
+    + '<div id="look"></div><div id="vinfo"></div></div>'
     + '<div id="transport"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
 
@@ -320,6 +335,7 @@ function resize() {
   V.renderer.setSize(w, h, false);
   V.camera.aspect = w / h;
   V.camera.updateProjectionMatrix();
+  fitOutput();
 }
 addEventListener('resize', resize);
 
@@ -498,6 +514,101 @@ function info() {
     + ' · drag to orbit, wheel to zoom';
 }
 
+// ------------------------------------------------------------ the GS look
+// Everything the world is drawn into goes through a 512x224 render target and
+// then the post pass, exactly as player.html does it: that resolution *is*
+// the look, and grading it afterwards is not the same as rendering at it.
+function ensurePost() {
+  if (V.post) return;
+  V.rt = new THREE.WebGLRenderTarget(TraptGs.RT_W, TraptGs.RT_H, {
+    minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    format: THREE.RGBAFormat,
+  });
+  V.postMat = TraptGs.makePost(THREE);
+  V.postScene = new THREE.Scene();
+  V.postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), V.postMat);
+  quad.frustumCulled = false;
+  V.postScene.add(quad);
+  V.post = true;
+  V.look = Object.assign({}, TraptGs.LOOK);
+}
+
+/** Size the render target and the letterboxing that keeps the 4:3 shape. */
+function fitOutput() {
+  const host = document.getElementById('view');
+  if (!host || !V.post) return;
+  const w = host.clientWidth, h = host.clientHeight;
+  if (!w || !h) return;
+  if (V.look.native) {
+    V.rt.setSize(TraptGs.RT_W, TraptGs.RT_H);
+  } else {
+    const px = Math.min(devicePixelRatio, 2);
+    V.rt.setSize(Math.round(w * px), Math.round(h * px));
+  }
+  V.postMat.uniforms.texel.value.set(1 / V.rt.width, 1 / V.rt.height);
+  // fit the 4:3 output into the element without stretching it
+  const want = TraptGs.OUT_ASPECT, have = w / h;
+  V.postMat.uniforms.fit.value.set(
+    have > want ? want / have : 1, have > want ? 1 : have / want);
+}
+
+function setPs2(on) {
+  V.ps2 = on;
+  if (V.group)
+    V.group.traverse((o) => {
+      if (o.material && o.material.uniforms && o.material.uniforms.ps2)
+        o.material.uniforms.ps2.value = on ? 1 : 0;
+    });
+  // Native resolution and the GS alpha rule belong to the same switch.
+  V.look.native = on ? 1 : 0;
+  applyLook();
+  fitOutput();
+  const b = document.getElementById('ps2Btn');
+  if (b) {
+    b.textContent = on ? 'PS2' : 'Modern';
+    b.classList.toggle('on', on);
+  }
+}
+
+function applyLook() {
+  if (!V.post) return;
+  for (const k in V.look)
+    if (V.postMat.uniforms[k]) V.postMat.uniforms[k].value = V.look[k];
+}
+
+const LOOK_SLIDERS = [
+  ['native', 'Native 512x224', 0, 1, 1],
+  ['sharp', 'Sharp upscale', 0, 1, 0.01],
+  ['bits', 'Colour bits', 3, 8, 1],
+  ['dither', 'GS dither', 0, 3, 0.1],
+  ['exposure2', 'Exposure', 0.2, 3, 0.01],
+  ['contrast', 'Contrast', 0.5, 2, 0.01],
+  ['saturation', 'Saturation', 0, 2, 0.01],
+  ['warmth', 'Warmth', -1, 1, 0.01],
+  ['vignette', 'Vignette', 0, 1, 0.01],
+  ['scanline', 'Scanlines', 0, 1, 0.01],
+];
+
+function buildLookPanel() {
+  const panel = document.getElementById('look');
+  if (!panel || panel.dataset.built) return;
+  panel.dataset.built = '1';
+  panel.innerHTML = '<h4>Look</h4>' + LOOK_SLIDERS.map(
+    ([k, label, lo, hi, st]) =>
+      '<label><span>' + label + '</span><input data-k="' + k + '" type="range" min="'
+      + lo + '" max="' + hi + '" step="' + st + '" value="' + V.look[k]
+      + '"><b>' + V.look[k] + '</b></label>').join('');
+  panel.addEventListener('input', (e) => {
+    const k = e.target.dataset.k;
+    if (!k) return;
+    V.look[k] = parseFloat(e.target.value);
+    e.target.nextElementSibling.textContent = V.look[k];
+    applyLook();
+    if (k === 'native') fitOutput();
+  });
+}
+
 // ------------------------------------------------------------- scene mode
 // The whole cutscene: room, cast, camera, subtitles and letterbox, assembled
 // from the disc by play.js and driven here.
@@ -544,8 +655,18 @@ function sceneTransport() {
   if (!S) { t.innerHTML = ''; return; }
   t.innerHTML = '<button id="playBtn"></button>'
               + '<button id="camBtn"></button>'
+              + '<button id="ps2Btn"></button>'
+              + '<button id="lookBtn">Look</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
+  document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
+  document.getElementById('lookBtn').onclick = (e) => {
+    const panel = document.getElementById('look');
+    buildLookPanel();
+    panel.classList.toggle('on');
+    e.target.classList.toggle('on', panel.classList.contains('on'));
+  };
+  setPs2(V.ps2 === undefined ? true : V.ps2);
   const btn = document.getElementById('playBtn');
   const cam = document.getElementById('camBtn');
   const seek = document.getElementById('seek');
@@ -659,7 +780,7 @@ function tick() {
     if ((V.frameTick = (V.frameTick + 1) % 30) === 0) info();
   }
 
-  if (S && S.sceneCam) { V.renderer.render(V.scene, V.camera); return; }
+  if (S && S.sceneCam) { drawFrame(); return; }
   const o = V.orbit;
   const cp = Math.cos(o.pitch);
   V.camera.position.set(
@@ -668,7 +789,24 @@ function tick() {
     o.target[2] + Math.cos(o.yaw) * cp * o.dist);
   V.camera.lookAt(o.target[0], o.target[1], o.target[2]);
   V.key.position.copy(V.camera.position);
+  drawFrame();
+}
+
+/** World into the 512x224 target, then the post pass onto the canvas. */
+function drawFrame() {
+  ensurePost();
+  // the shader wants the eye position for its point lights
+  if (V.group)
+    V.group.traverse((o) => {
+      if (o.material && o.material.uniforms && o.material.uniforms.eye)
+        o.material.uniforms.eye.value.copy(V.camera.position);
+    });
+  V.renderer.setRenderTarget(V.rt);
+  V.renderer.clear();
   V.renderer.render(V.scene, V.camera);
+  V.renderer.setRenderTarget(null);
+  V.postMat.uniforms.tex.value = V.rt.texture;
+  V.renderer.render(V.postScene, V.postCam);
 }
 </script>
 </body>
