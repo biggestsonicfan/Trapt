@@ -32,6 +32,11 @@ const modelMod = req ? require('./model.js') : window.TraptModel;
 const sliMod = req ? require('./sli.js') : window.TraptSli;
 const gsMod = req ? require('./gs.js') : window.TraptGs;
 
+// A sheet can declare a lot of cells; this caps how many billboards one
+// emitter turns into.  Nothing on the disc exceeds it -- the largest grid is
+// e001's 32 -- so it is a guard, not a policy.
+const MAX_PARTICLES = 64;
+
 const COMMON = 'DATA/RT/COMMON/RT_COMMON.ARC';
 const COSTUME = 'DATA/RT/COSTUME/RT_C01F_A_HL.ARC';
 // Sprite effects name textures that live in neither the cutscene bundle nor
@@ -169,10 +174,11 @@ async function assemble(THREE, disc, name, onProgress) {
 
   // --- sprite effects: a block that named a texture rather than a model
   //
-  // One camera-facing quad per emitter point.  A kind-2 block has no binds
-  // and sits where the block was placed; a kind-3 block carries one or more
-  // `0xCA` binds and each of those rides a bone, which is how e004 puts a
-  // spark on Allura's finger, hand, elbow and forearm at once.
+  // Camera-facing quads.  A kind-2 block has no binds and sits where the
+  // block was placed; a kind-3 block carries one or more `0xCA` binds and
+  // each of those rides a bone, which is how e004 puts a spark on Allura's
+  // finger, hand, elbow and forearm at once.  A block with a `0x9F` grid is
+  // an emitter and becomes a *cloud* of quads -- see `count` below.
   //
   // This is not the game's particle system -- `0xC8`/`0xC9` clearly steer a
   // count and a spread that nothing here reads, so a trail of eight sparks
@@ -204,8 +210,27 @@ async function assemble(THREE, disc, name, onProgress) {
     const cellW = e.sprite.cell[0] || 1, cellH = e.sprite.cell[1] || 1;
     const sheetW = e.sprite.sheet[0] || cellW, sheetH = e.sprite.sheet[1] || cellH;
     const u = Math.min(1, cellW / sheetW), v = Math.min(1, cellH / sheetH);
+    // How many particles are alive at once.
+    //
+    // `0x9F` writes `rate * cells` to +0xb4 -- 128 for e001's torch -- and
+    // that is the particle's whole life, because it is also where the `0xAA`
+    // alpha keys end.  A steady emitter spawning one particle every `rate`
+    // frames therefore holds `life / rate` = `cells` of them at once, each
+    // one cell-step older than the last, so between them they show every
+    // frame of the sheet.  That is what the 32 cells are *for*, and it is why
+    // one billboard looks nothing like the hardware: a single particle is
+    // faded out for most of its cycle, while thirty-two staggered ones sum to
+    // something steady.
+    //
+    // What is *not* implemented is where they go: `0x9E`, `0x74` and `0x77`
+    // carry the spawn spread and the rise and none is read, so these sit on
+    // top of each other and read as a bright pulsing flame rather than a
+    // plume climbing off the brazier.
+    const count = (e.grid && e.grid.cells > 1)
+      ? Math.min(MAX_PARTICLES, e.grid.cells) : 1;
     const points = e.binds.length ? e.binds : [null];
     for (const bind of points) {
+    for (let n = 0; n < count; n++) {
       const geo = new THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
                                           : new THREE.BufferGeometry();
       // The UVs are rewritten every frame by `setCell`, so keep the pristine
@@ -223,7 +248,10 @@ async function assemble(THREE, disc, name, onProgress) {
       mesh.visible = false;
       root.add(mesh);
       sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null,
-                     uvBase: uvBase, cellU: u, cellV: v, cell: -1 });
+                     uvBase: uvBase, cellU: u, cellV: v, cell: -1,
+                     // Each particle is one `rate` older than the one before.
+                     phase: e.grid ? n * e.grid.rate : 0 });
+    }
     }
   }
   // Resolve each bind to the actor that carries the bone, once.
@@ -386,7 +414,9 @@ function poseAt(built, frame) {
     // Where it exists it is the authority on how long one particle lasts.
     const span = (e.grid && e.grid.life) || keyed;
     const loops = span > 0 && !e.trackLen;
-    const t = loops ? local % (span + 1) : local;
+    // Each particle runs the same curve, offset by when it was emitted.
+    const aged = local + (s.phase || 0);
+    const t = loops ? aged % (span + 1) : aged;
     const live = local >= 0 && (loops || local <= life)
               && sceneMod.visibleAt(e, frame) && (e.end === null || frame < e.end);
     s.mesh.visible = live;

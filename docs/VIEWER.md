@@ -808,10 +808,9 @@ cell only picks the UV rect.
 seconds and then dark. A track that never ends is an emitter that never
 stops, so the keyframes loop.
 
-### 9.3 What is still not right
+### 9.3 One emitter is a cloud, not a billboard
 
-The flame is **one billboard, and it should be a cloud**. Reading the script
-out, `ef_e001_20.ssc` is a particle emitter:
+Reading the script out, `ef_e001_20.ssc` is a particle emitter:
 
 ```
 9f  4 4 8 0 0 0
@@ -825,6 +824,27 @@ top half and every 32 in the bottom, so the page holds eight 64×16 wisps and
 four 64×32 puffs — small, wide, short pieces that a plume is *made of*, not a
 flame each. `0xC8`'s count in `e004` is 8 and 16, which is how many.
 
-So what renders now is one wisp with the right colour, size and timing where
-the hardware has a column of them. `0x9E`, `0x9F`, `0x74` and `0x77` are the
-emitter and none of them is run.
+**How many are alive at once falls out of `0x9F`.** It writes `rate * cells`
+to `+0xb4` — 128 for the torch — and that is the particle's whole life,
+because it is also where the `0xAA` alpha keys end. A steady emitter spawning
+one particle every `rate` frames therefore holds `life / rate` = `cells` of
+them at any moment, each a cell-step older than the last, so between them they
+show every frame of the sheet. That is what the 32 cells are *for*.
+
+It is also why a single billboard looked nothing like the hardware: one
+particle is faded out for most of its cycle, and the alpha swings 0.90 to 0.01
+over 128 frames. Thirty-two staggered ones sum to something steady — measured
+over the same frames, the total alpha holds at about 41 instead of swinging.
+
+Confirmation for the sheet fields came from EE RAM. Scanning a savestate for
+`0x9F`'s fingerprint — `+0x24 = 4`, `+0x25 = 8`, `+0x29 = 32`, `+0x2a = 4`,
+`+0xb4 = 128` — finds the live effect objects, and reading them back gives
+`+0x1c = (64, 16)` and `+0x20 = (256, 256)`: `0x68`'s four numbers, on
+hardware, exactly as read.
+
+### 9.4 What is still not right
+
+**Where the particles go.** `0x9E 20 96 96 0.008 0 1 0`, `0x74 -0.001` and
+`0x77 2 0 0 0 1` carry the spawn spread and the rise, and none of them is
+read, so the thirty-two sit on top of each other. It reads as a bright
+flame that pulses in place rather than a plume climbing off the brazier.
