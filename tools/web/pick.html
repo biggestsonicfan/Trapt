@@ -147,13 +147,17 @@
 
   <div id="stage">
     <div id="rows"></div>
+    <!-- The player goes first.  Everything below it is a way of choosing what
+         it plays, so having to scroll past all three lists to reach the thing
+         you just picked was backwards.  It is empty until something is
+         opened, and an empty div takes no room. -->
+    <div id="detail"></div>
     <h2>Play a route</h2>
     <div id="routes"></div>
     <h2 id="listHead">Cutscenes on the disc</h2>
     <div id="list"></div>
     <h2>Gallery <span id="galleryStatus"></span></h2>
     <div id="cards"></div>
-    <div id="detail"></div>
   </div>
 
   <div class="note">

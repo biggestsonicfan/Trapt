@@ -94,6 +94,16 @@ check('playScene exposes an end hook', fn('routeNext').includes('S.onEnd'));
 check('and tick fires it instead of looping',
       /if \(S\.onEnd\)/.test(fn('tick')));
 
+console.log('the player comes before the things that choose what it plays');
+const body = html.slice(html.indexOf('<div id="stage">'), html.indexOf('<div class="note">'));
+const at = (s) => body.indexOf(s);
+check('#detail is above the route, list and gallery sections',
+      at('<div id="detail">') > 0
+      && at('<div id="detail">') < at('Play a route')
+      && at('Play a route') < at('id="listHead"')
+      && at('id="listHead"') < at('id="cards"'),
+      'otherwise you scroll past three lists to reach what you just opened');
+
 console.log('modern mode fills the element');
 const fo = fn('fitOutput');
 check('only native is pillarboxed to 4:3',
