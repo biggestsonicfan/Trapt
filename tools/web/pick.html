@@ -515,12 +515,19 @@ function resize() {
 }
 addEventListener('resize', resize);
 
+// How far a pixel of mouse turns the camera.  One pair for both ways of
+// turning it, because a dragged pixel and a pointer-locked `movementX` are
+// the same unit and ought to feel the same.
+const LOOK_X = 0.008, LOOK_Y = 0.006;
+
 function bindOrbit(host) {
   if (host.dataset.bound) return;
   host.dataset.bound = '1';
   let drag = null;
   host.addEventListener('pointerdown', (e) => {
-    drag = { x: e.clientX, y: e.clientY };
+    // Right button, or alt, asks for the old orbit.
+    drag = { x: e.clientX, y: e.clientY,
+             orbit: e.button === 2 || e.altKey };
     host.classList.add('grabbing');
     host.setPointerCapture(e.pointerId);
   });
@@ -528,21 +535,29 @@ function bindOrbit(host) {
     drag = null;
     host.classList.remove('grabbing');
   });
+  // Right-dragging must not raise the menu half way through a turn.
+  host.addEventListener('contextmenu', (e) => e.preventDefault());
   host.addEventListener('pointermove', (e) => {
     // Under pointer lock there is no drag to test and no cursor position to
-    // difference: the browser reports movement directly, and the turn is
-    // about the eye rather than about the target.
+    // difference: the browser reports the movement directly.
     if (V.locked) {
       goFreeCam();
-      lookFrom(V.orbit, -e.movementX * 0.004, e.movementY * 0.003);
+      lookFrom(V.orbit, -e.movementX * LOOK_X, e.movementY * LOOK_Y);
       return;
     }
     if (!drag) return;
     goFreeCam();
-    V.orbit.yaw -= (e.clientX - drag.x) * 0.008;
-    V.orbit.pitch = Math.max(-1.4, Math.min(1.4,
-      V.orbit.pitch + (e.clientY - drag.y) * 0.006));
-    drag = { x: e.clientX, y: e.clientY };
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (drag.orbit) {
+      // Orbiting swings the eye around the target: the way to look over a
+      // model, and disorienting anywhere else, because the world appears to
+      // rotate rather than the head.
+      V.orbit.yaw -= dx * LOOK_X;
+      V.orbit.pitch = Math.max(-1.4, Math.min(1.4, V.orbit.pitch + dy * LOOK_Y));
+    } else {
+      lookFrom(V.orbit, -dx * LOOK_X, dy * LOOK_Y);
+    }
+    drag = { x: e.clientX, y: e.clientY, orbit: drag.orbit };
   });
   // Double-click to look around without holding a button; Escape releases it,
   // which the browser handles itself.
@@ -568,12 +583,15 @@ function bindOrbit(host) {
 // from it, so moving the target moves the eye with it and the shot keeps its
 // framing.
 //
-// The one place that model is wrong is looking around while stationary.
-// Orbiting swings the eye through space, which is what you want when you are
-// inspecting a model and exactly not what you want when you are standing in a
-// room.  So a drag still orbits, and pointer lock -- double-click the view --
-// looks from where you are: `lookFrom` rotates and then puts the target back
-// under the eye, leaving the eye untouched.
+// The one place that model is wrong is turning.  Orbiting swings the eye
+// through space, so the world appears to rotate rather than the head, and
+// with a room around you that is disorienting rather than useful.  So the
+// mouse turns the *camera*: `lookFrom` rotates and then puts the target back
+// under the eye, leaving the eye exactly where it was.
+//
+// Orbiting is still the right thing for looking over a model, so it keeps
+// right-drag (or alt-drag).  Both use the same sensitivity, since a dragged
+// pixel and a pointer-locked `movementX` are the same unit.
 
 /** Where the eye sits for an orbit state. */
 function orbitEye(o) {
@@ -807,8 +825,8 @@ function info() {
     + (M.clip ? ' · ' + M.clipName + ': ' + M.clip.nodes.length + ' animated nodes, '
                 + M.clip.duration + ' frames, skin ' + M.ms.toFixed(1) + ' ms/frame'
               : ' · bind pose')
-    + ' · WASD to fly, QE up/down, shift to hurry, drag to orbit,'
-    + ' double-click to look, wheel to zoom';
+    + ' · WASD to fly, QE up/down, shift to hurry, drag to look,'
+    + ' right-drag to orbit, wheel to zoom';
 }
 
 // ------------------------------------------------------------ the GS look
@@ -1886,7 +1904,7 @@ function sceneInfo() {
     + (S.audio ? ' · ' + S.audio.voiceCount + ' voice clips'
                  + (S.audio.bgm ? ' + BGM' : '') : '')
     + (S.built.warnings.length ? ' · ' + S.built.warnings.length + ' warnings' : '')
-    + ' · WASD to fly, drag to orbit, double-click to look'
+    + ' · WASD to fly, drag to look, right-drag to orbit'
     + ' (any of them switches to free cam)';
 }
 

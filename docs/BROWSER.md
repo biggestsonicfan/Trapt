@@ -78,11 +78,12 @@ disc data. They work under two loaders — `require` in the tests and a classic
   and no bars.
 * **Fullscreen**, scrub, and a Look panel of grading knobs.
 * **The camera.** `WASD` flies, `Q`/`E` drop and rise, `shift` hurries by four,
-  the wheel zooms. Dragging orbits the point you are looking at, which is what
-  you want for a model; **double-click** takes pointer lock and looks from
-  where you are standing, which is what you want in a room (`Esc` releases it).
-  Any of them takes the shot off the cutscene's own camera, the same way the
-  drag always did.
+  the wheel zooms. The mouse turns the camera and not the world: dragging
+  looks around from where you are standing, and **double-click** takes pointer
+  lock to do the same without holding a button (`Esc` releases it). Orbiting a
+  point -- the right thing for looking over a model, disorienting in a room --
+  is on **right-drag** or alt-drag. Any of them takes the shot off the
+  cutscene's own camera, the same way the drag always did.
 
   Speed follows the orbit distance, and that is set from the size of whatever
   was loaded, so the same keys cross a face and cross a courtyard in about the

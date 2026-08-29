@@ -387,9 +387,21 @@ console.log('movement keys yield to typing and to the shortcuts');
         tk.indexOf('S.sceneCam') < tk.indexOf('flyMove('));
   check('and moving switches off the cutscene camera like a drag does',
         fn('goFreeCam').includes('S.sceneCam = false'));
-  check('pointer lock looks from the eye, a drag still orbits the target',
-        fn('bindOrbit').includes('lookFrom(V.orbit')
-        && fn('bindOrbit').includes('requestPointerLock'));
+  // The reported problem: dragging swung the eye around the world, so the
+  // world appeared to rotate instead of the head.  A plain drag has to turn
+  // the camera in place; orbiting is still wanted for looking over a model,
+  // so it keeps the right button and alt.
+  const bo = fn('bindOrbit');
+  check('a plain drag turns the camera, not the world',
+        /if \(drag\.orbit\) \{/.test(bo)
+        && /\} else \{\s*lookFrom\(V\.orbit/.test(bo));
+  check('orbit is still there on right-drag or alt-drag',
+        /e\.button === 2 \|\| e\.altKey/.test(bo));
+  check('and the right button does not raise a menu mid-turn',
+        /contextmenu/.test(bo));
+  check('pointer lock turns the same way, at the same sensitivity',
+        /V\.locked[\s\S]*lookFrom\(V\.orbit, -e\.movementX \* LOOK_X/.test(bo)
+        && bo.includes('requestPointerLock'));
 }
 
 console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);
