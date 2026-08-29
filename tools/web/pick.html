@@ -50,8 +50,11 @@
     border-radius: 10px; height: 460px; margin: 10px 0 14px; overflow: hidden; }
   #view canvas { display: block; width: 100%; height: 100%; cursor: grab; }
   #view.grabbing canvas { cursor: grabbing; }
-  #vinfo { position: absolute; left: 10px; bottom: 8px; font: 11.5px ui-monospace,
-    monospace; opacity: .5; pointer-events: none; }
+  #vinfo { font: 11.5px/1.6 ui-monospace, monospace; color: #a9a7a3;
+    background: #101014; border: 1px solid #2e2e36; border-radius: 8px;
+    padding: 8px 10px; margin: 0 0 14px; white-space: pre-wrap;
+    overflow-wrap: anywhere; user-select: text; }
+  #vinfo:empty { display: none; }
   #lbTop, #lbBot { position: absolute; left: 0; right: 0; background: #000;
     height: 0; pointer-events: none; z-index: 2; }
   #lbTop { top: 0; } #lbBot { bottom: 0; }
@@ -303,8 +306,9 @@ async function openCutscene(name, path, el) {
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
     + '<div id="card"></div>'
-    + '<div id="look"></div><div id="vinfo"></div></div>'
+    + '<div id="look"></div></div>'
     + '<div id="transport"></div>'
+    + '<div id="vinfo"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
 
   const t0 = performance.now();
@@ -1055,8 +1059,9 @@ async function startRoute(opts) {
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
     + '<div id="card"></div>'
-    + '<div id="look"></div><div id="vinfo"></div></div>'
+    + '<div id="look"></div></div>'
     + '<div id="transport"></div>'
+    + '<div id="vinfo"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
   ensureViewer();
   routeNext();

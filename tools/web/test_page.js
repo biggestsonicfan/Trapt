@@ -104,6 +104,17 @@ check('#detail is above the route, list and gallery sections',
       && at('id="listHead"') < at('id="cards"'),
       'otherwise you scroll past three lists to reach what you just opened');
 
+// It used to be positioned over the canvas with pointer-events: none, which
+// made it unreadable against a bright frame and impossible to select.
+// Everything between the opening of #view and the transport div is a child of
+// the viewport; #vinfo must not be among them.
+const viewKids = script.slice(script.indexOf('id="view"'), script.indexOf('id="transport"'));
+check('the debug line is a panel under the transport, not an overlay on the video',
+      !viewKids.includes('vinfo')
+      && /id="transport"[\s\S]{0,80}?id="vinfo"/.test(script)
+      && !/#vinfo \{[^}]*position: absolute/.test(html),
+      'it belongs outside #view so its text can be read and copied');
+
 console.log('modern mode fills the element');
 const fo = fn('fitOutput');
 check('only native is pillarboxed to 4:3',
