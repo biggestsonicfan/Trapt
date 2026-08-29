@@ -28,6 +28,7 @@ const cam = require('./cam.js');
 const sceneMod = require('./scene.js');
 const play = require('./play.js');
 const { stubThree } = require('./stub_three.js');
+const fontMod = require('./font.js');
 const arcMod = arc;
 const ssc = sscMod;
 
@@ -58,6 +59,8 @@ const ARCHIVES = [
   'DATA/RT/COSTUME/RT_C01F_A_HL.ARC',
   'DATA/RT/E429_04/RT_E429_04.ARC',
 ];
+
+const FONT_CUES = {"reference": "%%SCSVＣａｔａｌｉｎａ%%RC\\nＷｅｌｌ．．．．．．\\nｙｏｕ　ｄｏｎ’ｔ　ｒｅｃｏｇｎｉｚｅ　ｍｅ　ａｓ　ｙｏｕｒ　ｍｏｔｈｅｒ？", "plain": "Ｍｏｔｈｅｒ．．．．．．", "restore": "%%SCRDＲｅｄ%%RCＢａｃｋ", "unknown_code": "%%SCZZＦａｌｌｓ%%RCＢａｃｋ", "ends_early": "Ｙｅｓ\\0ＨＩＤＤＥＮ"};
 
 async function main() {
   if (!fs.existsSync(ISO)) {
@@ -630,6 +633,118 @@ async function main() {
                 + '%d cues, %d entities',
                 built.actors.length, clips, s.room, camDur,
                 s.subtitles.length, s.entities.length);
+  }
+
+  // ---------------------------------------------------------------- the font
+  // The face is in the ELF, not on the disc, and font.py's layout has already
+  // been fitted against a PCSX2 capture -- so agreeing with font.py is the
+  // whole test.  A glyph placed half a pixel out, or a colour code that sets
+  // where it should restore, is invisible until you diff it.
+  console.log('the subtitle font, against tools/font.py');
+  {
+    const font = new fontMod.Font(disc.elf);
+    check('cell and box from the ELF descriptor',
+          [font.cell, font.box], [[16, 16], [24, 24]]);
+    check('the CLUT is 16 entries', font.clut.length, 16);
+    check('a shift_jis decoder was available for the reverse map',
+          font.encoder !== null && font.encoder.size > 1000, true);
+
+    const PY_FONT = [
+      'import font, json',
+      'f = font.Font()',
+      'cues = json.loads(r' + "'''" + JSON.stringify(FONT_CUES) + "'''" + ')',
+      'out = {"cell": list(f.cell), "box": list(f.box),',
+      '       "clut": [list(c) for c in f.clut],',
+      '       "widths": {str(k): v for k, v in sorted(f.widths.items())},',
+      '       "runs": {}}',
+      'for name, text in cues.items():',
+      '    out["runs"][name] = [[c, round(x, 4), round(y, 4),',
+      '                          [round(v, 6) for v in col]]',
+      '                         for c, x, y, col in f.runs(text)]',
+      'print(json.dumps(out))',
+    ].join('\n');
+    const w = python(PY_FONT);
+
+    check('every advance in the width table matches',
+          [...font.widths.entries()].every(([k, v]) => w.widths[String(k)] === v)
+          && font.widths.size === Object.keys(w.widths).length, true);
+    check('the CLUT matches byte for byte',
+          font.clut.map((c) => c.join()).join('|'),
+          w.clut.map((c) => c.join()).join('|'));
+
+    let worstPos = 0, runsBad = [];
+    for (const name of Object.keys(FONT_CUES)) {
+      const got = font.runs(FONT_CUES[name]);
+      const want = w.runs[name];
+      if (got.length !== want.length) {
+        runsBad.push(name + ': ' + got.length + ' glyphs vs ' + want.length);
+        continue;
+      }
+      for (let i = 0; i < got.length; i++) {
+        if (got[i].sjis !== want[i][0]) {
+          runsBad.push(name + ' glyph ' + i + ': sjis '
+                       + got[i].sjis.toString(16) + ' vs ' + want[i][0].toString(16));
+          break;
+        }
+        worstPos = Math.max(worstPos, Math.abs(got[i].x - want[i][1]),
+                            Math.abs(got[i].y - want[i][2]));
+        const c = got[i].colour, cw2 = want[i][3];
+        if (Math.abs(c[0] - cw2[0]) > 1e-6 || Math.abs(c[1] - cw2[1]) > 1e-6
+            || Math.abs(c[2] - cw2[2]) > 1e-6) {
+          runsBad.push(name + ' glyph ' + i + ': colour ' + c + ' vs ' + cw2);
+          break;
+        }
+      }
+    }
+    check('every glyph of every cue lands in the same place', runsBad.slice(0, 2), []);
+    console.log('        worst placement delta %s UI units', worstPos.toExponential(1));
+
+    // And the pixels: font.py's rasteriser is the one measured against
+    // hardware, so this renders the reference cue on both sides and diffs.
+    const REF = FONT_CUES.reference;
+    const PY_PIX = [
+      'import font, json',
+      'f = font.Font()',
+      'buf = font.frame(f, r' + "'''" + REF + "'''" + ')',
+      'w, h = font.NATIVE_W, font.NATIVE_H',
+      'lit = [i for i in range(0, len(buf), 3) if buf[i] or buf[i+1] or buf[i+2]]',
+      'print(json.dumps({"w": w, "h": h, "lit": len(lit),',
+      '  "sum": round(sum(buf), 2),',
+      '  "px": [[i // 3 % w, i // 3 // w, round(buf[i], 3), round(buf[i+1], 3),',
+      '          round(buf[i+2], 3)] for i in lit[::97]]}))',
+    ].join('\n');
+    const px = python(PY_PIX);
+    const ov = fontMod.overlay(font, REF);
+    check('the overlay is the native framebuffer size',
+          [ov.width, ov.height], [px.w, px.h]);
+
+    let worstPix = 0, checked = 0;
+    for (const [x, y, r, g, b] of px.px) {
+      const o = (y * ov.width + x) * 4;
+      worstPix = Math.max(worstPix, Math.abs(ov.rgba[o] - Math.round(r)),
+                          Math.abs(ov.rgba[o + 1] - Math.round(g)),
+                          Math.abs(ov.rgba[o + 2] - Math.round(b)));
+      checked++;
+    }
+    check(checked + ' sampled pixels within one level of font.py',
+          worstPix <= 1, true);
+    console.log('        %d lit pixels in the reference cue, worst delta %d',
+                px.lit, worstPix);
+
+    // The overlay has to be transparent where there is no text, or it would
+    // paint a black box over the scene.
+    let opaque = 0;
+    for (let i = 3; i < ov.rgba.length; i += 4) if (ov.rgba[i] > 0) opaque++;
+    check('it is transparent away from the glyphs',
+          opaque > 0 && opaque < ov.width * ov.height * 0.25, true);
+
+    // The speaker name is drawn grey and the body near-white; that split is
+    // the one thing a reader notices immediately if the markup is mishandled.
+    const runs = font.runs(FONT_CUES.reference);
+    const greys = runs.filter((g) => Math.abs(g.colour[0] - 0.5) < 0.01).length;
+    const bodies = runs.filter((g) => g.colour[0] > 0.7).length;
+    check('the speaker is grey and the body is not',
+          [greys > 0, bodies > 0], [true, true]);
   }
 
   console.log('the decoders refuse what they should');

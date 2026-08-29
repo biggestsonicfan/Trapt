@@ -126,6 +126,7 @@
 <script src="scene.js"></script>
 <script src="sli.js"></script>
 <script src="gs.js"></script>
+<script src="font.js"></script>
 <script src="model.js"></script>
 <script src="play.js"></script>
 <script>
@@ -140,6 +141,7 @@ let CUR = null;      // the archive currently open
 let V = null;        // the three.js viewer, created once
 let M = null;        // the model on screen, and its clip
 let S = null;        // the whole cutscene, when one is playing
+let FONT = null;     // the PS2 kernel face, out of the ELF
 
 function row(label, value, cls) {
   const d = document.createElement('div');
@@ -184,6 +186,18 @@ async function load(file) {
     names.push(DISC.elfStr(DISC.elfU32(0x00386920 + i * 4)));
   row('cutscene registry', names.length + ' entries, ' + names[0] + ' … '
       + names[names.length - 1]);
+
+  // The game ships no font: DATA/FONT/FONT.BIN is an 18-byte stub nothing
+  // reads.  The face is the PS2 kernel's, baked into the ELF we just read.
+  try {
+    FONT = new TraptFont.Font(DISC.elf);
+    row('subtitle font', 'PS2 kernel face from the ELF at 0x003885C0, '
+        + FONT.widths.size + ' advances, ' + FONT.clut.length + '-entry CLUT',
+        'good');
+  } catch (err) {
+    FONT = null;
+    row('subtitle font', err.message, 'bad');
+  }
 
   for (const n of names) {
     const path = 'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC';
@@ -609,6 +623,88 @@ function buildLookPanel() {
   });
 }
 
+// --------------------------------------------------- the game's own subtitles
+// The GS draws dialogue and the letterbox straight into the 512x224
+// framebuffer, so this does the same: one overlay texture, composited over
+// the world *inside* the render target, before the post pass scales it.
+// Drawing the text as DOM instead puts it outside the resolution that defines
+// the look, which is why player.html has the same switch.
+function ensureSubsPass() {
+  if (V.subsPass) return;
+  const W = TraptGs.RT_W, H = TraptGs.RT_H;
+  V.subBuf = new Uint8Array(W * H * 4);
+  V.subTex = new THREE.DataTexture(V.subBuf, W, H, THREE.RGBAFormat);
+  V.subTex.flipY = true;               // the overlay is built top-down
+  V.subTex.needsUpdate = true;
+  V.subScene = new THREE.Scene();
+  V.subCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2),
+    new THREE.MeshBasicMaterial({ map: V.subTex, transparent: true,
+                                  depthTest: false, depthWrite: false }));
+  quad.frustumCulled = false;
+  V.subScene.add(quad);
+  V.subsPass = true;
+  V.subsPs2 = true;
+  V.subKey = null;
+}
+
+/**
+ * Rebuild the overlay when what it shows changes -- a new cue, or the
+ * letterbox moving.  `0x57` puts the bars at 50 and 110 units of the 640x448
+ * UI space, which is 25 lines at the top and 55 from the bottom.
+ */
+function updateSubs(r) {
+  ensureSubsPass();
+  const W = TraptGs.RT_W, H = TraptGs.RT_H;
+  const lb = Math.round(r.letterbox * 1000);
+  const key = (r.subtitle ? r.subtitle.frame : -1) + '/' + lb
+            + '/' + (V.subsPs2 ? 1 : 0);
+  if (key === V.subKey) return;
+  V.subKey = key;
+
+  V.subBuf.fill(0);
+  if (V.subsPs2) {
+    // the bars first: the text is drawn *over* them, as on hardware
+    const top = Math.round(r.letterbox * 50 / 448 * H);
+    const bot = Math.round(r.letterbox * 110 / 448 * H);
+    for (let y = 0; y < top; y++)
+      for (let x = 0; x < W; x++) V.subBuf[(y * W + x) * 4 + 3] = 255;
+    for (let y = H - bot; y < H; y++)
+      for (let x = 0; x < W; x++) V.subBuf[(y * W + x) * 4 + 3] = 255;
+
+    if (r.subtitle && FONT) {
+      const ov = TraptFont.overlay(FONT, TraptFont.cueText(r.subtitle));
+      for (let i = 0; i < ov.rgba.length; i += 4) {
+        const a = ov.rgba[i + 3] / 255;
+        if (a <= 0) continue;
+        V.subBuf[i] = ov.rgba[i];
+        V.subBuf[i + 1] = ov.rgba[i + 1];
+        V.subBuf[i + 2] = ov.rgba[i + 2];
+        V.subBuf[i + 3] = Math.max(V.subBuf[i + 3], ov.rgba[i + 3]);
+      }
+    }
+  }
+  V.subTex.needsUpdate = true;
+}
+
+function setSubsPs2(on) {
+  ensureSubsPass();
+  V.subsPs2 = on;
+  V.subKey = null;                     // force a rebuild
+  const dom = document.getElementById('subs');
+  if (dom) dom.style.display = 'none';
+  for (const id of ['lbTop', 'lbBot']) {
+    const el = document.getElementById(id);
+    // in PS2 mode the bars are drawn into the framebuffer, not over it
+    if (el) el.style.display = on ? 'none' : 'block';
+  }
+  const b = document.getElementById('subsBtn');
+  if (b) {
+    b.textContent = on ? 'Subs PS2' : 'Subs DOM';
+    b.classList.toggle('on', on);
+  }
+}
+
 // ------------------------------------------------------------- scene mode
 // The whole cutscene: room, cast, camera, subtitles and letterbox, assembled
 // from the disc by play.js and driven here.
@@ -656,10 +752,12 @@ function sceneTransport() {
   t.innerHTML = '<button id="playBtn"></button>'
               + '<button id="camBtn"></button>'
               + '<button id="ps2Btn"></button>'
+              + '<button id="subsBtn"></button>'
               + '<button id="lookBtn">Look</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
   document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
+  document.getElementById('subsBtn').onclick = () => setSubsPs2(!V.subsPs2);
   document.getElementById('lookBtn').onclick = (e) => {
     const panel = document.getElementById('look');
     buildLookPanel();
@@ -667,6 +765,7 @@ function sceneTransport() {
     e.target.classList.toggle('on', panel.classList.contains('on'));
   };
   setPs2(V.ps2 === undefined ? true : V.ps2);
+  setSubsPs2(V.subsPs2 === undefined ? true : V.subsPs2);
   const btn = document.getElementById('playBtn');
   const cam = document.getElementById('camBtn');
   const seek = document.getElementById('seek');
@@ -718,8 +817,12 @@ function applySceneFrame() {
     V.key.position.copy(V.camera.position);
   }
 
+  updateSubs(r);
+
   const subs = document.getElementById('subs');
-  if (r.subtitle) {
+  if (V.subsPs2) {
+    subs.style.display = 'none';
+  } else if (r.subtitle) {
     subs.style.display = 'block';
     subs.innerHTML = '';
     if (r.subtitle.speaker) {
@@ -736,9 +839,12 @@ function applySceneFrame() {
     subs.style.display = 'none';
   }
 
-  // 50 and 110 units of the game's 640x448 UI space, as fractions of height
-  document.getElementById('lbTop').style.height = (r.letterbox * 50 / 448 * 100) + '%';
-  document.getElementById('lbBot').style.height = (r.letterbox * 110 / 448 * 100) + '%';
+  // 50 and 110 units of the game's 640x448 UI space, as fractions of height.
+  // In PS2 mode these are drawn into the framebuffer instead (updateSubs).
+  document.getElementById('lbTop').style.height =
+    V.subsPs2 ? '0' : (r.letterbox * 50 / 448 * 100) + '%';
+  document.getElementById('lbBot').style.height =
+    V.subsPs2 ? '0' : (r.letterbox * 110 / 448 * 100) + '%';
   document.getElementById('fade').style.opacity = r.fade.toFixed(3);
 
   const fnum = document.getElementById('fnum');
@@ -804,6 +910,11 @@ function drawFrame() {
   V.renderer.setRenderTarget(V.rt);
   V.renderer.clear();
   V.renderer.render(V.scene, V.camera);
+  if (V.subsPass && V.subsPs2) {
+    V.renderer.autoClear = false;      // the text goes on top of the frame
+    V.renderer.render(V.subScene, V.subCam);
+    V.renderer.autoClear = true;
+  }
   V.renderer.setRenderTarget(null);
   V.postMat.uniforms.tex.value = V.rt.texture;
   V.renderer.render(V.postScene, V.postCam);
