@@ -749,6 +749,38 @@ The live `--watch` path reads every slot too, for the same reason: during a
 story cutscene the attract slot can still hold a stale but plausible camera,
 and taking the first one would wait for ever.
 
+### 8.2 Two ways the oracle lies, and what it says instead
+
+**A held camera answers for its whole shot.** The residual only knows the
+camera, so when the camera does not move the answer is a *shot*, not a frame.
+e004's flash holds one camera value for frames **1420..1739** -- 5.3 seconds,
+with the entire effect window (1420..1660) inside it -- so no camera match can
+ever pin that effect, and a frame quoted out of that span is arbitrary. This
+cost a wrong conclusion before it was noticed: the sparks appeared to spawn at
+1137 against the script's 1172, a 35-frame error, and both frames turn out to
+sit inside one 70-frame held block (1125..1194), so nothing was wrong at all.
+
+`match` now returns the span as a fourth value and the listing prints it:
+
+```
+.00.p2s  e004 frames 1420..1739 (the camera is held still for all 320)  residual 0.00e+00
+.07.p2s  e004 frame 2129                                               residual 1.91e-06
+```
+
+Where the camera moves, single frames stay single -- e001 still answers 3705,
+10834, 1341 and 7422 -- so this costs nothing and stops false precision.
+
+To pin a frame inside a held shot, something else has to supply the clock. The
+effect instances carry one: age at `+0x10` against a lifetime at `+0x1c`
+(9.5), so `frame = spawn + age` where the spawn is known.
+
+**A savestate taken at a breakpoint is not a picture of the breakpoint.** Two
+states saved at `0x001C4C90` hits at least 25 frames apart came back with
+**byte-identical** `Screenshot.png` (sha1 `460e8c4f...`) and differing
+`eeMemory.bin`. Nothing is presented while the emulator is halted, so the
+screenshot is whatever frame was last displayed. The RAM is the halted moment;
+the picture is not, and the two must not be read as one observation.
+
 **`--watch` needs PINE to itself.** PINE serves one client at a time, and when
 somebody else already holds it the socket still *accepts* and then never
 answers -- which arrives as a bare `timed out` fifteen minutes later and looks

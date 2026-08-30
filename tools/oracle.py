@@ -180,14 +180,37 @@ def match(disc, eye, target, names=None):
                 local = (frame, r)
         if best is None or local[1] < best[2]:
             best = (name, local[0], local[1])
-    return best
+    if best is None:
+        return None
+    # How many frames match this well?  A camera that is held still answers
+    # for its whole shot: e004's flash shot holds one value for frames
+    # 1420..1739 -- 5.3 seconds, with the entire effect window inside it.  A
+    # frame quoted out of that span is arbitrary, and saying so is the
+    # difference between an oracle and a guess.
+    lo = hi = best[1]
+    tr = track_for(disc, best[0])
+    if tr is not None:
+        n = int(tr.duration())
+
+        def same(frame):
+            s = tr.sample(frame)
+            if not s or not s.get('position') or not s.get('target'):
+                return False
+            return (_dist(s['position'], eye)
+                    + _dist(s['target'], target)) <= best[2] + 1e-4
+
+        while lo > 1 and same(lo - 1):
+            lo -= 1
+        while hi < n and same(hi + 1):
+            hi += 1
+    return (best[0], best[1], best[2], (lo, hi))
 
 
 def identify(disc, path, names=None):
     """`{path, camera, cutscene, frame, residual}` for one savestate."""
     st = State(path)
     out = {'path': path, 'state': st, 'camera': None, 'slot': None,
-           'cutscene': None, 'frame': None, 'residual': None}
+           'cutscene': None, 'frame': None, 'residual': None, 'span': None}
     # Try every slot and let the residual pick: which one is live depends on
     # whether this is the attract loop or the story, and a stale slot can
     # still hold a plausible-looking camera from whatever ran last.
@@ -196,7 +219,8 @@ def identify(disc, path, names=None):
         if got and got[2] <= MATCH_MAX and (out['residual'] is None
                                             or got[2] < out['residual']):
             out['camera'], out['slot'] = cam, addr
-            out['cutscene'], out['frame'], out['residual'] = got
+            out['cutscene'], out['frame'], out['residual'] = got[:3]
+            out['span'] = got[3]
     return out
 
 
@@ -464,8 +488,14 @@ def main():
             print('%-36s not in a cutscene (the camera words are stale)' % name)
             continue
         eye, target = got['camera']
-        print('%-36s %s frame %d  residual %.2e' % (
-            name, got['cutscene'], got['frame'], got['residual']))
+        span = got.get('span')
+        # Say when the answer is a shot rather than a frame.
+        where = 'frame %d' % got['frame']
+        if span and span[1] > span[0]:
+            where = ('frames %d..%d (the camera is held still for all %d '
+                     'of them)' % (span[0], span[1], span[1] - span[0] + 1))
+        print('%-36s %s %s  residual %.2e' % (
+            name, got['cutscene'], where, got['residual']))
         print('%-36s   eye (%.2f, %.2f, %.2f) -> target (%.2f, %.2f, %.2f)'
               % ('', eye[0], eye[1], eye[2], target[0], target[1], target[2]))
         if shot and got['state'].has('Screenshot.png'):
