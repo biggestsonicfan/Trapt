@@ -810,6 +810,36 @@ it is the capture that is not one observation.
 to know where you are, then resume and save; the counter in the resulting
 state dates it exactly.
 
+### 8.5 The capture that finally worked
+
+The counter is also a **breakpoint condition**, which removes the last of the
+chasing. Positive floats order the same as their bits, so gating the sprite
+handler on the counter's raw words halts only inside the window wanted:
+
+```
+address    0x001C4C90                       the 0x68 sprite handler
+condition  [0x0081CA40] > 0x44AF0000        frame > 1400
+        && [0x0081CA40] < 0x44D48000        frame < 1700
+```
+
+The upper bound also excludes a non-cutscene state, whose filler reads as
+2.1e37. e001's torches and e004's own spark spawns are stepped over silently
+and the first halt is the one wanted.
+
+It halted at **frame 1420**, and the arguments read straight off the stopped
+machine are `ef_s014c.tm2 64 64 64 64` -- the block our model places at 1420,
+with the cell and sheet it decodes, confirmed against hardware rather than
+inferred. Then disarm, resume, save: the state dates itself at **frame 1650**,
+inside the glow's window, with a screenshot that is the same observation.
+
+`render.py` at 1650 matches that capture's composition exactly -- head tilt,
+raised arm and claw, headband, all of it -- so scene, camera and pose are
+right at a frame that is now known rather than assumed. The differences left
+are the effect itself, which `render.py` does not draw, and the warm light it
+throws. The glow sits upper-left in hardware, clipped at x = 0, which is the
+corner the model puts it in; the earlier reading of it as 160 px out of place
+was two different frames being compared.
+
 **`--watch` needs PINE to itself.** PINE serves one client at a time, and when
 somebody else already holds it the socket still *accepts* and then never
 answers -- which arrives as a bare `timed out` fifteen minutes later and looks
