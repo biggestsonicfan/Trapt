@@ -524,7 +524,16 @@ function bindOrbit(host) {
   if (host.dataset.bound) return;
   host.dataset.bound = '1';
   let drag = null;
+  // The card, the Look panel and the HUD live *inside* `#view`, so their
+  // presses bubble here.  Capturing the pointer for an ancestor retargets
+  // everything that follows -- including the click the browser synthesises --
+  // at the capturing element, so a card button pressed while the camera was
+  // listening never saw its own click and the route card could not be
+  // dismissed at all.  Anything that is part of the UI is not a drag.
+  const onUI = (e) => !!(e.target && e.target.closest
+                         && e.target.closest('#card, #look, #hud'));
   host.addEventListener('pointerdown', (e) => {
+    if (onUI(e)) return;
     // Right button, or alt, asks for the old orbit.
     drag = { x: e.clientX, y: e.clientY,
              orbit: e.button === 2 || e.altKey };
@@ -561,7 +570,8 @@ function bindOrbit(host) {
   });
   // Double-click to look around without holding a button; Escape releases it,
   // which the browser handles itself.
-  host.addEventListener('dblclick', () => {
+  host.addEventListener('dblclick', (e) => {
+    if (onUI(e)) return;              // double-clicking a button is not a look
     if (host.requestPointerLock) host.requestPointerLock();
   });
   document.addEventListener('pointerlockchange', () => {
@@ -570,6 +580,7 @@ function bindOrbit(host) {
     if (!V.locked) V.keys = Object.create(null);
   });
   host.addEventListener('wheel', (e) => {
+    if (onUI(e)) return;              // let a panel scroll itself
     e.preventDefault();
     V.orbit.dist *= 1 + Math.sign(e.deltaY) * 0.12;
   }, { passive: false });

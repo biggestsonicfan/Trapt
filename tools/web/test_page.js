@@ -408,6 +408,26 @@ console.log('movement keys yield to typing and to the shortcuts');
         /e\.button === 2 \|\| e\.altKey/.test(bo));
   check('and the right button does not raise a menu mid-turn',
         /contextmenu/.test(bo));
+  // The card, the Look panel and the HUD are children of #view, so their
+  // presses bubble to the camera.  Capturing the pointer for an ancestor
+  // retargets the click the browser synthesises, so a card button never sees
+  // its own click -- which left the route card completely undismissable.
+  check('a press on the card, look panel or hud is not a drag',
+        /closest\('#card, #look, #hud'\)/.test(bo));
+  check('and the guard runs before the pointer is captured',
+        bo.indexOf('onUI(e)') < bo.indexOf('setPointerCapture'));
+  check('double-clicking a button does not grab the pointer either',
+        (() => {
+          const i = bo.indexOf("addEventListener('dblclick'");
+          const j = bo.indexOf('requestPointerLock', i);
+          return i >= 0 && j > i && bo.slice(i, j).includes('onUI(e)');
+        })());
+  check('and the wheel leaves a panel alone',
+        (() => {
+          const i = bo.indexOf("addEventListener('wheel'");
+          const j = bo.indexOf('preventDefault', i);
+          return i >= 0 && j > i && bo.slice(i, j).includes('onUI(e)');
+        })());
   check('pointer lock turns the same way, at the same sensitivity',
         /V\.locked[\s\S]*lookFrom\(V\.orbit, -e\.movementX \* LOOK_X/.test(bo)
         && bo.includes('requestPointerLock'));
