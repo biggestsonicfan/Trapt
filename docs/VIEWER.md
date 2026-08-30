@@ -810,7 +810,33 @@ it is the capture that is not one observation.
 to know where you are, then resume and save; the counter in the resulting
 state dates it exactly.
 
-### 8.5 The capture that finally worked
+### 8.5 There was no spawn at 1395
+
+One apparent discrepancy outlived every other: a `0x68` that seemed to fire at
+frame 1395, where the script has nothing -- its nearest blocks are the glow at
+1420 and 1425. It looked solid, because frames 1380..1417 each carry a
+*unique* camera value, so unlike the spark reading it could not be a held-shot
+artifact.
+
+It was still wrong. Re-running with the handler gated on frames 1369..1418 --
+the same conditional mechanism that halts reliably at 1420 -- the cutscene
+played all the way through to 2035 without halting once, with the breakpoint
+confirmed live. There is no sprite spawn in that window.
+
+What produced the reading is the last of the instrument problems: **the camera
+slot read at a breakpoint need not agree with the counter.** The two halts in
+that first run decoded to camera frames 1395 and 1505 while both were, by the
+counter, the glow spawning at 1420. The slot is eight floats written once a
+frame, and a breakpoint stops the machine at an arbitrary point in that frame,
+so a read can catch it before the write. The counter is a single word and does
+not have the problem.
+
+So: match the camera to identify the *cutscene*, and read the counter for the
+*frame*. Every conclusion this session that rested on a camera-derived frame
+at a breakpoint turned out to be an artifact; none that rested on the counter
+did.
+
+### 8.6 The capture that finally worked
 
 The counter is also a **breakpoint condition**, which removes the last of the
 chasing. Positive floats order the same as their bits, so gating the sprite
@@ -852,7 +878,7 @@ camera words hold whatever was last there, often denormals of order 1e37 — so
 those are reported as such instead of being matched to the nearest track by
 accident.
 
-### 8.0 Catching a cutscene as it plays
+### 8.7 Catching a cutscene as it plays
 
 `--watch` sits on PINE, matches the live camera against one cutscene's track
 and saves a state the moment it appears -- so a capture can be aimed at a
@@ -866,7 +892,7 @@ Matching a single track keeps each poll cheap enough to leave running. PCSX2
 takes **one** PINE client, so nothing else may hold it -- the MCP server does
 when it is running, and this will be refused while it is.
 
-### 8.1 What is still missing
+### 8.8 What is still missing
 
 None of the four savestates on this machine is in a cutscene that has sprite
 effects, so §7 has no hardware reference at all. Getting one means saving
@@ -891,7 +917,7 @@ Note the frame counter cannot be written to seek there — doing so soft-resets
 the game ([`FONT.md`](FONT.md)) — so the capture has to be taken by playing
 forward.
 
-### 8.2 Why not the emulator's IPC
+### 8.9 Why not the emulator's IPC
 
 PINE takes a single client, so anything holding it locks everything else out,
 and it reads one byte per round trip. A savestate is free, repeatable, and
