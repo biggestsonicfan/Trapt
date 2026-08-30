@@ -774,12 +774,41 @@ To pin a frame inside a held shot, something else has to supply the clock. The
 effect instances carry one: age at `+0x10` against a lifetime at `+0x1c`
 (9.5), so `frame = spawn + age` where the spawn is known.
 
-**A savestate taken at a breakpoint is not a picture of the breakpoint.** Two
-states saved at `0x001C4C90` hits at least 25 frames apart came back with
-**byte-identical** `Screenshot.png` (sha1 `460e8c4f...`) and differing
-`eeMemory.bin`. Nothing is presented while the emulator is halted, so the
-screenshot is whatever frame was last displayed. The RAM is the halted moment;
-the picture is not, and the two must not be read as one observation.
+### 8.3 The game counts the frame itself
+
+`0x0081CA40` holds the cutscene's current frame as a float, in the same static
+block as the story camera -- and it belongs to the same path: the attract loop
+leaves it filler, so e001 still falls back on the camera. It leads the camera
+match by one, the counter being stepped before the camera is sampled.
+
+It cross-checks against the only state whose camera is unambiguous: `.07`'s
+camera pins e004 frame **2129**, and the counter independently says **2129**.
+So `identify` now believes the counter wherever it lands inside the shot the
+camera picked, and a held shot stops being a blind spot:
+
+```
+.00.p2s  e004 frame 1420 (from the game's own counter)  residual 0.00e+00
+.07.p2s  e004 frame 2129 (from the game's own counter)  residual 1.91e-06
+.08.p2s  e001 frame 7422                                residual 3.81e-06
+```
+
+### 8.4 A savestate issued at a breakpoint is not a picture of it
+
+Two states saved at `0x001C4C90` hits **25 frames apart** both report frame
+1420, and both carry a **byte-identical** `Screenshot.png` (sha1
+`460e8c4f...`). The save does not happen where it is asked for: it is deferred
+until the emulator runs again, so the earlier request was still pending when
+the later halt came round.
+
+Worse, the picture and the RAM need not agree. `render.py` at frame 1420 draws
+a tight close-up; the captured screenshot is a medium shot with the girl
+thrown well clear, which is a later frame of the same held shot. The same
+render at 2129 does match `.07`'s screenshot, so the camera path is sound --
+it is the capture that is not one observation.
+
+**So take the picture while the emulator is running.** Halt on the breakpoint
+to know where you are, then resume and save; the counter in the resulting
+state dates it exactly.
 
 **`--watch` needs PINE to itself.** PINE serves one client at a time, and when
 somebody else already holds it the socket still *accepts* and then never

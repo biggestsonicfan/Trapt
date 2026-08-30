@@ -46,6 +46,18 @@ CAM_TARGET = 0x0081B700
 # "not in a cutscene".  Both are static, 0x10 apart within a slot, so try each
 # and let the residual say which one was live.
 CAM_SLOTS = (0x0081B6F0, 0x0081B730)
+
+# The cutscene's own frame, as a float, in the same static block as the story
+# camera -- and like that camera it belongs to the story path: the attract
+# loop leaves it as `0x7c` filler, so e001 captures fall back on the camera.
+# It leads the camera match by one (a state whose camera pins e004 frame 2129
+# reads 2130 here), the counter being stepped before the camera is sampled.
+#
+# This is what makes a held shot readable.  e004's flash keeps one camera
+# value for 320 frames, so no camera match can pin anything inside it; the
+# counter says 1421 outright.
+FRAME_COUNTER = 0x0081CA40
+COUNTER_LEAD = 1
 EE_MASK = 0x01FFFFFF
 
 STATE_DIR = os.path.join(os.path.expanduser('~'), 'OneDrive', 'Documents',
@@ -81,6 +93,14 @@ class State:
 
     def vec4(self, addr):
         return struct.unpack_from('<4f', self.ee, addr & EE_MASK)
+
+    @property
+    def counter(self):
+        """The cutscene frame the game itself is counting, or None."""
+        v, = struct.unpack_from('<f', self.ee, FRAME_COUNTER & EE_MASK)
+        if not (0.0 < v < 200000.0):
+            return None
+        return int(round(v)) - COUNTER_LEAD
 
     def camera_at(self, addr):
         """`(eye, target)` for one camera slot, or None if it holds rubbish."""
@@ -210,7 +230,8 @@ def identify(disc, path, names=None):
     """`{path, camera, cutscene, frame, residual}` for one savestate."""
     st = State(path)
     out = {'path': path, 'state': st, 'camera': None, 'slot': None,
-           'cutscene': None, 'frame': None, 'residual': None, 'span': None}
+           'cutscene': None, 'frame': None, 'residual': None, 'span': None,
+           'from_counter': False}
     # Try every slot and let the residual pick: which one is live depends on
     # whether this is the attract loop or the story, and a stale slot can
     # still hold a plausible-looking camera from whatever ran last.
@@ -221,6 +242,13 @@ def identify(disc, path, names=None):
             out['camera'], out['slot'] = cam, addr
             out['cutscene'], out['frame'], out['residual'] = got[:3]
             out['span'] = got[3]
+    # The camera names a shot; the counter names a frame.  Believe the counter
+    # whenever it falls inside the shot the camera picked, which is the only
+    # way to read anything out of a held one.
+    lo, hi = out['span'] or (0, 0)
+    n = st.counter
+    if n is not None and out['cutscene'] and lo <= n <= hi:
+        out['frame'], out['span'], out['from_counter'] = n, (n, n), True
     return out
 
 
@@ -494,6 +522,8 @@ def main():
         if span and span[1] > span[0]:
             where = ('frames %d..%d (the camera is held still for all %d '
                      'of them)' % (span[0], span[1], span[1] - span[0] + 1))
+        if got.get('from_counter'):
+            where += " (from the game's own counter)"
         print('%-36s %s %s  residual %.2e' % (
             name, got['cutscene'], where, got['residual']))
         print('%-36s   eye (%.2f, %.2f, %.2f) -> target (%.2f, %.2f, %.2f)'
