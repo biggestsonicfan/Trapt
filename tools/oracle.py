@@ -16,6 +16,15 @@ signature.
     python oracle.py                          # identify every savestate
     python oracle.py <state.p2s>              # one, in detail
     python oracle.py <state.p2s> --shot out.png   # and save its screenshot
+    python oracle.py <state.p2s> --probe      # the addresses it read it with
+
+A state is named after the disc it came off, so a `SLPS-25445` capture is
+identified against the Japanese disc and a `SLUS-21255` one against the US
+disc with no flag either way.  The camera addresses above are the US build's;
+the JP build's are heap, not static, so nobody has written them down -- there
+`State.find_cameras` finds the live camera by its shape instead, and `--probe`
+reports what it found so an address can be pinned once and written into
+`region.py`.
 
 `e001`'s slot-08 state comes back as frame 7422 at a residual of 4.7e-06,
 which is the answer `docs/VIEWER.md` 4 already had by hand -- so a run that
@@ -36,29 +45,38 @@ import struct
 import sys
 import zipfile
 
-# The live camera the RT player writes every frame.  Eye, then target,
-# forward, right and down at 0x10 steps -- see docs/VIEWER.md 4.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import region as region_mod
+
+# The live camera the RT player writes every frame.  Eye, then target, then
+# at +0x30 the unit forward between them -- see docs/VIEWER.md 4.
 CAM_EYE = 0x0081B6F0
 CAM_TARGET = 0x0081B700
 # There is more than one of these.  The attract loop's camera is at CAM_EYE;
 # a story cutscene's is 0x40 further on, and the first address reads as `0x7c`
 # filler while it plays -- which is why every story capture used to come back
 # "not in a cutscene".  Both are static, 0x10 apart within a slot, so try each
-# and let the residual say which one was live.
+# and let the residual say which one was live.  Those are the US build's; the
+# region carries them, and a build with none gets `find_cameras` instead.
 CAM_SLOTS = (0x0081B6F0, 0x0081B730)
 
-# The cutscene's own frame, as a float, in the same static block as the story
-# camera -- and like that camera it belongs to the story path: the attract
-# loop leaves it as `0x7c` filler, so e001 captures fall back on the camera.
-# It leads the camera match by one (a state whose camera pins e004 frame 2129
-# reads 2130 here), the counter being stepped before the camera is sampled.
+# The cutscene's own frame, as a float, in the same static block as its
+# camera -- and it belongs to that camera: each of the two slots has its own
+# counter and the other one reads filler.  It leads the camera match by one (a
+# state whose camera pins e004 frame 2129 reads 2130 here), the counter being
+# stepped before the camera is sampled.
 #
 # This is what makes a held shot readable.  e004's flash keeps one camera
 # value for 320 frames, so no camera match can pin anything inside it; the
-# counter says 1421 outright.
+# counter says 1421 outright.  `region.py` pairs the two.
 FRAME_COUNTER = 0x0081CA40
 COUNTER_LEAD = 1
 EE_MASK = 0x01FFFFFF
+
+# A float 1.0, which both the eye's and the target's w hold.  Anchoring the
+# sweep on it turns 2M sixteen-byte candidates into about 100k, and `find`
+# does that filtering in C -- 0.2 s for a 32 MB state instead of half a minute.
+ONE_F = struct.pack('<f', 1.0)
 
 STATE_DIR = os.path.join(os.path.expanduser('~'), 'OneDrive', 'Documents',
                          'PCSX2', 'sstates')
@@ -78,12 +96,20 @@ COARSE = 16
 
 
 class State:
-    """One `.p2s`, opened lazily."""
+    """One `.p2s`, opened lazily.
 
-    def __init__(self, path):
+    PCSX2 names a state after the disc it came off -- `SLUS-21255 (...)`,
+    `SLPS-25445 (...)` -- so the state itself says which build's addresses to
+    read it with, and identifying a mixed directory needs no flag.
+    """
+
+    def __init__(self, path, reg=None):
         self.path = path
+        self.region = (reg or region_mod.of_serial(os.path.basename(path))
+                       or region_mod.active())
         self.zip = zipfile.ZipFile(path)
         self._ee = None
+        self._found = None
 
     @property
     def ee(self):
@@ -94,13 +120,31 @@ class State:
     def vec4(self, addr):
         return struct.unpack_from('<4f', self.ee, addr & EE_MASK)
 
-    @property
-    def counter(self):
-        """The cutscene frame the game itself is counting, or None."""
-        v, = struct.unpack_from('<f', self.ee, FRAME_COUNTER & EE_MASK)
+    def counter_at(self, slot):
+        """The frame the game itself is counting beside camera `slot`, or None.
+
+        Only a build whose counter addresses are known has one.  The JP
+        build's are not: they are heap, not static, so they can only come off
+        a running game -- `--probe` narrows one down from a state that is in a
+        cutscene and whose frame the camera has already pinned.
+        """
+        table = self.region.ee['COUNTERS']
+        addr = None if table is None else table.get(slot)
+        if addr is None:
+            return None
+        v, = struct.unpack_from('<f', self.ee, addr & EE_MASK)
         if not (0.0 < v < 200000.0):
             return None
         return int(round(v)) - COUNTER_LEAD
+
+    @property
+    def counter(self):
+        """The counter of whichever slot currently holds a camera."""
+        for addr, _cam in self.cameras:
+            n = self.counter_at(addr)
+            if n is not None:
+                return n
+        return None
 
     def camera_at(self, addr):
         """`(eye, target)` for one camera slot, or None if it holds rubbish."""
@@ -116,10 +160,70 @@ class State:
             return None
         return eye[:3], target[:3]
 
+    def find_cameras(self):
+        """Every camera block in EE RAM, found by shape rather than address.
+
+        A camera slot is `eye, target, ?, forward` at 0x10 steps, and the
+        forward is the **unit vector from the eye to the target**.  Nothing
+        else in 32 MB of RAM is three vectors in that relation, so this finds
+        the live camera on a build whose address nobody has written down --
+        which is how the Japanese disc is read at all.
+
+        Checked against this machine's US states, where it re-derives exactly
+        the addresses above: `0x0081B730` in an attract capture, `0x0081B6F0`
+        in a story one, and nothing in a state that is not in a cutscene.
+
+        Several blocks answer (the player's camera and the copies the
+        renderer takes), so the result is deduplicated on the values: what
+        matters is the distinct cameras, not how many places hold each.
+        """
+        if self._found is not None:
+            return self._found
+        ee = self.ee
+        n = len(ee)
+        out, seen = [], set()
+        pos = ee.find(ONE_F)
+        while pos >= 0:
+            if pos % 16 == 12 and pos + 0x40 <= n:
+                base = pos - 12
+                got = self._camera_shape(base)
+                if got is not None:
+                    key = tuple(round(c, 3) for v in got for c in v)
+                    if key not in seen:
+                        seen.add(key)
+                        out.append((base, got))
+            pos = ee.find(ONE_F, pos + 1)
+        self._found = out
+        return out
+
+    def _camera_shape(self, base):
+        """`(eye, target)` if `base` looks like a camera block, else None."""
+        ex, ey, ez, _ = struct.unpack_from('<4f', self.ee, base)
+        tx, ty, tz, tw = struct.unpack_from('<4f', self.ee, base + 0x10)
+        if tw != 1.0:
+            return None
+        for c in (ex, ey, ez, tx, ty, tz):
+            if not (-SANE < c < SANE):
+                return None
+        dx, dy, dz = tx - ex, ty - ey, tz - ez
+        d = (dx * dx + dy * dy + dz * dz) ** 0.5
+        if d < 1e-3:
+            return None
+        fx, fy, fz, _ = struct.unpack_from('<4f', self.ee, base + 0x30)
+        if abs((fx * fx + fy * fy + fz * fz) ** 0.5 - 1.0) > 1e-3:
+            return None
+        if (abs(fx - dx / d) > 2e-3 or abs(fy - dy / d) > 2e-3
+                or abs(fz - dz / d) > 2e-3):
+            return None
+        return (ex, ey, ez), (tx, ty, tz)
+
     @property
     def cameras(self):
         """Every slot that holds something that could be a camera."""
-        return [(a, c) for a in CAM_SLOTS
+        slots = self.region.ee['CAM_SLOTS']
+        if slots is None:
+            return self.find_cameras()
+        return [(a, c) for a in slots
                 for c in [self.camera_at(a)] if c is not None]
 
     @property
@@ -226,12 +330,12 @@ def match(disc, eye, target, names=None):
     return (best[0], best[1], best[2], (lo, hi))
 
 
-def identify(disc, path, names=None):
+def identify(disc, path, names=None, reg=None):
     """`{path, camera, cutscene, frame, residual}` for one savestate."""
-    st = State(path)
-    out = {'path': path, 'state': st, 'camera': None, 'slot': None,
-           'cutscene': None, 'frame': None, 'residual': None, 'span': None,
-           'from_counter': False}
+    st = State(path, reg)
+    out = {'path': path, 'state': st, 'region': st.region, 'camera': None,
+           'slot': None, 'cutscene': None, 'frame': None, 'residual': None,
+           'span': None, 'from_counter': False}
     # Try every slot and let the residual pick: which one is live depends on
     # whether this is the attract loop or the story, and a stale slot can
     # still hold a plausible-looking camera from whatever ran last.
@@ -246,7 +350,7 @@ def identify(disc, path, names=None):
     # whenever it falls inside the shot the camera picked, which is the only
     # way to read anything out of a held one.
     lo, hi = out['span'] or (0, 0)
-    n = st.counter
+    n = st.counter_at(out['slot'])
     if n is not None and out['cutscene'] and lo <= n <= hi:
         out['frame'], out['span'], out['from_counter'] = n, (n, n), True
     return out
@@ -329,8 +433,19 @@ class Pine:
 
     @property
     def cameras(self):
-        """Every slot that currently holds something camera-shaped."""
-        return [(a, c) for a in CAM_SLOTS
+        """Every slot that currently holds something camera-shaped.
+
+        This one needs the addresses: PINE reads eight bytes a round trip, so
+        sweeping 32 MB for the camera the way a savestate can is not on.  A
+        build whose slots are unknown has to be watched through a state.
+        """
+        slots = region_mod.active().ee['CAM_SLOTS']
+        if slots is None:
+            raise IOError('no camera address known for the %s build, and PINE '
+                          'cannot be swept for one -- take a savestate and run '
+                          'oracle.py --probe on it'
+                          % region_mod.active().code.upper())
+        return [(a, c) for a in slots
                 for c in [self.camera_at(a)] if c is not None]
 
     def camera(self):
@@ -455,11 +570,68 @@ def windows(disc, names=None):
     return out
 
 
+def probe(path, reg=None):
+    """What a state is readable *with*: every camera block its RAM holds.
+
+    For the build whose addresses are already known this just re-derives
+    them, which is the check that the search is honest.  For one whose are
+    not it is the way to get them: identify the state, then look for the
+    frame counter as a float near the live camera.
+    """
+    st = State(path, reg)
+    print('%s  (%s)' % (os.path.basename(path), st.region.serial))
+    found = st.find_cameras()
+    if not found:
+        print('  no camera block in RAM -- not in a cutscene')
+        return st, found
+    for addr, (eye, target) in found:
+        print('  %08x  eye (%.2f, %.2f, %.2f) -> target (%.2f, %.2f, %.2f)'
+              % ((addr,) + eye + target))
+    known = st.region.ee['CAM_SLOTS']
+    if known:
+        table = st.region.ee['COUNTERS'] or {}
+        print('  region.py names %s'
+              % ' '.join('%08x (counter %08x)' % (a, table[a]) if a in table
+                         else '%08x' % a for a in known))
+    return st, found
+
+
+def probe_counter(st, frame, near=None, window=0x8000):
+    """Addresses holding `frame + COUNTER_LEAD` as a float, near the camera.
+
+    The counter sits in the same static block as the story camera, so once a
+    state's frame is known from the camera match this narrows its address to
+    a handful -- enough to write one into `region.py` and check it against a
+    second capture.
+    """
+    want = struct.pack('<f', float(frame + COUNTER_LEAD))
+    ee = st.ee
+    lo = 0 if near is None else max(0, (near & EE_MASK) - window)
+    hi = len(ee) if near is None else min(len(ee), (near & EE_MASK) + window)
+    out, pos = [], ee.find(want, lo, hi)
+    while pos >= 0:
+        if pos % 4 == 0:
+            out.append(pos)
+        pos = ee.find(want, pos + 1, hi)
+    return out
+
+
 def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import scene as scene_mod
-    disc = scene_mod.Disc()
     argv = sys.argv[1:]
+
+    # One disc per region, opened only if a state actually needs it: a
+    # directory can hold captures off both.
+    _discs = {}
+
+    def disc_for(reg):
+        if reg.code not in _discs:
+            region_mod.use(reg)
+            _discs[reg.code] = scene_mod.Disc()
+        return _discs[reg.code]
+
+    disc = disc_for(region_mod.active())
 
     def opt(flag, default=None, cast=str):
         if flag not in argv:
@@ -469,6 +641,8 @@ def main():
 
     # Every flag that takes a value, so its value is not mistaken for a path.
     VALUED = ('--shot', '--watch', '--from', '--to', '--slot', '--timeout')
+    # `--probe` and `--region`/`--root` (already taken by afs) carry no
+    # positional value of their own.
     taken = {argv.index(f) + 1 for f in VALUED if f in argv}
     args = [a for i, a in enumerate(argv)
             if not a.startswith('--') and i not in taken]
@@ -509,8 +683,27 @@ def main():
     if not paths:
         print('no savestates found; looked in %s' % (state_dir() or STATE_DIR))
         return 1
+
+    if '--probe' in argv:
+        for path in paths:
+            st, found = probe(path)
+            if not found:
+                continue
+            got = identify(disc_for(st.region), path)
+            if got['cutscene'] is None:
+                continue
+            print('  %s frame %d' % (got['cutscene'], got['frame']))
+            for addr, _cam in found:
+                near = probe_counter(st, got['frame'], addr)
+                if near:
+                    print('    frame counter candidates near %08x: %s'
+                          % (addr, ' '.join('%08x' % a for a in near)))
+        return 0
+
     for path in paths:
-        got = identify(disc, path)
+        state_region = (region_mod.of_serial(os.path.basename(path))
+                        or region_mod.active())
+        got = identify(disc_for(state_region), path, reg=state_region)
         name = os.path.basename(path)
         if got['camera'] is None:
             print('%-36s not in a cutscene (the camera words are stale)' % name)

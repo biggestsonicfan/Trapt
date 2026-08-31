@@ -69,6 +69,9 @@ async function main() {
   }
   const source = iso.fdSource(fs, ISO);
   const disc = await discMod.open(source);
+  // Either disc opens; the Python side has to be reading the same one,
+  // and every `python` below inherits this.  See tools/region.py.
+  process.env.TRAPT_REGION = disc.region.code;
 
   console.log('RPS archives, against tools/arc.py');
   const pyArc = python(
@@ -933,7 +936,7 @@ async function main() {
   // where it should restore, is invisible until you diff it.
   console.log('the subtitle font, against tools/font.py');
   {
-    const font = new fontMod.Font(disc.elf);
+    const font = new fontMod.Font(disc.elf, disc.region.font);
     check('cell and box from the ELF descriptor',
           [font.cell, font.box], [[16, 16], [24, 24]]);
     check('the CLUT is 16 entries', font.clut.length, 16);

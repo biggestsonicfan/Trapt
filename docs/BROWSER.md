@@ -5,6 +5,14 @@ the cast, the room, the real camera track, the game's own subtitle font, the
 voices and the music. Nothing game-derived is served — the page is code, and
 every byte it draws comes out of the ISO the visitor picked.
 
+Either pressing. *Trapt* (SLUS-21255) and *Kagero II: Dark Illusion*
+(SLPS-25445) hold the same files, and `region.js` carries the handful of ELF
+addresses that differ between the two builds; `disc.js` reads the image's own
+file list to decide which it has and hangs it on the `Disc` as `.region`, so
+nothing downstream has to ask. A Japanese disc therefore plays in Japanese —
+its script, its voices and its own copy of the subtitle face — with no switch
+to set.
+
 Open it straight off disk. Nothing is uploaded, and only the parts actually
 needed are read: opening a disc costs about 100 KB of a 1.76 GB image.
 
@@ -34,6 +42,7 @@ disc data. They work under two loaders — `require` in the tests and a classic
 
 | file | Python | what it does |
 |---|---|---|
+| `region.js` | `region.py` | which build the image is, and the addresses that differ |
 | `iso.js` | — | ISO 9660, range-based; the disc is never loaded whole |
 | `disc.js` | `afs.py` | the ELF filename table + the AFS index in `GAME.DAT` |
 | `arc.js` | `arc.py` | the `RPS` archive, whole or ranged |
@@ -100,6 +109,37 @@ here before: a `.cam` FOV is **vertical**, and the 512x224 target is
 **anamorphic**, so in native mode the horizontal half-angle comes from the 4:3
 display aspect and not from the element. Modern has no such obligation and
 uses the element's own aspect.
+
+## 3.1 Two discs, one reader
+
+The Japanese disc was not a second code path; it was a second row in a table.
+`region.js` and `tools/region.py` hold the same four groups of addresses per
+build -- the `GAME.DAT` filename table, the story tables, the subtitle font,
+and (US only) the live camera in EE RAM -- and every module takes them from
+the `Disc` rather than from a constant of its own.
+
+Finding the JP addresses was mostly a matter of searching for the US bytes:
+the nine story tables are **byte identical** across the builds, so each one
+matched in exactly one place. The filename table came out of a sweep for
+12-byte records whose first word points at a `DATA/...` string, and the font
+from sliding a candidate base against the US glyph array until the kanji lined
+up.
+
+The suite runs against either image, and both are worth running because they
+are different bytes through the same reader:
+
+```
+node tools/web/test_all.js                                  # the US disc
+node tools/web/test_all.js "path/to/Kagero II (Japan).iso"   # the other one
+```
+
+Each suite detects the region from the image and tells the Python side, via
+`TRAPT_REGION`, to read the same one -- so the parity diffs stay parity diffs.
+Running the Japanese disc through them found one real bug that the English
+text could never have shown: `hbin.js` decoded Shift-JIS through a small
+punctuation table that folded `、` to `,`, where `hbin.py` decodes with
+`cp932` and folds later. It now uses a real `TextDecoder`, and the table is
+only a fallback.
 
 ## 4. Tests
 

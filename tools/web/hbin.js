@@ -50,36 +50,53 @@ function latin1(blob, off) {
  * actually appear are decoded directly and anything else is passed through
  * TextDecoder when the browser has one.
  */
+// Only for a platform with no Shift-JIS `TextDecoder`.  It covers what the
+// English text actually uses -- full-width Latin, digits and the punctuation
+// around them -- and hands back the real character, not a folded one:
+// `norm()` is what folds, and pre-folding here is what made `、` come out
+// as `,` on the Japanese disc, where every trap description carries one.
 const SJIS_PUNCT = {
-  0x8140: ' ', 0x8141: ',', 0x8142: '.', 0x8143: ',', 0x8144: '.',
-  0x8145: '・', 0x8146: ':', 0x8147: ';', 0x8148: '?', 0x8149: '!',
-  0x8160: '~', 0x8161: '―', 0x8163: '…', 0x8166: '’',
-  0x8168: '"', 0x816d: '[', 0x816e: ']', 0x8169: '(', 0x816a: ')',
-  0x817c: '-', 0x8175: '「', 0x8176: '」', 0x815e: '/',
-  0x8151: '_', 0x8193: '%', 0x8194: '#', 0x8195: '&', 0x8196: '*',
-  0x8197: '@',
+  0x8140: '　', 0x8141: '、', 0x8142: '。', 0x8143: '，',
+  0x8144: '．', 0x8145: '・', 0x8146: '：', 0x8147: '；',
+  0x8148: '？', 0x8149: '！', 0x8151: '＿', 0x815e: '／',
+  0x8160: '～', 0x8161: '‖', 0x8163: '…', 0x8166: '’',
+  0x8168: '”', 0x8169: '（', 0x816a: '）', 0x816d: '［',
+  0x816e: '］', 0x8175: '「', 0x8176: '」', 0x817c: '－',
+  0x8193: '％', 0x8194: '＃', 0x8195: '＆', 0x8196: '＊',
+  0x8197: '＠',
 };
 
-function sjis(blob, off) {
-  const end = cut(blob, off);
-  if (end < 0) return '';
+/** Shift-JIS, the way `cp932` reads it in hbin.py.  Null-terminated. */
+let sjisDecoder = null;
+try {
+  sjisDecoder = new TextDecoder('shift_jis');
+} catch (e) {
+  sjisDecoder = null;
+}
+
+function sjisFallback(blob, off, end) {
   let out = '';
   for (let i = off; i < end; i++) {
     const b = blob[i];
     if (b < 0x80) { out += String.fromCharCode(b); continue; }
     const w = (b << 8) | blob[i + 1];
     i++;
-    if (w >= 0x8260 && w <= 0x8279) out += String.fromCharCode(0x41 + w - 0x8260);
-    else if (w >= 0x8281 && w <= 0x829a) out += String.fromCharCode(0x61 + w - 0x8281);
-    else if (w >= 0x824f && w <= 0x8258) out += String.fromCharCode(0x30 + w - 0x824f);
+    if (w >= 0x8260 && w <= 0x8279) out += String.fromCharCode(0xff21 + w - 0x8260);
+    else if (w >= 0x8281 && w <= 0x829a) out += String.fromCharCode(0xff41 + w - 0x8281);
+    else if (w >= 0x824f && w <= 0x8258) out += String.fromCharCode(0xff10 + w - 0x824f);
     else if (SJIS_PUNCT[w] !== undefined) out += SJIS_PUNCT[w];
-    else if (typeof TextDecoder !== 'undefined') {
-      try {
-        out += new TextDecoder('shift_jis').decode(new Uint8Array([b, blob[i]]));
-      } catch (e) { out += '�'; }
-    } else out += '�';
+    else out += '�';
   }
   return out;
+}
+
+function sjis(blob, off) {
+  const end = cut(blob, off);
+  if (end < 0) return '';
+  if (sjisDecoder) {
+    try { return sjisDecoder.decode(blob.subarray(off, end)); } catch (e) { /* below */ }
+  }
+  return sjisFallback(blob, off, end);
 }
 
 class Container {
@@ -126,7 +143,11 @@ function parse(blob) {
   return new Container(blob, chunks, fixups);
 }
 
-/** Full-width Latin back to ASCII -- how these read on screen. */
+/**
+ * Full-width Latin back to ASCII -- how these read on screen.  This is the
+ * only place text is folded, and it is what `trap.py`'s `norm` does, so the
+ * two sides agree on Japanese text as well as on English.
+ */
 function norm(text) {
   return typeof text.normalize === 'function' ? text.normalize('NFKC') : text;
 }

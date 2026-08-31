@@ -10,12 +10,17 @@
  *
  *   - the ELF's one segment loads at 0x00100000 and starts at file offset
  *     0x80, so `vaddr - 0x100000 + 0x80` is a file offset;
- *   - the filename table is baked at vaddr 0x0036A0F0: 3773 records of
- *     12 bytes, `{const char *name, u32 size, u32 afs_id}`.
+ *   - the filename table is baked at a known vaddr -- 0x0036A0F0 on the US
+ *     disc, 0x0036C070 on the Japanese one -- as records of 12 bytes,
+ *     `{const char *name, u32 size, u32 afs_id}`.
  *
  * `GAME.DAT` itself is CRI AFS: `'AFS\0'`, a count, then `{offset, size}`
  * pairs.  The TOC maps an AFS id to the name the game asks for, which is why
  * a disc entry can be found by path at all.
+ *
+ * Either disc opens.  `region.js` says which one it is, from the executable
+ * the image carries, and the `Disc` keeps it as `.region` so that everything
+ * downstream reads the right addresses out of the right ELF.
  */
 // Wrapped: classic <script> tags share one global scope, and both this
 // file and its sibling declare `u32` and `api` at top level.
@@ -23,13 +28,11 @@
 'use strict';
 
 const isoMod = (typeof require !== 'undefined') ? require('./iso.js') : window.TraptIso;
+const regionMod = (typeof require !== 'undefined') ? require('./region.js') : window.TraptRegion;
 
-const ELF_PATH = 'SLUS_212.55';
 const GAMEDAT_PATH = 'DATA/GAME.DAT';
 const ELF_LOAD_VA = 0x00100000;
 const ELF_LOAD_OFF = 0x80;
-const TOC_VA = 0x0036A0F0;
-const TOC_N = 3773;
 
 const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16)) + b[o + 3] * 0x1000000;
 
@@ -41,8 +44,9 @@ function cstr(buf, off) {
 }
 
 class Disc {
-  constructor(iso, elf, toc, entries, gamedat) {
+  constructor(iso, region, elf, toc, entries, gamedat) {
     this.iso = iso;
+    this.region = region;            // which build -- region.js
     this.elf = elf;                  // the whole 3.6 MB ELF, kept: the font,
     this.toc = toc;                  // the cutscene registry and the story
     this.entries = entries;          // tables all live in it
@@ -106,24 +110,27 @@ class Disc {
 }
 
 /**
- * Open a Trapt disc image.  Throws with something legible if it is the wrong
- * disc, which is the whole point of asking for it.
+ * Open a disc image -- either region.  Throws with something legible if it is
+ * the wrong disc, which is the whole point of asking for it.
  */
 async function open(source) {
   const iso = await isoMod.open(source);
 
-  if (!iso.files.has(ELF_PATH) || !iso.files.has(GAMEDAT_PATH))
-    throw new Error('that image has no ' + ELF_PATH + ' and ' + GAMEDAT_PATH
-                    + ' -- it does not look like Trapt (volume id "'
-                    + iso.volume.id + '")');
+  const region = regionMod.detect(iso.files);
+  if (!region || !iso.files.has(GAMEDAT_PATH))
+    throw new Error('that image has no '
+                    + regionMod.REGIONS.map((r) => r.elf).join(' or ')
+                    + ' with ' + GAMEDAT_PATH
+                    + ' -- it does not look like Trapt or Kagero II'
+                    + ' (volume id "' + iso.volume.id + '")');
 
-  const elf = await isoMod.readFile(iso, ELF_PATH);
+  const elf = await isoMod.readFile(iso, region.elf);
 
   const toc = new Map();
-  const base = elf.length > TOC_VA - ELF_LOAD_VA + ELF_LOAD_OFF
-    ? TOC_VA - ELF_LOAD_VA + ELF_LOAD_OFF : -1;
+  const tocOff = region.toc.va - ELF_LOAD_VA + ELF_LOAD_OFF;
+  const base = elf.length > tocOff ? tocOff : -1;
   if (base < 0) throw new Error('ELF is too small to hold the filename table');
-  for (let i = 0; i < TOC_N; i++) {
+  for (let i = 0; i < region.toc.n; i++) {
     const p = base + 12 * i;
     const nameVa = u32(elf, p), size = u32(elf, p + 4), id = u32(elf, p + 8);
     toc.set(id, { name: cstr(elf, nameVa - ELF_LOAD_VA + ELF_LOAD_OFF), size: size });
@@ -139,10 +146,10 @@ async function open(source) {
   for (let i = 0; i < count; i++)
     entries.push({ offset: u32(index, 8 * i), size: u32(index, 8 * i + 4) });
 
-  return new Disc(iso, elf, toc, entries, gamedat);
+  return new Disc(iso, region, elf, toc, entries, gamedat);
 }
 
-const api = { open, Disc, TOC_VA, TOC_N, ELF_PATH, GAMEDAT_PATH };
+const api = { open, Disc, GAMEDAT_PATH, REGIONS: regionMod.REGIONS };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptDisc = api;
 })();

@@ -42,6 +42,7 @@ import sys
 import time
 
 import export as export_mod
+import region as region_mod
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 POSTER_SIZE = '384x168'          # the 512x224 shape, small enough for a grid
@@ -296,13 +297,13 @@ def write_index(outdir, scenes, opts, story):
 <main>
 %s
 </main>
-<footer>Built %s from SLUS-21255 by tools/site.py. Order from the ELF by
+<footer>Built %s from %s by tools/site.py. Order from the ELF by
 tools/order.py. Audio %s.</footer>
 <script>%s</script>
 </body>
 </html>
 """ % (CSS, len(ok), len(scenes), total / 1e9, play, '\n'.join(body),
-       time.strftime('%Y-%m-%d'),
+       time.strftime('%Y-%m-%d'), region_mod.active().serial,
        'included' if opts['audio'] else 'omitted', JS)
     path = os.path.join(outdir, 'index.html')
     with open(path, 'w', encoding='utf-8') as f:
@@ -340,8 +341,9 @@ def write_order(outdir, story):
     names = story.playlist(have)
     path = os.path.join(outdir, 'order.js')
     with open(path, 'w', encoding='utf-8') as f:
-        f.write('// The order Trapt itself plays these in, lifted out of the\n'
-                '// chapter and ending tables in SLUS-21255 by tools/order.py.\n'
+        f.write('// The order the game itself plays these in, lifted out of\n'
+                '// the chapter and ending tables in %s by tools/order.py.\n'
+                % region_mod.active().serial +
                 '// TRAPT_ORDER is the flat playlist; TRAPT_STORY is the same\n'
                 '// tables unflattened, which is what story mode walks.\n'
                 'window.TRAPT_ORDER=%s;\n' % json.dumps(names))

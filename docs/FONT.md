@@ -6,6 +6,15 @@ baked into `SLUS_212.55`. `tools/font.py` reads it out, and the exported page
 lays subtitles out with it well enough that the glyph quads land on the same
 12.4 fixed-point coordinates the hardware submits.
 
+The Japanese build bakes in its own copy at `0x00379580`, and it is **not the
+same bytes**. The kana and the level-1 kanji are pixel for pixel the glyphs
+below -- same face, same rasteriser -- but the US build redrew the full-width
+Latin block, and the width directory of §4 exists to letter-space that
+redrawn face. `SLPS_254.45` ships none, so every glyph there advances by the
+16-texel cell, which is the fallback `Font.advance` already had. Both sets of
+addresses are in [`tools/region.py`](../tools/region.py); `--region jp` reads
+the other face.
+
 ```sh
 python tools/font.py                                 # the metrics, at a glance
 python tools/font.py --sheet out/font.png            # all 7896 glyphs

@@ -9,6 +9,14 @@ Everything below was read out of the Ghidra database over the GhidraMCP HTTP
 bridge (`http://127.0.0.1:8080`); nothing here is guessed from the disc alone.
 Where a name is an inference rather than a fact it is marked *(inferred)*.
 
+**This is the US build.** The Japanese pressing, *Kagero II: Dark Illusion*
+(`SLPS_254.45`, SLPS-25445), is the same game and the same code, but the
+executable is 45 KB smaller and its read-only data moved, so no address here
+transfers. The ones the tools actually resolve are tabulated per build in
+[`tools/region.py`](../tools/region.py); function addresses have not been
+mapped for the JP build at all. Both loaded ranges start at `0x00100000` from
+file offset `0x80`, so the address arithmetic is the only thing they share.
+
 ---
 
 ## 1. Binary facts
@@ -17,6 +25,7 @@ Where a name is an inference rather than a fact it is marked *(inferred)*.
 |---|---|
 | Program | `SLUS_212.55`, MIPS R5900 (EE), one big `PT_LOAD` |
 | Loaded range | `0x00100000` – `0x004827FF` (Ghidra block `SECTION4`) |
+| The other pressing | `SLPS_254.45`, same shape, loaded `0x00100000` – `0x004773FF`, `.bss` to `0x00484A80` |
 | Entry point | `0x00100008` |
 | `.bss` | `0x00482800` – `0x0048FE80` (zeroed by the entry stub) |
 | `_gp` | **`0x0048A0F0`** (`lui a0,0x49; addiu a0,a0,-0x5f10; move gp,a0` at `0x00100148`) |

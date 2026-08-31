@@ -12,11 +12,20 @@ The game draws dialogue with the **PS2 kernel font**: a full JIS X 0208 face of
 into `SLUS_212.55` at `0x003885C0` -- nothing on the disc carries it, and
 `DATA/FONT/FONT.BIN` is an 18-byte `FJF` stub that no code reads.
 
+`SLPS_254.45` bakes in its own copy at `0x00379580`, and the two are not the
+same bytes.  The kana and the level-1 kanji are pixel for pixel identical --
+same face, same rasteriser -- but the US build **redrew the full-width Latin
+block**, which is also why only it carries a width directory: those advances
+letter-space a proportional Latin face that the JP build does not have, and
+where there is no directory every glyph advances by the 16-texel cell.  So
+`--region jp` is not a different address for the same picture; it is the
+Japanese face, laid out the Japanese way.
+
 Every constant here came out of the executable or was measured against a PCSX2
 savestate with a subtitle on screen (`e001` frame 7422 -- "Catalina / Well......
 / you don't recognize me as your mother?").  See `docs/FONT.md`.
 
-Layout
+Layout (US addresses; `region.py` carries the JP ones)
 ------
 `0x003885C0`  glyph array, 128 B per glyph, indexed by the **JIS linear index**
               `(row - 1) * 94 + (cell - 1)`; 16 rows of 8 bytes, low nibble
@@ -34,15 +43,11 @@ import struct
 import sys
 from math import ceil
 
-import afs
+import region as region_mod
 
-ELF = afs.ELF
-
-GLYPHS_VA = 0x003885C0          # JIS-linear indexed, 128 B a glyph
-CLUT_VA = 0x00388580            # 16 x RGBA32
-DESC_VA = 0x00450620            # cell size + draw size
-WIDTH_DIR_VA = 0x004506E0       # 8 x {u16 lo, u16 hi, u32 ptr, u32 count}
-WIDTH_DIR_N = 8
+# GLYPHS / CLUT / DESC / WIDTH_DIR, per build, are in `region.py`; a `Font`
+# takes them off the region it was built for.  WIDTH_DIR is None on a build
+# that ships no width directory.
 
 ROWS, CELLS = 84, 94            # the JIS X 0208 planes present in the array
 SLOT = 128                      # bytes per glyph
@@ -180,21 +185,26 @@ def sjis_of(ch):
 class Font:
     """The face as the game holds it: glyph bitmaps, a CLUT and advances."""
 
-    def __init__(self, elf_path=ELF):
-        self.elf = open(elf_path, 'rb').read()
-        _, cw, ch, dw, dh = struct.unpack_from('<IHHff', self.elf, _v2f(DESC_VA))
+    def __init__(self, elf_path=None, reg=None):
+        self.region = reg or region_mod.active()
+        a = self.region.font
+        self.glyphs_va = a['GLYPHS']
+        self.elf = open(elf_path or self.region.elf, 'rb').read()
+        _, cw, ch, dw, dh = struct.unpack_from('<IHHff', self.elf,
+                                               _v2f(a['DESC']))
         self.cell = (cw, ch)                 # 16 x 16 texels
         self.box = (dw, dh)                  # drawn into 24 x 24 UI units
-        o = _v2f(CLUT_VA)
+        o = _v2f(a['CLUT'])
         self.clut = [tuple(self.elf[o + i * 4:o + i * 4 + 4]) for i in range(16)]
         self.widths = {}
-        d = _v2f(WIDTH_DIR_VA)
-        for i in range(WIDTH_DIR_N):
-            lo, hi, ptr, n = struct.unpack_from('<HHII', self.elf, d + 12 * i)
-            assert hi - lo + 1 == n, 'width record %d is not contiguous' % i
-            p = _v2f(ptr)
-            for k in range(n):
-                self.widths[lo + k] = self.elf[p + k]
+        if a['WIDTH_DIR'] is not None:
+            d = _v2f(a['WIDTH_DIR'])
+            for i in range(a['WIDTH_DIR_N']):
+                lo, hi, ptr, n = struct.unpack_from('<HHII', self.elf, d + 12 * i)
+                assert hi - lo + 1 == n, 'width record %d is not contiguous' % i
+                p = _v2f(ptr)
+                for k in range(n):
+                    self.widths[lo + k] = self.elf[p + k]
 
     # ------------------------------------------------------------- glyphs
     def indices(self, sjis):
@@ -202,7 +212,7 @@ class Font:
         lin = jis_linear(sjis)
         if lin is None:
             return None
-        o = _v2f(GLYPHS_VA + lin * SLOT)
+        o = _v2f(self.glyphs_va + lin * SLOT)
         out = bytearray(256)
         for y in range(16):
             for x in range(0, 16, 2):
@@ -599,7 +609,8 @@ def main():
         print(__doc__)
         print('cell %dx%d texels drawn into %.1fx%.1f UI units'
               % (font.cell + font.box))
-        print('%d advances over %d ranges' % (len(font.widths), WIDTH_DIR_N))
+        print('%d advances over %d ranges'
+              % (len(font.widths), font.region.font['WIDTH_DIR_N']))
         print('CLUT ' + ' '.join('%02x%02x%02x/%02x' % c for c in font.clut))
 
 

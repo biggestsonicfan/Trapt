@@ -51,6 +51,9 @@ async function main() {
   }
   const THREE = stubThree();
   const disc = await discMod.open(iso.fdSource(fs, ISO));
+  // Either disc opens; the Python side has to be reading the same one,
+  // and every `python` below inherits this.  See tools/region.py.
+  process.env.TRAPT_REGION = disc.region.code;
 
   console.log('assembling stage M000 the way the page does');
   const notes = [];

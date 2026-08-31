@@ -194,6 +194,7 @@
   </div>
 </main>
 
+<script src="region.js"></script>
 <script src="iso.js"></script>
 <script src="disc.js"></script>
 <script src="arc.js"></script>
@@ -296,7 +297,7 @@ async function load(file) {
   // The game ships no font: DATA/FONT/FONT.BIN is an 18-byte stub nothing
   // reads.  The face is the PS2 kernel's, baked into the ELF we just read.
   try {
-    FONT = new TraptFont.Font(DISC.elf);
+    FONT = new TraptFont.Font(DISC.elf, DISC.region.font);
     row('subtitle font', 'PS2 kernel face from the ELF at 0x003885C0, '
         + FONT.widths.size + ' advances, ' + FONT.clut.length + '-entry CLUT',
         'good');

@@ -324,10 +324,13 @@ def build(name, outdir, single=False, audio=True, jpeg_quality=88,
         if not keys:
             continue
         entries = []
-        for frame, cname in ent.clips:
+        for frame, cname, coff in ent.clips:
+            # The third field is `0x83`'s start offset -- see scene.py.  It is
+            # zero everywhere but the e001 corpse, and the page carries it so
+            # that clip samples in absolute scene time like the game does.
             ck = want_clip(cname)
             if ck:
-                entries.append([frame, ck])
+                entries.append([frame, ck, coff])
         entities.append({
             'name': ent.name, 'models': keys, 'clips': entries,
             'visibility': [[f, 1 if on else 0] for f, on in ent.visibility],

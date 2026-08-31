@@ -1,8 +1,47 @@
-# Trapt (SLUS-21255) asset extraction
+# Trapt / Kagero II asset extraction
 
 Tools for pulling 3D models and textures out of *Trapt* / *Kagero II* (PS2).
 Everything is read straight out of `DATA/GAME.DAT` on the disc; no files on
 the disc are modified.
+
+## Which disc
+
+Both pressings work, and everything below takes the same two flags:
+
+| | | |
+|---|---|---|
+| `--region us` | `SLUS_212.55` | *Trapt* (USA), SLUS-21255 |
+| `--region jp` | `SLPS_254.45` | *Kagero II: Dark Illusion* (Japan/Asia), SLPS-25445 |
+
+`--root <dir>` points at a disc directory instead and reads the region out of
+it; `TRAPT_REGION` and `TRAPT_ROOT` do the same from the environment. With
+nothing set, the first disc `region.py` finds wins, US first.
+
+```
+python region.py                # which disc is in use, and re-check its addresses
+python region.py --region jp
+```
+
+The two discs hold the **same 3762 files under the same names** -- the US one
+adds eleven, ten English voice takes and two effect textures -- and every
+reader parses both without knowing which it has. What differs is the
+executable: the JP one is 45 KB smaller and all of its read-only data moved,
+so the filename table, the story tables and the font sit at different
+addresses. `region.py` is that table, one entry per build, and it is the only
+place an address is written down. The story tables turn out to be *byte
+identical* between the builds, which is how the JP ones were found and why
+story order is provably the same on both.
+
+The subtitle font is not identical. Kana and level-1 kanji are the same glyphs
+pixel for pixel, but the US build redrew the full-width Latin block and is the
+only one carrying a width directory for it -- the JP build advances every
+glyph by the 16-texel cell.
+
+Not ported: the live EE RAM addresses `oracle.py` reads a PCSX2 savestate
+with. Those are heap, not static, so the JP ones can only come off a running
+JP game. `oracle.py` finds the camera by its shape there instead (verified by
+re-deriving the US addresses it already knows), and `oracle.py --probe`
+reports what it found so an address can be pinned once and written down.
 
 ## Usage
 
@@ -64,7 +103,8 @@ python order.py --check         # the tables vs. what is on the disc
 
 | file | purpose |
 |---|---|
-| `afs.py` | `GAME.DAT` (CRI AFS) reader; filenames come from the TOC baked into the ELF at `0x0036A0F0` |
+| `region.py` | which build is being read: the disc's location and every ELF address, per region |
+| `afs.py` | `GAME.DAT` (CRI AFS) reader; filenames come from the TOC baked into the ELF (`0x0036A0F0` US, `0x0036C070` JP) |
 | `arc.py` | `RPS` archive reader (the `.ARC` container) |
 | `smi.py` | `.SMI` model reader — skeleton, meshes, skinning, materials |
 | `tm2.py` | `.TM2` texture reader (Sony TIM2) |
@@ -101,7 +141,7 @@ python order.py --check         # the tables vs. what is on the disc
 
 ## What's on the disc
 
-3773 files. Inside the 2111 `RPS` archives: **3328 `.smi` models**
+3773 files on the US disc, 3762 on the Japanese one. Inside the 2111 `RPS` archives: **3328 `.smi` models**
 (4.9M vertices, 2.98M triangles) and **7668 `.tm2` textures**. All 2111
 archives and all 3328 models parse without error.
 

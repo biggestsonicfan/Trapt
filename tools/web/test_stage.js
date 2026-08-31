@@ -83,6 +83,9 @@ async function main() {
   }
   const source = iso.fdSource(fs, ISO);
   const disc = await discMod.open(source);
+  // Either disc opens; the Python side has to be reading the same one,
+  // and every `python` below inherits this.  See tools/region.py.
+  process.env.TRAPT_REGION = disc.region.code;
 
   // ------------------------------------------------------------------- .col
   console.log('.col collision, against tools/col.py');

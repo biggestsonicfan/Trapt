@@ -13,16 +13,21 @@
  *   0x003872A0  15 x 2 routes into the 30 ending flow records at 0x003872C0
  *   0x0044D930  the chapter title cards, `DATA/TWO_D/SLD/SLD<nn>.ARC`
  *
+ * Those are the US addresses.  The Japanese disc holds the same tables --
+ * the same bytes, which is how they were found -- somewhere else, and the
+ * `Disc` says where: `disc.region.order`, from `region.js`.  Story order is
+ * therefore identical on the two discs, and this file proves it rather than
+ * assuming it.
+ *
  * See docs/CUTSCENES.md section 7.  The four branch rules are transcribed
  * from the ELF in `player.html`'s TRAPT STORY block; this file is the data.
  */
 (function () {
 'use strict';
 
-const NAME_TABLE = 0x00386920, GROUP_TABLE = 0x0045DB50;
-const CH_STAGES = 0x0042DD20, CH_OPEN = 0x0042DD60, CH_STAGE_GROUPS = 0x0042DD70;
-const CH_FLAG = 0x0042DDD0, ROUTE_TABLE = 0x003872A0, FLOW_TABLE = 0x003872C0;
-const CARD_TABLE = 0x0044D930, CARD_STRIDE = 0x20, CARD_N = 16;
+const regionMod = (typeof require !== 'undefined') ? require('./region.js') : window.TraptRegion;
+
+const CARD_STRIDE = 0x20, CARD_N = 16;
 
 const N_CUTSCENES = 154, N_GROUPS = 0x26, N_CHAPTERS = 15, N_FLOWS = 30;
 const FLOW_STRIDE = 0x50, FLOW_STEPS = 16, CUTSCENE_BIAS = 0x4E, NONE = 0xFF;
@@ -34,6 +39,12 @@ const FINALES = [[0x23, 'chapter 14, story flag 1 clear'],
 
 /** `disc` is a disc.js Disc; every table comes out of its ELF. */
 function read(disc) {
+  const A = (disc.region || regionMod.US).order;
+  const NAME_TABLE = A.NAME_TABLE, GROUP_TABLE = A.GROUP_TABLE;
+  const CH_STAGES = A.CH_STAGES, CH_OPEN = A.CH_OPEN;
+  const CH_STAGE_GROUPS = A.CH_STAGE_GROUPS, CH_FLAG = A.CH_FLAG;
+  const ROUTE_TABLE = A.ROUTE_TABLE, FLOW_TABLE = A.FLOW_TABLE;
+  const CARD_TABLE = A.CARD_TABLE;
   const s8 = (va) => { const v = disc.elfU8(va); return v > 0x7F ? v - 0x100 : v; };
   const s16 = (va) => {
     const v = disc.elfU8(va) | (disc.elfU8(va + 1) << 8);
@@ -183,7 +194,7 @@ function route(tables, opts) {
 }
 
 const api = { read, route, referenced, reach, N_CHAPTERS, N_CUTSCENES,
-              FINALES, CARD_TABLE };
+              FINALES };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptStory2 = api;
 })();

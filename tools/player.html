@@ -242,7 +242,8 @@ function TraptMath(BIN, S) {
 
   function clipFor(ent, frame) {
     let cur = null;
-    for (const [start, key] of ent.clips) if (start <= frame) cur = [start, key];
+    for (const [start, key, off] of ent.clips)
+      if (start <= frame) cur = [start, key, off || 0];
     return cur;
   }
   function visibleAt(ent, frame) {
@@ -851,7 +852,10 @@ for (const ent of S.entities) {
 function poseInstance(inst, frame) {
   const cur = M.clipFor(inst.ent, frame);
   const clip = cur ? S.clips[cur[1]] : null;
-  const t = cur ? frame - cur[0] : 0;
+  // `cur[2]` is where in the clip to start: the one clip on the disc that is
+  // authored in absolute scene time (e001's corpse) parks the body under the
+  // floor at clip frame 0.  Everything else carries zero.
+  const t = cur ? frame - cur[0] + cur[2] : 0;
   for (const m of inst.models) {
     M.worldMatrices(m.md, clip, t, m.W);
     for (let i = 0; i < m.nbone; i++) m.boneData.set(m.W[i], i * 16);

@@ -8,6 +8,12 @@
  * JIS X 0208 face of 16x16 four-bit glyphs baked into `SLUS_212.55` -- which
  * this page already has open, because `disc.js` keeps the ELF.
  *
+ * The Japanese disc bakes in its own copy, and it is not the same bytes: the
+ * kana and the level-1 kanji are pixel for pixel the US glyphs, but the US
+ * build redrew the full-width Latin block, which is also why only it carries
+ * a width directory.  Where there is none, every glyph advances by the cell.
+ * Addresses below are the US ones; pass `disc.region.font` for the other.
+ *
  *   0x003885C0  glyphs, 128 B each, at the JIS linear index
  *               `(row - 1) * 94 + (cell - 1)`; 16 rows of 8 bytes, low nibble
  *               first, each nibble a coverage level 0..15
@@ -24,11 +30,7 @@
 (function () {
 'use strict';
 
-const GLYPHS_VA = 0x003885C0;
-const CLUT_VA = 0x00388580;
-const DESC_VA = 0x00450620;
-const WIDTH_DIR_VA = 0x004506E0;
-const WIDTH_DIR_N = 8;
+const regionMod = (typeof require !== 'undefined') ? require('./region.js') : window.TraptRegion;
 
 const ROWS = 84, CELLS = 94, SLOT = 128;
 const UI_W = 640.0, UI_H = 448.0;
@@ -132,29 +134,38 @@ function makeEncoder() {
 }
 
 class Font {
-  /** `elf` is the whole SLUS_212.55, as disc.js already holds it. */
-  constructor(elf) {
+  /**
+   * `elf` is the whole executable, as disc.js already holds it, and `addrs`
+   * is where the face lives inside it -- `disc.region.font`, defaulting to
+   * the US build for callers that only ever see one disc.
+   */
+  constructor(elf, addrs) {
+    const a = addrs || regionMod.US.font;
+    this.addrs = a;
+    this.glyphsVa = a.GLYPHS;
     this.elf = elf;
     const dv = new DataView(elf.buffer, elf.byteOffset, elf.byteLength);
     this.dv = dv;
-    const d = this.off(DESC_VA);
+    const d = this.off(a.DESC);
     this.cell = [dv.getUint16(d + 4, true), dv.getUint16(d + 6, true)];
     this.box = [dv.getFloat32(d + 8, true), dv.getFloat32(d + 12, true)];
-    const c = this.off(CLUT_VA);
+    const c = this.off(a.CLUT);
     this.clut = [];
     for (let i = 0; i < 16; i++)
       this.clut.push([elf[c + i * 4], elf[c + i * 4 + 1],
                       elf[c + i * 4 + 2], elf[c + i * 4 + 3]]);
     this.widths = new Map();
-    const w = this.off(WIDTH_DIR_VA);
-    for (let i = 0; i < WIDTH_DIR_N; i++) {
-      const lo = dv.getUint16(w + 12 * i, true);
-      const hi = dv.getUint16(w + 12 * i + 2, true);
-      const ptr = dv.getUint32(w + 12 * i + 4, true);
-      const n = dv.getUint32(w + 12 * i + 8, true);
-      if (hi - lo + 1 !== n) throw new Error('width record ' + i + ' is not contiguous');
-      const p = this.off(ptr);
-      for (let k = 0; k < n; k++) this.widths.set(lo + k, elf[p + k]);
+    if (a.WIDTH_DIR) {
+      const w = this.off(a.WIDTH_DIR);
+      for (let i = 0; i < a.WIDTH_DIR_N; i++) {
+        const lo = dv.getUint16(w + 12 * i, true);
+        const hi = dv.getUint16(w + 12 * i + 2, true);
+        const ptr = dv.getUint32(w + 12 * i + 4, true);
+        const n = dv.getUint32(w + 12 * i + 8, true);
+        if (hi - lo + 1 !== n) throw new Error('width record ' + i + ' is not contiguous');
+        const p = this.off(ptr);
+        for (let k = 0; k < n; k++) this.widths.set(lo + k, elf[p + k]);
+      }
     }
     this.encoder = makeEncoder();
     this.cache = new Map();
@@ -179,7 +190,7 @@ class Font {
     if (this.cache.has(sjis)) return this.cache.get(sjis);
     const lin = jisLinear(sjis);
     if (lin < 0) return null;
-    const o = this.off(GLYPHS_VA + lin * SLOT);
+    const o = this.off(this.glyphsVa + lin * SLOT);
     const out = new Uint8Array(16 * 16 * 4);
     for (let y = 0; y < 16; y++)
       for (let x = 0; x < 16; x += 2) {

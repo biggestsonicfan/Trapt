@@ -2,9 +2,10 @@
 
 The disc names cutscenes `e001` ... `e430_01`, and that is *nearly* the order
 they play in -- but not quite, and it says nothing about where the playable
-stages sit between them.  The real order is four tables in `SLUS_212.55`,
+stages sit between them.  The real order is four tables in the executable,
 driven by the chapter state machine `FUN_00173520` and the ending machine
-`FUN_0032A7C0`.
+`FUN_0032A7C0`.  Addresses below are `SLUS_212.55`'s; `SLPS_254.45` holds the
+same bytes elsewhere, and `--region jp` reads them there instead.
 
     python order.py                 # the whole story order, as an outline
     python order.py --json          # the same, machine readable
@@ -14,6 +15,7 @@ driven by the chapter state machine `FUN_00173520` and the ending machine
     python order.py --check         # cross-check the tables against the disc
     python order.py --tables        # the JSON site.py bakes into order.js
     python order.py --rules         # the branch-rule fixture test_order.js uses
+    python order.py --region jp     # any of the above, off the Japanese disc
 
 How the game sequences them
 ---------------------------
@@ -83,20 +85,13 @@ import json
 import struct
 import sys
 
-import afs
+import region as region_mod
 
-ELF = afs.ELF
-
-# --- ELF virtual addresses (retail US, SLUS-21255) -------------------------
-NAME_TABLE = 0x00386920        # 154 `const char *`, `FUN_00323AB0(id)`
-FLAG_TABLE = 0x0045DA10        # 154 x 2 bytes, `FUN_00323A90(id)`
-GROUP_TABLE = 0x0045DB50       # 38 x {u8 count; u8 id[7]}
-CH_STAGES = 0x0042DD20         # 15 x {u8 count; u8 stage[3]}
-CH_OPEN = 0x0042DD60           # 15 x u8 group
-CH_STAGE_GROUPS = 0x0042DD70   # 15 x 3 x {u8 before, u8 after}
-CH_FLAG = 0x0042DDD0           # 15 x s8 -- the flag a failed stage clears
-ROUTE_TABLE = 0x003872A0       # 15 x 2 x u8 -> flow record
-FLOW_TABLE = 0x003872C0        # 30 x 0x50
+# The nine tables live at a different address in each build -- `region.py`
+# holds both maps, and the addresses quoted above are the US ones.  Their
+# *contents* are identical on the two discs: the JP tables match the US ones
+# byte for byte, which is how they were found.  A `Story` copies whichever
+# set is active onto itself as `self.NAME_TABLE` and so on.
 
 N_CUTSCENES = 154
 N_GROUPS = 0x26
@@ -117,18 +112,22 @@ FINALES = ((0x23, 'chapter 14, story flag 1 clear'),
 class Story:
     """Every ordering table in the ELF, decoded."""
 
-    def __init__(self, elf_path=ELF):
-        with open(elf_path, 'rb') as f:
+    def __init__(self, elf_path=None, reg=None):
+        reg = reg or region_mod.active()
+        for name, va in reg.order.items():
+            setattr(self, name, va)
+        self.region = reg
+        with open(elf_path or reg.elf, 'rb') as f:
             self.blob = f.read()
-        self.names = [self._cstr(self._u32(NAME_TABLE + i * 4))
+        self.names = [self._cstr(self._u32(self.NAME_TABLE + i * 4))
                       for i in range(N_CUTSCENES)]
         self.groups = [self._group(g) for g in range(N_GROUPS)]
         self.chapters = [self._chapter(c) for c in range(N_CHAPTERS)]
         self.flows = [self._flow(r) for r in range(N_FLOWS)]
-        self.routes = [(self._u8(ROUTE_TABLE + c * 2),
-                        self._u8(ROUTE_TABLE + c * 2 + 1))
+        self.routes = [(self._u8(self.ROUTE_TABLE + c * 2),
+                        self._u8(self.ROUTE_TABLE + c * 2 + 1))
                        for c in range(N_CHAPTERS)]
-        self.chapter_flags = [self._s8(CH_FLAG + c) for c in range(N_CHAPTERS)]
+        self.chapter_flags = [self._s8(self.CH_FLAG + c) for c in range(N_CHAPTERS)]
 
     # ---------------------------------------------------------- ELF access
     def _off(self, va):
@@ -154,18 +153,18 @@ class Story:
 
     # ------------------------------------------------------------- tables
     def _group(self, g):
-        base = GROUP_TABLE + g * 8
+        base = self.GROUP_TABLE + g * 8
         return [self._u8(base + 1 + i) for i in range(self._u8(base))]
 
     def _chapter(self, c):
-        base = CH_STAGES + c * 4
+        base = self.CH_STAGES + c * 4
         stages = []
         for s in range(self._u8(base)):
-            pair = CH_STAGE_GROUPS + c * 6 + s * 2
+            pair = self.CH_STAGE_GROUPS + c * 6 + s * 2
             stages.append({'stage': self._u8(base + 1 + s),
                            'before': self._opt(self._u8(pair)),
                            'after': self._opt(self._u8(pair + 1))})
-        return {'index': c, 'open': self._opt(self._u8(CH_OPEN + c)),
+        return {'index': c, 'open': self._opt(self._u8(self.CH_OPEN + c)),
                 'stages': stages}
 
     @staticmethod
@@ -174,7 +173,7 @@ class Story:
 
     def _flow(self, r):
         """One ending record, with the steps `FUN_0032A5D0` can actually reach."""
-        base = FLOW_TABLE + r * FLOW_STRIDE
+        base = self.FLOW_TABLE + r * FLOW_STRIDE
         steps = []
         for i in range(FLOW_STEPS):
             v = self._s16(base + i * 2)

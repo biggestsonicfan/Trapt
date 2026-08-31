@@ -706,6 +706,10 @@ updated every frame from the `.CAM` track. So the frame can be recovered by
 matching that pair against all 268 tracks on the disc. A camera path is a
 signature; there is no ambiguity and no threshold to tune.
 
+(That address is this build's. A state is named after the disc it came off, so
+`oracle.py` reads a `SLPS-25445` capture against the Japanese disc without
+being told -- see §8.3.1 for how it finds the camera there.)
+
 ```
 python tools/oracle.py
 
@@ -777,20 +781,53 @@ effect instances carry one: age at `+0x10` against a lifetime at `+0x1c`
 ### 8.3 The game counts the frame itself
 
 `0x0081CA40` holds the cutscene's current frame as a float, in the same static
-block as the story camera -- and it belongs to the same path: the attract loop
-leaves it filler, so e001 still falls back on the camera. It leads the camera
-match by one, the counter being stepped before the camera is sampled.
+block as the story camera. It leads the camera match by one, the counter being
+stepped before the camera is sampled.
 
 It cross-checks against the only state whose camera is unambiguous: `.07`'s
 camera pins e004 frame **2129**, and the counter independently says **2129**.
 So `identify` now believes the counter wherever it lands inside the shot the
-camera picked, and a held shot stops being a blind spot:
+camera picked, and a held shot stops being a blind spot.
+
+**There are two of these as well, one per camera slot.** `0x0081CA40` belongs
+to the story slot and reads filler on the attract path, which is why e001
+captures used to fall back on the camera; the attract slot's own counter is at
+`0x0081CA00`, and it reads filler during a story cutscene. That one turned up
+while porting the oracle to the Japanese disc: with the camera found by shape
+rather than by address, `oracle.py --probe` looks for `frame + 1` as a float
+near the camera it just matched, and on an e001 state exactly one address
+answers. All four e001 captures on this machine agree with their camera match
+to the frame, so every state that is in a cutscene now reads its frame from
+the game's own count:
 
 ```
-.00.p2s  e004 frame 1420 (from the game's own counter)  residual 0.00e+00
-.07.p2s  e004 frame 2129 (from the game's own counter)  residual 1.91e-06
-.08.p2s  e001 frame 7422                                residual 3.81e-06
+.00.p2s  e004 frame 1420  (from the game's own counter)  residual 0.00e+00
+.07.p2s  e004 frame 2129  (from the game's own counter)  residual 1.91e-06
+.08.p2s  e001 frame 7422  (from the game's own counter)  residual 3.81e-06
 ```
+
+`tools/region.py` pairs each slot with its counter, because only the one
+beside the live camera means anything.
+
+### 8.3.1 The Japanese disc has none of these addresses
+
+`0x0081B6F0` and the rest are heap, not static: they are where *this* build
+happens to put the RT player, and the JP executable (`SLPS_254.45`) puts it
+somewhere nobody has written down. Rather than guess, `State.find_cameras`
+looks for the camera by its **shape**. A slot is `eye, target, ?, forward` at
+0x10 steps and the forward is the unit vector from the eye to the target;
+nothing else in 32 MB is three vectors in that relation. Anchoring the sweep
+on the `1.0` both `w` components hold keeps it to about 100k candidates and
+0.2 s.
+
+The check that this is honest is that it re-derives the addresses that are
+already known: run on the US states it answers `0x0081B730` for an attract
+capture, `0x0081B6F0` for a story one, and nothing at all for a state that is
+not in a cutscene -- which is exactly the table above, found rather than
+looked up.
+
+PINE cannot do this (eight bytes a round trip), so `--watch` still needs a
+build whose slots are written down, and says so instead of reading rubbish.
 
 ### 8.4 A savestate issued at a breakpoint is not a picture of it
 

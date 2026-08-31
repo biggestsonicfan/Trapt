@@ -685,7 +685,9 @@ Two dead ends worth recording:
 
 ### 7.6 `tools/order.py`
 
-The tables, decoded straight out of `SLUS_212.55`:
+The tables, decoded straight out of `SLUS_212.55` -- and out of
+`SLPS_254.45`, where they are the **same bytes** at another address, so the
+story order below is the Japanese disc's order too:
 
 ```
 python tools/order.py             # the whole order, as an outline
