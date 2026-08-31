@@ -163,8 +163,9 @@
      read out of it.</p>
 
   <div class="drop" id="drop">
-    <label class="btn">Choose Trapt (USA).iso<input type="file" id="file" accept=".iso,.bin,.img"></label>
-    <div class="hint">or drop it here &middot; SLUS-21255, 1.76 GB</div>
+    <label class="btn">Choose your .iso<input type="file" id="file" accept=".iso,.bin,.img"></label>
+    <div class="hint">or drop it here &middot; Trapt (SLUS-21255) or Kagero II
+      (SLPS-25445), 1.76 GB</div>
   </div>
 
   <div id="stage">
@@ -186,9 +187,12 @@
   </div>
 
   <div class="note">
-    Reads the ISO 9660 directory, the filename table baked into
-    <code>SLUS_212.55</code> at <code>0x0036A0F0</code>, and the AFS index at
+    Reads the ISO 9660 directory, the filename table baked into the
+    executable — <code>SLUS_212.55</code> at <code>0x0036A0F0</code>,
+    <code>SLPS_254.45</code> at <code>0x0036C070</code> — and the AFS index at
     the front of <code>DATA/GAME.DAT</code> — about 100 KB out of 1.76 GB.
+    A Japanese disc plays in Japanese: its script, its voices and its own copy
+    of the subtitle face.
     Opening a cutscene reads only that cutscene's archive and decodes its
     <code>.TM2</code> textures here, in the page.
   </div>
@@ -282,15 +286,19 @@ async function load(file) {
     row('problem', err.message, 'bad');
     return;
   }
+  row('disc', DISC.region.serial + ' — ' + DISC.region.title, 'good');
   row('volume', DISC.iso.volume.id + ' / ' + DISC.iso.volume.system, 'good');
   row('files in the AFS', DISC.entries.length.toLocaleString());
   row('opened in', (performance.now() - t0).toFixed(0) + ' ms  '
       + '(about 100 KB read)', 'good');
 
-  // The cutscene registry, read out of the ELF that was just picked.
+  // The cutscene registry, read out of the ELF that was just picked -- at
+  // whichever address that build keeps it, which is not the same on the two
+  // discs.  Reading the US one off a Japanese disc gives 154 entries of
+  // rubbish, none of which names a file, so every tile came up empty.
   const names = [];
   for (let i = 0; i < 154; i++)
-    names.push(DISC.elfStr(DISC.elfU32(0x00386920 + i * 4)));
+    names.push(DISC.elfStr(DISC.elfU32(DISC.region.order.NAME_TABLE + i * 4)));
   row('cutscene registry', names.length + ' entries, ' + names[0] + ' … '
       + names[names.length - 1]);
 
@@ -298,7 +306,8 @@ async function load(file) {
   // reads.  The face is the PS2 kernel's, baked into the ELF we just read.
   try {
     FONT = new TraptFont.Font(DISC.elf, DISC.region.font);
-    row('subtitle font', 'PS2 kernel face from the ELF at 0x003885C0, '
+    row('subtitle font', 'PS2 kernel face from the ELF at 0x'
+        + DISC.region.font.GLYPHS.toString(16).padStart(8, '0') + ', '
         + FONT.widths.size + ' advances, ' + FONT.clut.length + '-entry CLUT',
         'good');
   } catch (err) {

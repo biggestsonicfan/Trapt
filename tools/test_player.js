@@ -16,7 +16,13 @@ const bundle = process.argv[2];
 const frame = parseFloat(process.argv[3]);
 const outPath = process.argv[4] || null;
 
-const html = fs.readFileSync(path.join(__dirname, 'player.html'), 'utf8');
+// `.gitattributes` says `* text=auto`, so a checkout on Windows hands
+// this file back with CRLF endings while every marker below is written
+// with LF.  Without normalising, the slices come back empty and the
+// suite does not fail -- it finds nothing to check and passes, or dies
+// on the first lookup.  Normalise once, here.
+const html = fs.readFileSync(path.join(__dirname, 'player.html'), 'utf8')
+  .replace(/\r\n/g, '\n');
 const start = html.indexOf('// ===8<=== TRAPT MATH ===8<===');
 const end = html.indexOf('// ===8<=== END TRAPT MATH ===8<===');
 if (start < 0 || end < 0) throw new Error('TRAPT MATH markers not found in player.html');

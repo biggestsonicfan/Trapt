@@ -17,6 +17,14 @@
  * handler, and with it the only thing that resumed the AudioContext.  Hence
  * "no pause and no sound", from one ordering mistake.
  *
+ * The second class is an ELF address written into the page.  The page is the
+ * one place the modules cannot cover: every decoder takes its addresses from
+ * `disc.region`, and the tests diff the decoders against Python, but the
+ * page's own inline script is read by neither.  It kept the cutscene registry
+ * at the US `0x00386920`, so a Japanese disc built its whole grid out of 154
+ * strings of rubbish -- 154 tiles, none of them naming a file, "0 of 154 have
+ * data" -- while every suite passed on both discs.
+ *
  * These are text assertions, which is weaker than running the thing.  They are
  * here because they are cheap and they pin the exact regressions.
  */
@@ -25,7 +33,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const html = fs.readFileSync(path.join(__dirname, 'pick.html'), 'utf8');
+// `.gitattributes` says `* text=auto`, so a checkout on Windows hands
+// this file back with CRLF endings while every marker below is written
+// with LF.  Without normalising, the slices come back empty and the
+// suite does not fail -- it finds nothing to check and passes, or dies
+// on the first lookup.  Normalise once, here.
+const html = fs.readFileSync(path.join(__dirname, 'pick.html'), 'utf8')
+  .replace(/\r\n/g, '\n');
 const script = html.slice(html.indexOf("<script>\n'use strict';"));
 
 let failures = 0;
@@ -432,6 +446,28 @@ console.log('movement keys yield to typing and to the shortcuts');
         /V\.locked[\s\S]*lookFrom\(V\.orbit, -e\.movementX \* LOOK_X/.test(bo)
         && bo.includes('requestPointerLock'));
 }
+
+// An address baked into the page is an address that is right for one disc.
+// `region.js` is the only place either build's addresses belong; everything
+// the page reads out of the ELF has to come through `DISC.region`.
+console.log('the page hardcodes no ELF address');
+const LOAD_VA = 0x00100000, END_VA = 0x00490000;
+const literals = [...script.matchAll(/0x00[0-9A-Fa-f]{6}\b/g)]
+  .map((m) => m[0])
+  .filter((h) => {
+    const v = parseInt(h, 16);
+    return v >= LOAD_VA && v < END_VA;
+  });
+check('no ELF virtual address in the page script',
+      literals.length === 0,
+      'found: ' + [...new Set(literals)].join(', ')
+      + ' -- read it off DISC.region instead (region.js)');
+
+const reads = [...script.matchAll(/\bDISC\.elf(?:U8|U32|Str|Off)\(([^;\n]*)/g)]
+  .map((m) => m[1])
+  .filter((a) => !/DISC\.region\b/.test(a));
+check('every DISC.elf* read is addressed through DISC.region',
+      reads.length === 0, 'not: ' + reads.join(' | '));
 
 console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);
 process.exit(failures ? 1 : 0);

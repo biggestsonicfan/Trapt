@@ -4,7 +4,7 @@
 # checked by diffing them against the Python over real game data, and the ELF
 # supplies the story tables, the font and the filename table.  None of that
 # belongs on a runner, so those suites skip themselves (exit 2) and the job
-# still passes -- 273 checks here against 733 with a disc in hand (either
+# still passes -- 275 checks here against 736 with a disc in hand (either
 #   disc: the US pressing or the Japanese one, see tools/region.py).
 #
 # What does run is the half that has actually caught shipped bugs:

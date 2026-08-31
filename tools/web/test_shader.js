@@ -28,7 +28,13 @@ function check(what, ok, detail) {
               ok || !detail ? '' : '\n        ' + detail);
 }
 
-const html = fs.readFileSync(path.join(__dirname, '..', 'player.html'), 'utf8');
+// `.gitattributes` says `* text=auto`, so a checkout on Windows hands
+// this file back with CRLF endings while every marker below is written
+// with LF.  Without normalising, the slices come back empty and the
+// suite does not fail -- it finds nothing to check and passes, or dies
+// on the first lookup.  Normalise once, here.
+const html = fs.readFileSync(path.join(__dirname, '..', 'player.html'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 /** Pull `const NAME = \`...\`;` out of player.html. */
 function block(name) {

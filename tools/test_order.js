@@ -18,7 +18,13 @@ const path = require('path');
 const vm = require('vm');
 const { execFileSync } = require('child_process');
 
-const html = fs.readFileSync(path.join(__dirname, 'player.html'), 'utf8');
+// `.gitattributes` says `* text=auto`, so a checkout on Windows hands
+// this file back with CRLF endings while every marker below is written
+// with LF.  Without normalising, the slices come back empty and the
+// suite does not fail -- it finds nothing to check and passes, or dies
+// on the first lookup.  Normalise once, here.
+const html = fs.readFileSync(path.join(__dirname, 'player.html'), 'utf8')
+  .replace(/\r\n/g, '\n');
 const start = html.indexOf('// ===8<=== PLAYLIST ===8<===');
 const end = html.indexOf('// ===8<=== END PLAYLIST ===8<===');
 if (start < 0 || end < 0) throw new Error('PLAYLIST markers not found in player.html');

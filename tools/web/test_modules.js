@@ -27,7 +27,13 @@ function check(what, ok, detail) {
 }
 
 const HERE = __dirname;
-const html = fs.readFileSync(path.join(HERE, 'pick.html'), 'utf8');
+// `.gitattributes` says `* text=auto`, so a checkout on Windows hands
+// this file back with CRLF endings while every marker below is written
+// with LF.  Without normalising, the slices come back empty and the
+// suite does not fail -- it finds nothing to check and passes, or dies
+// on the first lookup.  Normalise once, here.
+const html = fs.readFileSync(path.join(HERE, 'pick.html'), 'utf8')
+  .replace(/\r\n/g, '\n');
 
 // The order the page loads them in is the order they must work in.
 const loaded = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)]

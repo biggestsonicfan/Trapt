@@ -148,6 +148,18 @@ async function main() {
   check('the 38 groups match order.py', tables.groups, py.groups);
   check('the ending routes match order.py', tables.routes, py.routes);
 
+  // What pick.html builds its grid out of: a registry name has to name a file.
+  // Reading the registry at the other build's address gives 154 plausible
+  // strings that name nothing, which is a grid of empty tiles rather than an
+  // error -- so assert the names land on the disc, not merely that they parse.
+  const named = [];
+  for (let i = 0; i < 154; i++)
+    named.push(disc.elfStr(disc.elfU32(A.NAME_TABLE + i * 4)));
+  const withData = named.filter(
+    (n) => disc.has('DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC'));
+  check('154 registry names, 149 of them naming an archive on the disc',
+        [named.length, withData.length], [154, 149]);
+
   console.log('a wrong disc is rejected, not half-read');
   const notAnIso = { size: 4096, async read(o, n) { return new Uint8Array(n); } };
   let threw = '';
