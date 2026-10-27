@@ -66,6 +66,7 @@ disc data. They work under two loaders — `require` in the tests and a classic
 | `pad.js` | `pcsx2pad.py` | a PCSX2 `[Pad1]`, and the pad it becomes |
 | `model.js`, `play.js`, `audio.js`, `cards.js`, `catalog.js`, `poster.js` | — | the three.js and playback layer |
 | `stageview.js` | — | the same, for a stage: geometry, skinning, camera, input |
+| `i18n.js` | — | the page's own words in Japanese; see §3.2 |
 
 ## 3. What the page does
 
@@ -141,6 +142,31 @@ punctuation table that folded `、` to `,`, where `hbin.py` decodes with
 `cp932` and folds later. It now uses a real `TextDecoder`, and the table is
 only a fallback.
 
+## 3.2 The page in Japanese
+
+The page's own words — its labels, buttons, status lines and the control
+help — come in English and Japanese. The game's text is not translated: that
+comes off the disc, so a Japanese disc is already Japanese and a US disc
+stays English, whatever the page is in.
+
+The language is `?lang=ja` or `?lang=en`, else the visitor's last choice
+(kept in `localStorage`), else the browser's. The switch at the top right
+reloads the page, because everything under the drop zone is built once from
+the disc; the disc has to be picked again.
+
+Every string in `pick.html` is written in English and passed through `T()`,
+which looks it up in `i18n.js` and falls back to the English, so a missing
+entry is an English word on a Japanese page, never a blank. Strings with
+numbers in them are templates (`T('{0} cues', n)`). What the modules say —
+progress lines, route beats, errors — arrives already formatted, so those
+keys are matched as patterns; they sit in a table of their own, `MSG`, so a
+pattern as loose as `'{0} pad'` cannot match a trap's name off the disc.
+
+The first draft came from DeepL and was corrected by hand: it read "building
+models" as 建物モデル and "Cross" as the d-pad. Game terms follow 影牢II: traps
+are トラップ, the face buttons ○ × □ △. `test_i18n.js` fails on any string the
+page translates that has no entry, or whose entry lost a `{n}`.
+
 ## 4. Tests
 
 ```
@@ -153,7 +179,7 @@ the same textures, the same skinned vertices, the same timeline, the same
 audio samples, the same collision and the same walk. A suite that needs the
 disc exits 2 when there is none, which the runner reports as a skip.
 
-Four suites need no game data, and the first three are the ones that have
+Five suites need no game data, and the first three are the ones that have
 caught bugs that actually shipped:
 
 * `test_modules.js` — every module loaded the way a browser loads it, in one
@@ -170,8 +196,10 @@ caught bugs that actually shipped:
 * `test_pad.js` — the PCSX2 binding tables, which need no game data because a
   `PCSX2.ini` is not game data. A transposed pair in them silently swaps
   Circle and Cross, and the game gets the blame.
+* `test_i18n.js` — every string `pick.html` passes to `T()`, and every
+  `data-i18n` element, has a Japanese entry with the same placeholders.
 
-`.forgejo/workflows/ci.yml` runs those four, compiles the Python, and checks
+`.forgejo/workflows/ci.yml` runs those five, compiles the Python, and checks
 the docs' relative links.
 
 ## 5. What is not here

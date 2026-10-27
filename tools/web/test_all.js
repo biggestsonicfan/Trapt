@@ -31,6 +31,7 @@ const SUITES = [
   { file: 'test_page.js', disc: false },
   { file: 'test_shader.js', disc: false },
   { file: 'test_pad.js', disc: false },
+  { file: 'test_i18n.js', disc: false },
   { file: 'test_disc.js', disc: true },
   { file: 'test_assets.js', disc: true },
   { file: 'test_audio.js', disc: true },
