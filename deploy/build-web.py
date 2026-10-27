@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Assemble the ISO-driven page into a directory a static server can root at.
 
-    python3 deploy/build-web.py /srv/trapt-web
+    python3 deploy/build-web.py _site
+
+This is what .github/workflows/pages.yml publishes to GitHub Pages.
 
 tools/web/pick.html is written to be opened straight from a checkout, so it
 loads three.js as ../vendor/three.min.js and sits beside its own test suites.
@@ -23,7 +25,9 @@ tree at ~880 KB.
 
 The page's one inline <script> is hashed into a CSP meta tag as well, so the
 policy travels with the file instead of living in a server config that has to
-be kept in step with it.
+be kept in step with it.  GitHub Pages sets no headers of ours at all, so the
+referrer policy goes in a meta tag beside it.  Every path stays relative, which
+is what lets the same tree serve from a project URL (/Trapt/) or a domain root.
 """
 
 import argparse
@@ -107,6 +111,7 @@ def build(out, source, hashing, prune):
         ('\n' + inline[0] + '\n').encode('utf-8')).digest()).decode()
     meta = '<meta http-equiv="Content-Security-Policy" content="%s">\n' % \
         CSP.format(hashes="'sha256-%s'" % b64)
+    meta += '<meta name="referrer" content="no-referrer">\n'
     if '<meta charset="utf-8">\n' not in out_html:
         sys.exit('no charset meta to anchor the CSP to')
     out_html = out_html.replace('<meta charset="utf-8">\n',

@@ -1,0 +1,66 @@
+# GitHub Pages for the ISO page (tools/web/pick.html).
+#
+# What is published is deploy/build-web.py's output: index.html, the scripts
+# it names with content-hashed filenames, and three.js.  ~940 KB of code and
+# no game data -- the visitor picks their own disc and the browser decodes it
+# (docs/BROWSER.md).  The 0.9 GB export from tools/site.py is never published
+# here: it is the game's assets, and it is near Pages' 1 GB cap besides.
+#
+# Every path in the built page is relative, so it works at the project URL
+# (https://<user>.github.io/Trapt/) and under a custom domain alike.  The CSP
+# travels in a meta tag, because Pages cannot set response headers.
+#
+# Forgejo reads .forgejo/workflows and ignores this directory while that one
+# exists, so code.robkrum.com never tries to run it.
+#
+# One-time setup on github.com: Settings -> Pages -> Source: GitHub Actions.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: every browser module parses
+        run: for f in tools/web/*.js; do node --check "$f"; done
+
+      - name: the suites that need no disc
+        run: node tools/web/test_all.js --no-disc
+
+      - name: build the served tree
+        run: |
+          python3 deploy/build-web.py _site
+          touch _site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
