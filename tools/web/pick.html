@@ -3,12 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trapt — supply your disc</title>
+<title data-i18n>Trapt — supply your disc</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; background: #0b0b0d; color: #e8e6e3;
-    font: 14px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; }
+    font: 14px/1.6 ui-sans-serif, system-ui, "Segoe UI", Roboto,
+      "Hiragino Sans", "Yu Gothic UI", "Noto Sans JP", sans-serif; }
+  #lang { float: right; font-size: 12.5px; }
+  #lang a { color: #9ab8e0; text-decoration: none; border: 1px solid #2e2e36;
+    border-radius: 6px; padding: 3px 10px; }
+  #lang a:hover { border-color: #4a72ad; }
   main { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
   h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
   h2 { font-size: 12px; font-weight: 600; letter-spacing: .12em; opacity: .45;
@@ -157,14 +162,15 @@
 </head>
 <body>
 <main>
-  <h1>Supply your Trapt disc</h1>
-  <p>This page reads the game out of your own copy. Nothing is uploaded — the
+  <div id="lang"></div>
+  <h1 data-i18n>Supply your Trapt disc</h1>
+  <p data-i18n>This page reads the game out of your own copy. Nothing is uploaded — the
      file never leaves your machine, and only the parts actually needed are
      read out of it.</p>
 
   <div class="drop" id="drop">
-    <label class="btn">Choose your .iso<input type="file" id="file" accept=".iso,.bin,.img"></label>
-    <div class="hint">or drop it here &middot; Trapt (SLUS-21255) or Kagero II
+    <label class="btn"><span data-i18n>Choose your .iso</span><input type="file" id="file" accept=".iso,.bin,.img"></label>
+    <div class="hint" data-i18n>or drop it here &middot; Trapt (SLUS-21255) or Kagero II
       (SLPS-25445), 1.76 GB</div>
   </div>
 
@@ -175,18 +181,18 @@
          you just picked was backwards.  It is empty until something is
          opened, and an empty div takes no room. -->
     <div id="detail"></div>
-    <h2>Walk a stage <span id="stageStatus"></span></h2>
+    <h2><span data-i18n>Walk a stage</span> <span id="stageStatus"></span></h2>
     <div id="stages"></div>
     <div id="padPanel"></div>
-    <h2>Play a route</h2>
+    <h2 data-i18n>Play a route</h2>
     <div id="routes"></div>
-    <h2 id="listHead">Cutscenes on the disc</h2>
+    <h2 id="listHead" data-i18n>Cutscenes on the disc</h2>
     <div id="list"></div>
-    <h2>Gallery <span id="galleryStatus"></span></h2>
+    <h2><span data-i18n>Gallery</span> <span id="galleryStatus"></span></h2>
     <div id="cards"></div>
   </div>
 
-  <div class="note">
+  <div class="note" data-i18n>
     Reads the ISO 9660 directory, the filename table baked into the
     executable — <code>SLUS_212.55</code> at <code>0x0036A0F0</code>,
     <code>SLPS_254.45</code> at <code>0x0036C070</code> — and the AFS index at
@@ -198,6 +204,7 @@
   </div>
 </main>
 
+<script src="i18n.js"></script>
 <script src="region.js"></script>
 <script src="iso.js"></script>
 <script src="disc.js"></script>
@@ -237,6 +244,9 @@
 // it -- so the page says out loud which build is running.
 const BUILD = '2026-08-29 · stage mode + route handoff';
 
+const T = TraptI18n.t;
+TraptI18n.apply(document);
+
 const drop = document.getElementById('drop');
 const stage = document.getElementById('stage');
 const rows = document.getElementById('rows');
@@ -257,7 +267,7 @@ function row(label, value, cls) {
   const d = document.createElement('div');
   d.className = 'row';
   d.innerHTML = '<b></b><span></span>';
-  d.querySelector('b').textContent = label;
+  d.querySelector('b').textContent = T(label);
   const v = d.querySelector('span');
   v.textContent = value;
   if (cls) v.className = cls;
@@ -283,14 +293,14 @@ async function load(file) {
   try {
     DISC = await TraptDisc.open(TraptIso.blobSource(file));
   } catch (err) {
-    row('problem', err.message, 'bad');
+    row('problem', T(err.message), 'bad');
     return;
   }
   row('disc', DISC.region.serial + ' — ' + DISC.region.title, 'good');
   row('volume', DISC.iso.volume.id + ' / ' + DISC.iso.volume.system, 'good');
   row('files in the AFS', DISC.entries.length.toLocaleString());
-  row('opened in', (performance.now() - t0).toFixed(0) + ' ms  '
-      + '(about 100 KB read)', 'good');
+  row('opened in', T('{0} ms  (about 100 KB read)',
+                     (performance.now() - t0).toFixed(0)), 'good');
 
   // The cutscene registry, read out of the ELF that was just picked -- at
   // whichever address that build keeps it, which is not the same on the two
@@ -299,17 +309,16 @@ async function load(file) {
   const names = [];
   for (let i = 0; i < 154; i++)
     names.push(DISC.elfStr(DISC.elfU32(DISC.region.order.NAME_TABLE + i * 4)));
-  row('cutscene registry', names.length + ' entries, ' + names[0] + ' … '
-      + names[names.length - 1]);
+  row('cutscene registry', T('{0} entries, {1} … {2}', names.length, names[0],
+                             names[names.length - 1]));
 
   // The game ships no font: DATA/FONT/FONT.BIN is an 18-byte stub nothing
   // reads.  The face is the PS2 kernel's, baked into the ELF we just read.
   try {
     FONT = new TraptFont.Font(DISC.elf, DISC.region.font);
-    row('subtitle font', 'PS2 kernel face from the ELF at 0x'
-        + DISC.region.font.GLYPHS.toString(16).padStart(8, '0') + ', '
-        + FONT.widths.size + ' advances, ' + FONT.clut.length + '-entry CLUT',
-        'good');
+    row('subtitle font', T('PS2 kernel face from the ELF at 0x{0}, {1} advances, {2}-entry CLUT',
+        DISC.region.font.GLYPHS.toString(16).padStart(8, '0'),
+        FONT.widths.size, FONT.clut.length), 'good');
   } catch (err) {
     FONT = null;
     row('subtitle font', err.message, 'bad');
@@ -321,32 +330,29 @@ async function load(file) {
       'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC')));
     const ref = TraptStory2.referenced(TABLES);
     const unplayed = names.filter((n, i) => !ref.has(i) && HAVE.has(n));
-    row('story order', TABLES.chapters.length + ' chapters, '
-        + TABLES.groups.length + ' cutscene groups, ' + TABLES.flows.length
-        + ' ending flows', 'good');
-    row('never played', unplayed.length + ' on the disc that no table reaches: '
-        + unplayed.join(' '), unplayed.length ? '' : 'good');
+    row('story order', T('{0} chapters, {1} cutscene groups, {2} ending flows',
+        TABLES.chapters.length, TABLES.groups.length, TABLES.flows.length), 'good');
+    row('never played', T('{0} on the disc that no table reaches: {1}',
+        unplayed.length, unplayed.join(' ')), unplayed.length ? '' : 'good');
     buildRoutePanel();
     buildGallery();
   } catch (err) {
     TABLES = null;
-    row('story order', err.message, 'bad');
+    row('story order', T(err.message), 'bad');
   }
 
   try {
     buildStagePanel();
     const cols = await TraptStage.loadCollision(DISC);
-    row('stages', TraptMapbin.stageNumbers(DISC).length
-        + ' in DATA/MAP_DATA/BIN, with collision for ' + cols.size + ' rooms',
-        'good');
+    row('stages', T('{0} in DATA/MAP_DATA/BIN, with collision for {1} rooms',
+        TraptMapbin.stageNumbers(DISC).length, cols.size), 'good');
     // Which map each of the story tables' 26 stages means, derived from the
     // rooms its B##EVENT script names.  Route mode needs it to hand over.
     if (TABLES) {
       STAGEMAP = await TraptStage.stageMapTable(DISC, TABLES.chapters);
       const solved = [...STAGEMAP.values()].filter((r) => r.map !== null).length;
-      row('stage → map', solved + ' of ' + STAGEMAP.size
-          + ' stages resolved to a map, from their B##EVENT scripts',
-          solved === STAGEMAP.size ? 'good' : 'bad');
+      row('stage → map', T('{0} of {1} stages resolved to a map, from their B##EVENT scripts',
+          solved, STAGEMAP.size), solved === STAGEMAP.size ? 'good' : 'bad');
     }
   } catch (err) {
     row('stages', err.message, 'bad');
@@ -358,12 +364,12 @@ async function load(file) {
     el.className = 'cut' + (DISC.has(path) ? '' : ' absent');
     el.textContent = n;
     if (DISC.has(path)) el.onclick = () => openCutscene(n, path, el);
-    else el.title = 'in the registry, but no data on this disc';
+    else el.title = T('in the registry, but no data on this disc');
     list.appendChild(el);
   }
   document.getElementById('listHead').textContent =
-    'Cutscenes on the disc — ' + list.querySelectorAll('.cut:not(.absent)').length
-    + ' of ' + names.length + ' have data; click one to extract it';
+    T('Cutscenes on the disc — {0} of {1} have data; click one to extract it',
+      list.querySelectorAll('.cut:not(.absent)').length, names.length);
 }
 
 async function openCutscene(name, path, el) {
@@ -373,7 +379,7 @@ async function openCutscene(name, path, el) {
   for (const c of list.querySelectorAll('.cut.on')) c.classList.remove('on');
   el.classList.add('on');
   detail.innerHTML =
-      '<h2>' + name + '</h2><div id="members">reading…</div>'
+      '<h2>' + name + '</h2><div id="members">' + T('reading…') + '</div>'
     + '<div id="view">'
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
@@ -425,20 +431,19 @@ async function openCutscene(name, path, el) {
   const decode = performance.now() - t1;
 
   document.getElementById('members').textContent =
-    (blob.length / 1e6).toFixed(1) + ' MB archive read in ' + read.toFixed(0)
-    + ' ms · ' + ents.length + ' members ('
-    + Object.entries(byExt).sort((a, b) => b[1] - a[1])
-        .map(([k, v]) => v + ' ' + k).join(', ')
-    + ') · ' + CUR.loose.length + ' loose .sai beside it · '
-    + pictures + ' textures, ' + (pixels / 1e6).toFixed(1)
-    + ' Mpx decoded in ' + decode.toFixed(0) + ' ms';
+    T('{0} MB archive read in {1} ms · {2} members ({3}) · {4} loose .sai beside it · '
+      + '{5} textures, {6} Mpx decoded in {7} ms',
+      (blob.length / 1e6).toFixed(1), read.toFixed(0), ents.length,
+      Object.entries(byExt).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => v + ' ' + k).join(', '),
+      CUR.loose.length, pictures, (pixels / 1e6).toFixed(1), decode.toFixed(0));
 
   const models = document.getElementById('models');
   const playChip = document.createElement('div');
   playChip.className = 'cut';
   playChip.style.background = '#3a5a8a';
   playChip.style.borderColor = '#4a72ad';
-  playChip.textContent = '▶ play the whole scene';
+  playChip.textContent = T('▶ play the whole scene');
   playChip.onclick = () => playScene(name);
   models.appendChild(playChip);
   const smis = ents.filter((e) => e.name.toLowerCase().endsWith('.smi'));
@@ -451,7 +456,7 @@ async function openCutscene(name, path, el) {
   }
   ensureViewer();
   if (smis.length) showModel(smis[0], models.firstChild);
-  else document.getElementById('vinfo').textContent = 'no models in this bundle';
+  else document.getElementById('vinfo').textContent = T('no models in this bundle');
 }
 
 const sub = (e) => CUR.blob.subarray(e.offset, e.offset + e.size);
@@ -679,7 +684,7 @@ function goFreeCam() {
   if (!S || !S.sceneCam) return;
   S.sceneCam = false;
   const b = document.getElementById('camBtn');
-  if (b) b.textContent = 'Free cam';
+  if (b) b.textContent = T('Free cam');
 }
 
 // A key is only movement when nothing is being typed into and no modifier is
@@ -732,7 +737,7 @@ function showModel(entry, chip) {
     model = TraptSmi.parse(sub(entry));
     posed = TraptSmi.bindPose(model);
   } catch (err) {
-    document.getElementById('vinfo').textContent = entry.name + ': ' + err.message;
+    document.getElementById('vinfo').textContent = entry.name + ': ' + T(err.message);
     return;
   }
   const group = TraptModel.build(THREE, model, posed, textureFor);
@@ -769,7 +774,7 @@ function listClips(entry) {
 
   const rest = document.createElement('div');
   rest.className = 'cut on';
-  rest.textContent = 'bind pose';
+  rest.textContent = T('bind pose');
   rest.onclick = () => {
     for (const c of clips.querySelectorAll('.cut.on')) c.classList.remove('on');
     rest.classList.add('on');
@@ -791,7 +796,7 @@ function listClips(entry) {
   if (clips.children.length === 1) {
     const none = document.createElement('div');
     none.className = 'cut absent';
-    none.textContent = 'no clips for this rig';
+    none.textContent = T('no clips for this rig');
     clips.appendChild(none);
   }
 }
@@ -804,7 +809,7 @@ async function playClip(label, get, chip) {
   try {
     clip = TraptSai.parse(await get());
   } catch (err) {
-    document.getElementById('vinfo').textContent = label + ': ' + err.message;
+    document.getElementById('vinfo').textContent = label + ': ' + T(err.message);
     return;
   }
   M.clip = clip; M.clipName = label; M.frame = 0; M.playing = true;
@@ -822,13 +827,13 @@ function transport() {
   const seek = document.getElementById('seek');
   seek.max = M.clip.duration;
   seek.value = M.frame;
-  btn.textContent = M.playing ? 'Pause' : 'Play';
+  btn.textContent = T(M.playing ? 'Pause' : 'Play');
   btn.onclick = () => {
     M.playing = !M.playing;
-    btn.textContent = M.playing ? 'Pause' : 'Play';
+    btn.textContent = T(M.playing ? 'Pause' : 'Play');
   };
   seek.oninput = () => { M.frame = +seek.value; M.playing = false;
-                         btn.textContent = 'Play'; };
+                         btn.textContent = T('Play'); };
 }
 
 /** Write skinned positions back into the geometry three.js already has. */
@@ -849,14 +854,15 @@ function applyPose(posed) {
 function info() {
   if (!M) return;
   document.getElementById('vinfo').textContent =
-    M.entry.name + ' · ' + M.model.nodes.length + ' bones, '
-    + M.model.meshes.length + ' meshes, ' + M.verts.toLocaleString() + ' verts, '
-    + M.tris.toLocaleString() + ' tris'
-    + (M.clip ? ' · ' + M.clipName + ': ' + M.clip.nodes.length + ' animated nodes, '
-                + M.clip.duration + ' frames, skin ' + M.ms.toFixed(1) + ' ms/frame'
-              : ' · bind pose')
-    + ' · WASD to fly, QE up/down, shift to hurry, drag to look,'
-    + ' right-drag to orbit, wheel to zoom';
+    M.entry.name + ' · ' + T('{0} bones, {1} meshes, {2} verts, {3} tris',
+      M.model.nodes.length, M.model.meshes.length, M.verts.toLocaleString(),
+      M.tris.toLocaleString())
+    + (M.clip ? ' · ' + M.clipName + ': '
+                + T('{0} animated nodes, {1} frames, skin {2} ms/frame',
+                    M.clip.nodes.length, M.clip.duration, M.ms.toFixed(1))
+              : ' · ' + T('bind pose'))
+    + ' · ' + T('WASD to fly, QE up/down, shift to hurry, drag to look,'
+    + ' right-drag to orbit, wheel to zoom');
 }
 
 // ------------------------------------------------------------ the GS look
@@ -979,7 +985,7 @@ function setPs2(on) {
   resize();                            // the projection aspect moves with it
   const b = document.getElementById('ps2Btn');
   if (b) {
-    b.textContent = on ? 'PS2' : 'Modern';
+    b.textContent = T(on ? 'PS2' : 'Modern');
     b.classList.toggle('on', on);
   }
 }
@@ -1015,7 +1021,7 @@ const CRT_SLIDERS = [
 ];
 
 function slider(k, label, lo, hi, st, val, group) {
-  return '<label><span>' + label + '</span><input data-k="' + k + '" data-g="'
+  return '<label><span>' + T(label) + '</span><input data-k="' + k + '" data-g="'
     + group + '" type="range" min="' + lo + '" max="' + hi + '" step="' + st
     + '" value="' + val + '"><b>' + val + '</b></label>';
 }
@@ -1025,7 +1031,7 @@ function buildLookPanel() {
   if (!panel) return;
   // Rebuilt rather than cached: the CRT half appears and disappears with the
   // button, and its values have to reflect whatever the sliders were left at.
-  panel.innerHTML = '<h4>Look</h4>'
+  panel.innerHTML = '<h4>' + T('Look') + '</h4>'
     + LOOK_SLIDERS.map(([k, l, lo, hi, st]) => slider(k, l, lo, hi, st, V.look[k], 'look')).join('')
     + (V.crtOn && V.crtLook
         ? '<h4>newpixie CRT</h4>' + CRT_SLIDERS.map(
@@ -1133,7 +1139,7 @@ function setSubsPs2(on) {
   }
   const b = document.getElementById('subsBtn');
   if (b) {
-    b.textContent = on ? 'Subs PS2' : 'Subs DOM';
+    b.textContent = T(on ? 'Subs PS2' : 'Subs DOM');
     b.classList.toggle('on', on);
   }
 }
@@ -1185,10 +1191,10 @@ async function buildGallery() {
     if (!sec.items.length) continue;
     const el = document.createElement('section');
     const h = document.createElement('h3');
-    h.textContent = sec.title;
+    h.textContent = T(sec.title);
     if (sec.note) {
       const sm = document.createElement('span');
-      sm.textContent = sec.note;
+      sm.textContent = T(sec.note);
       h.appendChild(sm);
     }
     el.appendChild(h);
@@ -1198,13 +1204,22 @@ async function buildGallery() {
       const card = document.createElement('div');
       card.className = 'gcard';
       card.innerHTML =
-          '<div class="shot"><span>still</span></div>'
+          '<div class="shot"><span>' + T('still') + '</span></div>'
         + '<div class="body"><div class="nm"></div>'
         + '<div class="meta"></div><div class="line"></div>'
         + '<div class="cast"></div></div>';
       card.querySelector('.nm').textContent = it.name;
-      card.querySelector('.meta').textContent = it.note || '';
-      card.onclick = () => { R = null; playScene(it.name); };
+      card.querySelector('.meta').textContent = it.note ? T(it.note) : '';
+      card.onclick = () => {
+        R = null;
+        // The first thing clicked can be a card, before any player exists;
+        // a stage's markup has a view but no transport, so that is the test.
+        if (!document.getElementById('transport')) {
+          routeViewport();
+          document.getElementById('routeHead').textContent = it.name;
+        }
+        playScene(it.name);
+      };
       card.dataset.name = it.name;
       grid.appendChild(card);
       cards.push(card);
@@ -1218,18 +1233,18 @@ async function buildGallery() {
   await TraptCatalog.describeAll(DISC, names, (entry, done, total) => {
     if (status)
       status.textContent = done < total
-        ? 'reading ' + done + ' of ' + total + '…'
-        : total + ' cutscenes; stills render as you scroll';
+        ? T('reading {0} of {1}…', done, total)
+        : T('{0} cutscenes; stills render as you scroll', total);
     if (!entry) return;
     CAT.set(entry.name, entry);
     const card = cards.find((c) => c.dataset.name === entry.name);
     if (!card) return;
     if (entry.error) {
-      card.querySelector('.line').textContent = entry.error;
+      card.querySelector('.line').textContent = T(entry.error);
       card.querySelector('.line').className = 'line bad';
       return;
     }
-    const meta = [entry.length, entry.cues + ' cues'];
+    const meta = [entry.length, T('{0} cues', entry.cues)];
     if (entry.room) meta.push(entry.room);
     const note = card.querySelector('.meta').textContent;
     card.querySelector('.meta').textContent =
@@ -1254,7 +1269,7 @@ function watchCards(cards) {
       if (card.dataset.shot) continue;
       card.dataset.shot = '1';
       const shotEl = card.querySelector('.shot');
-      shotEl.innerHTML = '<span>rendering…</span>';
+      shotEl.innerHTML = '<span>' + T('rendering…') + '</span>';
       PQ.add(async () => {
         ensureViewer();
         return TraptPoster.render(THREE, DISC, V, card.dataset.name,
@@ -1264,7 +1279,7 @@ function watchCards(cards) {
         shotEl.appendChild(TraptPoster.toCanvas(shot));
       }).catch((err) => {
         shotEl.innerHTML = '<span></span>';
-        shotEl.querySelector('span').textContent = err.message;
+        shotEl.querySelector('span').textContent = T(err.message);
       });
     }
   }, { rootMargin: '200px' });
@@ -1290,7 +1305,7 @@ function routeBeats(opts) {
  */
 function routeViewport() {
   detail.innerHTML =
-      '<h2 id="routeHead">Route</h2><div id="members"></div>'
+      '<h2 id="routeHead">' + T('Route') + '</h2><div id="members"></div>'
     + '<div id="view">'
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
@@ -1303,7 +1318,7 @@ function routeViewport() {
 }
 
 async function startRoute(opts) {
-  if (!TABLES) { alert('open a disc first'); return; }
+  if (!TABLES) { alert(T('open a disc first')); return; }
   leaveStage();                            // the stage owns tick until it goes
   R = { beats: routeBeats(opts), at: -1, paused: false };
   routeViewport();
@@ -1323,7 +1338,7 @@ function routeSummary() {
   if (!R) return '';
   const n = R.beats.filter((b) => b.kind === 'cutscene').length;
   const done = R.beats.slice(0, R.at + 1).filter((b) => b.kind === 'cutscene').length;
-  return done + ' of ' + n + ' cutscenes · beat ' + (R.at + 1) + ' of ' + R.beats.length;
+  return T('{0} of {1} cutscenes · beat {2} of {3}', done, n, R.at + 1, R.beats.length);
 }
 
 /** Advance to the next beat: a card to show, a stage to announce, or a scene. */
@@ -1332,12 +1347,12 @@ async function routeNext() {
   R.at += 1;
   const head = document.getElementById('routeHead');
   if (R.at >= R.beats.length) {
-    showCard({ title: 'The end', subtitle: routeSummary() }, null);
+    showCard({ title: T('The end'), subtitle: routeSummary() }, null);
     R = null;
     return;
   }
   const b = R.beats[R.at];
-  if (head) head.textContent = 'Route — ' + routeSummary();
+  if (head) head.textContent = T('Route — {0}', routeSummary());
 
   if (b.kind === 'card') {
     const pic = b.card ? await TraptCards.load(DISC, b.card) : null;
@@ -1350,13 +1365,14 @@ async function routeNext() {
     // takes you there.  Skip keeps the old behaviour for anyone walking the
     // story for its cutscenes.
     const row = STAGEMAP ? STAGEMAP.get(b.stage) : null;
-    const label = 'Stage ' + String(b.stage).padStart(2, '0');
+    const label = T('Stage {0}', String(b.stage).padStart(2, '0'));
     showCard({
       title: label,
       subtitle: row && row.map !== null
-        ? 'played here in the game — map M' + String(row.map).padStart(3, '0')
-          + ', ' + row.rooms.length + ' rooms, from ' + row.script.split('/').pop()
-        : 'played here in the game; this stage has no map the viewer can find',
+        ? T('played here in the game — map M{0}, {1} rooms, from {2}',
+            String(row.map).padStart(3, '0'), row.rooms.length,
+            row.script.split('/').pop())
+        : T('played here in the game; this stage has no map the viewer can find'),
       stage: b.stage,
       play: row && row.map !== null ? row.map : null,
     }, null);
@@ -1388,8 +1404,8 @@ function showCard(beat, pic) {
     const box = document.createElement('div');
     box.className = 'plain';
     box.innerHTML = '<b></b><i></i>';
-    box.querySelector('b').textContent = beat.title || '';
-    box.querySelector('i').textContent = beat.subtitle || '';
+    box.querySelector('b').textContent = T(beat.title || '');
+    box.querySelector('i').textContent = T(beat.subtitle || '');
     el.appendChild(box);
   }
   const bar = document.createElement('div');
@@ -1398,7 +1414,7 @@ function showCard(beat, pic) {
   // route-continuing button stays but stops being the primary one.
   if (beat.play !== null && beat.play !== undefined) {
     const play = document.createElement('button');
-    play.textContent = 'Play this stage';
+    play.textContent = T('Play this stage');
     play.onclick = () => {
       el.className = '';
       playStage(beat.play, null, { route: R, stage: beat.stage });
@@ -1406,12 +1422,12 @@ function showCard(beat, pic) {
     bar.appendChild(play);
   }
   const go = document.createElement('button');
-  go.textContent = R ? (beat.play != null ? 'Skip it' : 'Continue') : 'Done';
+  go.textContent = T(R ? (beat.play != null ? 'Skip it' : 'Continue') : 'Done');
   go.onclick = () => { el.className = ''; if (R) routeNext(); };
   bar.appendChild(go);
   if (R) {
     const stop = document.createElement('button');
-    stop.textContent = 'Leave the route';
+    stop.textContent = T('Leave the route');
     stop.onclick = () => { R = null; el.className = ''; };
     bar.appendChild(stop);
   }
@@ -1436,8 +1452,8 @@ function buildRoutePanel() {
   const mk = (label, title, opts) => {
     const b = document.createElement('div');
     b.className = 'cut';
-    b.textContent = label;
-    b.title = title;
+    b.textContent = T(label);
+    b.title = T(title);
     b.onclick = () => startRoute(opts);
     host.appendChild(b);
     return b;
@@ -1446,12 +1462,12 @@ function buildRoutePanel() {
   full.style.background = '#3a5a8a';
   full.style.borderColor = '#4a72ad';
   for (const [g, why] of TraptStory2.FINALES)
-    mk('finale ' + g.toString(16).toUpperCase(), why, { finale: g });
+    mk(T('finale {0}', g.toString(16).toUpperCase()), why, { finale: g });
   for (let c = 0; c < TABLES.chapters.length; c++)
     for (let r = 0; r < 2; r++)
-      mk('ch ' + (c + 1) + ' → ending ' + r,
-         'chapters 1-' + (c + 1) + ', then flow '
-         + TABLES.routes[c][r].toString(16).toUpperCase(),
+      mk(T('ch {0} → ending {1}', c + 1, r),
+         T('chapters 1-{0}, then flow {1}', c + 1,
+           TABLES.routes[c][r].toString(16).toUpperCase()),
          { chapters: c + 1, ending: TABLES.routes[c][r] });
 }
 
@@ -1498,11 +1514,11 @@ const moveHint = (prefix) => TraptPad.stickHint(PADCFG.bindings, prefix);
 function padSummary() {
   const dev = TraptPad.devicesUsed(PADCFG.bindings);
   const n = Object.keys(PADCFG.bindings).length;
-  if (!n) return 'nothing bound';
+  if (!n) return T('nothing bound');
   const bits = [];
-  if (dev.pads.length) bits.push('gamepad ' + dev.pads.join(', '));
-  if (dev.keys) bits.push(dev.keys + ' keyboard');
-  return n + ' controls bound (' + bits.join(' + ') + ')';
+  if (dev.pads.length) bits.push(T('gamepad {0}', dev.pads.join(', ')));
+  if (dev.keys) bits.push(T('{0} keyboard', dev.keys));
+  return T('{0} controls bound ({1})', n, bits.join(' + '));
 }
 
 function buildPadPanel() {
@@ -1510,26 +1526,26 @@ function buildPadPanel() {
   if (!host) return;
   if (!PADCFG) PADCFG = TraptPad.defaults();
   host.innerHTML =
-    '<label class="btn">Use my PCSX2 bindings'
+    '<label class="btn">' + T('Use my PCSX2 bindings')
     + '<input type="file" id="padIni" accept=".ini"></label>'
     + '<span id="padWhich"></span>';
   const key = (t) => '<code>' + (padHint(t) || '—') + '</code>';
   document.getElementById('padWhich').innerHTML =
-    (PADCFG.source || 'built-in keyboard defaults') + ' &middot; ' + padSummary()
+    (PADCFG.source || T('built-in keyboard defaults')) + ' &middot; ' + padSummary()
     + ' &middot; <code>Documents/PCSX2/inis/PCSX2.ini</code>'
-    + '<br>move <code>' + moveHint('L') + '</code>'
-    + ' &middot; camera <code>' + moveHint('R') + '</code>'
-    + ' &middot; run ' + key('Circle')
-    + ' &middot; door ' + key('Cross')
-    + ' &middot; set a trap ' + key('Square')
-    + ' &middot; pick a trap ' + key('L1') + '/' + key('R1');
+    + '<br>' + T('move') + ' <code>' + T(moveHint('L')) + '</code>'
+    + ' &middot; ' + T('camera') + ' <code>' + T(moveHint('R')) + '</code>'
+    + ' &middot; ' + T('run') + ' ' + key('Circle')
+    + ' &middot; ' + T('door') + ' ' + key('Cross')
+    + ' &middot; ' + T('set a trap') + ' ' + key('Square')
+    + ' &middot; ' + T('pick a trap') + ' ' + key('L1') + '/' + key('R1');
   document.getElementById('padIni').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const parsed = TraptPad.parse(await file.text());
     if (!Object.keys(parsed.bindings).length) {
       document.getElementById('padWhich').innerHTML =
-        '<span class="bad">no [Pad1] bindings in ' + file.name + '</span>';
+        '<span class="bad">' + T('no [Pad1] bindings in {0}', file.name) + '</span>';
       return;
     }
     parsed.source = file.name;
@@ -1548,12 +1564,12 @@ function buildStagePanel() {
     const b = document.createElement('div');
     b.className = 'cut';
     b.textContent = 'M' + String(n).padStart(3, '0');
-    b.title = 'walk stage ' + n;
+    b.title = T('walk stage {0}', n);
     b.onclick = () => playStage(n, b);
     host.appendChild(b);
   }
   document.getElementById('stageStatus').textContent =
-    numbers.length + ' on the disc — click one to walk it';
+    T('{0} on the disc — click one to walk it', numbers.length);
   buildPadPanel();
 }
 
@@ -1575,8 +1591,8 @@ async function playStage(number, chip, opts) {
   if (chip) chip.classList.add('on');
 
   detail.innerHTML =
-      '<h2>Stage M' + String(number).padStart(3, '0') + '</h2>'
-    + '<div id="members">assembling…</div>'
+      '<h2>' + T('Stage M{0}', String(number).padStart(3, '0')) + '</h2>'
+    + '<div id="members">' + T('assembling…') + '</div>'
     + '<div id="view"><div id="hud"></div><div id="look"></div></div>'
     + '<div id="traybar"></div>'
     + '<div id="vinfo"></div>';
@@ -1598,9 +1614,9 @@ async function playStage(number, chip, opts) {
   try {
     runner = await TraptStageView.create(THREE, DISC, number,
       { ps2: !V.look || !!V.look.native, script: scriptFor(number, opts.stage) },
-      (msg) => { members.textContent = msg + '…'; });
+      (msg) => { members.textContent = T(msg) + '…'; });
   } catch (err) {
-    members.innerHTML = '<span class="bad">' + err.message + '</span>';
+    members.innerHTML = '<span class="bad">' + T(err.message) + '</span>';
     return;
   }
 
@@ -1620,21 +1636,21 @@ async function playStage(number, chip, opts) {
 
   const st = runner.stage;
   members.textContent =
-    st.rooms.size + ' rooms, ' + st.graph.doors.length + ' doors, '
-    + st.traps.length + ' traps · assembled in '
-    + (performance.now() - t0).toFixed(0) + ' ms · '
-    + st.player.name + ' is ' + st.player.height.toFixed(2) + ' tall, '
-    + 'radius ' + st.player.radius + ', walks '
-    + (st.player.gaits.walk.speed * 60).toFixed(1) + ' and runs '
-    + (st.player.gaits.run.speed * 60).toFixed(1) + ' units/s'
+    T('{0} rooms, {1} doors, {2} traps · assembled in {3} ms',
+      st.rooms.size, st.graph.doors.length, st.traps.length,
+      (performance.now() - t0).toFixed(0))
+    + ' · ' + T('{0} is {1} tall, radius {2}, walks {3} and runs {4} units/s',
+      st.player.name, st.player.height.toFixed(2), st.player.radius,
+      (st.player.gaits.walk.speed * 60).toFixed(1),
+      (st.player.gaits.run.speed * 60).toFixed(1))
     + (runner.script
-        ? ' · script ' + runner.script.archive.split('/').pop() + ': '
-          + Object.values(runner.script.rooms)
-              .reduce((a, b) => a + b.length, 0) + ' gimmicks, '
-          + runner.script.actors.length + ' cast'
-          + (runner.scriptedSpawn() ? ', scripted start' : '')
-        : ' · no stage script')
-    + (runner.warnings.length ? ' · ' + runner.warnings.length + ' warnings' : '');
+        ? ' · ' + T('script {0}: {1} gimmicks, {2} cast',
+            runner.script.archive.split('/').pop(),
+            Object.values(runner.script.rooms).reduce((a, b) => a + b.length, 0),
+            runner.script.actors.length)
+          + (runner.scriptedSpawn() ? T(', scripted start') : '')
+        : ' · ' + T('no stage script'))
+    + (runner.warnings.length ? ' · ' + T('{0} warnings', runner.warnings.length) : '');
   buildStageBar();
   hud();
 }
@@ -1646,8 +1662,8 @@ function buildStageBar() {
   const pill = (label, on, fn, title) => {
     const d = document.createElement('div');
     d.className = 'pill' + (on ? ' on' : '');
-    d.textContent = label;
-    if (title) d.title = title;
+    d.textContent = T(label);
+    if (title) d.title = T(title);
     d.style.cursor = fn ? 'pointer' : 'default';
     if (fn) d.onclick = () => { fn(); buildStageBar(); };
     bar.appendChild(d);
@@ -1655,8 +1671,8 @@ function buildStageBar() {
   };
   if (G.route) {
     const back = pill('◀ back to the route', false, null,
-                      'finish here and carry on from stage '
-                      + String(G.route.stage).padStart(2, '0'));
+                      T('finish here and carry on from stage {0}',
+                        String(G.route.stage).padStart(2, '0')));
     back.style.cursor = 'pointer';
     back.onclick = returnToRoute;
     back.classList.add('on');
@@ -1676,16 +1692,16 @@ function buildStageBar() {
   }
   sel.onchange = async () => {
     await G.runner.enter(sel.value, null,
-      (m) => { document.getElementById('members').textContent = m + '…'; });
+      (m) => { document.getElementById('members').textContent = T(m) + '…'; });
     buildStageBar();
   };
   bar.appendChild(sel);
   const tr = G.stage.traps[G.runner.selected];
   pill(tr.name + ' · ' + tr.title, false, null,
        tr.blurb + '\n' + tr.effect + '\n'
-       + tr.surface + ' · ' + tr.damage + ' damage · cost ' + tr.cost
-       + ' · reset ' + tr.reset + ' frames'
-       + (tr.price ? ' · ' + tr.price + ' ARK' : ' · starting trap'));
+       + T(tr.surface) + ' · ' + T('{0} damage · cost {1} · reset {2} frames',
+                                   tr.damage, tr.cost, tr.reset)
+       + (tr.price ? ' · ' + tr.price + ' ARK' : ' · ' + T('starting trap')));
 }
 
 /** The overlay: where the body is, what it is standing on, what the pad says. */
@@ -1701,23 +1717,23 @@ function hud() {
   const door = st.doorAt(b.pos);
   const state = G.padState || {};
   el.innerHTML =
-      '<b>' + room.name + '</b> ' + (room.entry.passage ? 'passage' : 'room')
-    + ' <span class="dim">of M' + String(G.number).padStart(3, '0') + '</span><br>'
+      '<b>' + room.name + '</b> ' + T(room.entry.passage ? 'passage' : 'room')
+    + ' <span class="dim">' + T('of M{0}', String(G.number).padStart(3, '0')) + '</span><br>'
     + 'local  ' + b.pos.map((v) => v.toFixed(1).padStart(7)).join(' ') + '<br>'
     + 'world  ' + world.map((v) => v.toFixed(1).padStart(7)).join(' ') + '<br>'
-    + 'floor  ' + (floor ? floor[0].toFixed(1) + '  material '
-                           + floor[1].material + ' (' + floor[1].surface + ')'
-                         : '<span class="warn">none</span>')
-    + (b.hitWall ? '   <span class="warn">wall</span>' : '') + '<br>'
-    + 'gait   ' + b.gait + '  <span class="dim">clip '
+    + T('floor') + '  ' + (floor ? floor[0].toFixed(1) + '  ' + T('material') + ' '
+                           + floor[1].material + ' (' + T(floor[1].surface) + ')'
+                         : '<span class="warn">' + T('none') + '</span>')
+    + (b.hitWall ? '   <span class="warn">' + T('wall') + '</span>' : '') + '<br>'
+    + T('gait') + '   ' + T(b.gait) + '  <span class="dim">' + T('clip') + ' '
     + b.clipTime.toFixed(0) + '</span><br>'
-    + 'trap   ' + tr.name + ' ' + tr.title + ' <span class="dim">('
-    + tr.surface + ', ' + st.placed.length + ' set)</span><br>'
-    + (door ? '<b>Cross</b> to enter ' + door.to
-            : '<span class="dim">L1/R1 trap · Square set · Circle run</span>')
-    + '<br><span class="dim">' + (state.connected ? state.connected
-        + ' pad' + (state.connected > 1 ? 's' : '') : 'no pad')
-    + ' · ' + (PADCFG.source || 'default bindings') + '</span>'
+    + T('trap') + '   ' + tr.name + ' ' + tr.title + ' <span class="dim">('
+    + T('{0}, {1} set', T(tr.surface), st.placed.length) + ')</span><br>'
+    + (door ? T('<b>Cross</b> to enter {0}', door.to)
+            : '<span class="dim">' + T('L1/R1 trap · Square set · Circle run') + '</span>')
+    + '<br><span class="dim">' + (state.connected
+        ? T(state.connected > 1 ? '{0} pads' : '{0} pad', state.connected) : T('no pad'))
+    + ' · ' + (PADCFG.source || T('default bindings')) + '</span>'
     + (G.msg && performance.now() < G.msgUntil
         ? '<br><b>' + G.msg + '</b>' : '');
 }
@@ -1743,14 +1759,14 @@ function stageTick(dt) {
         // Arrive facing into the new room rather than back at the door.
         G.stage.body.yaw += Math.PI;
         G.runner.camera.yaw += Math.PI;
-        stageSay('entered ' + door.to);
+        stageSay(T('entered {0}', door.to));
         buildStageBar();
       })
       .finally(() => { G.busy = false; });
   }
   if (out && out.events.set) {
     const rec = out.events.set;
-    stageSay(rec.trap.title + ' set on the ' + rec.spot.surface);
+    stageSay(T('{0} set on the {1}', rec.trap.title, T(rec.spot.surface)));
     G.runner.showPlaced(rec);
     buildStageBar();
   }
@@ -1776,15 +1792,15 @@ async function playScene(name) {
   if (clips) clips.innerHTML = '';
   if (models) models.innerHTML = '';
   ensureViewer();
-  vinfo.textContent = 'assembling ' + name + '…';
+  vinfo.textContent = T('assembling {0}…', name);
 
   const t0 = performance.now();
   let built;
   try {
     built = await TraptPlay.assemble(THREE, DISC, name,
-      (msg) => { vinfo.textContent = name + ': ' + msg + '…'; });
+      (msg) => { vinfo.textContent = name + ': ' + T(msg) + '…'; });
   } catch (err) {
-    vinfo.textContent = name + ': ' + err.message;
+    vinfo.textContent = name + ': ' + T(err.message);
     return;
   }
   const load = performance.now() - t0;
@@ -1810,10 +1826,10 @@ async function playScene(name) {
   try {
     S.ctx = new (window.AudioContext || window.webkitAudioContext)();
     S.audio = TraptAudio.create(S.ctx, DISC);
-    vinfo.textContent = name + ': loading audio…';
+    vinfo.textContent = name + ': ' + T('loading audio…');
     await S.audio.loadBgm(name, built.scene);
     await S.audio.preloadVoices(built.scene, (i, total) => {
-      vinfo.textContent = name + ': voice ' + i + ' of ' + total + '…';
+      vinfo.textContent = name + ': ' + T('voice {0} of {1}…', i, total);
     });
     for (const w of S.audio.warnings) built.warnings.push(w);
   } catch (err) {
@@ -1827,7 +1843,7 @@ async function playScene(name) {
   S.seeked = true;
   S.playing = true;
   const pb = document.getElementById('playBtn');
-  if (pb) pb.textContent = 'Pause';
+  if (pb) pb.textContent = T('Pause');
   resumeAudio();
   sceneInfo();
 }
@@ -1862,8 +1878,8 @@ function sceneTransport() {
               + '<button id="subsBtn"></button>'
               + '<button id="muteBtn"></button>'
               + '<button id="crtBtn">CRT</button>'
-              + '<button id="lookBtn">Look</button>'
-              + '<button id="fsBtn">Fullscreen</button>'
+              + '<button id="lookBtn">' + T('Look') + '</button>'
+              + '<button id="fsBtn">' + T('Fullscreen') + '</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
   document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
@@ -1874,7 +1890,7 @@ function sceneTransport() {
   };
   const mb = document.getElementById('muteBtn');
   const syncMute = () => {
-    mb.textContent = S && S.audio && S.audio.muted ? 'Muted' : 'Sound';
+    mb.textContent = T(S && S.audio && S.audio.muted ? 'Muted' : 'Sound');
     mb.classList.toggle('on', !!(S && S.audio && !S.audio.muted));
   };
   mb.onclick = () => {
@@ -1895,24 +1911,24 @@ function sceneTransport() {
   const seek = document.getElementById('seek');
   seek.max = S.built.scene.duration;
   seek.value = S.frame;
-  btn.textContent = S.playing ? 'Pause' : 'Play';
+  btn.textContent = T(S.playing ? 'Pause' : 'Play');
   btn.onclick = () => {
     S.playing = !S.playing;
-    btn.textContent = S.playing ? 'Pause' : 'Play';
+    btn.textContent = T(S.playing ? 'Pause' : 'Play');
     // A tab's AudioContext starts suspended until a real click; this is it.
     if (S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
     if (!S.playing && S.audio) S.audio.stopAll();
   };
-  cam.textContent = S.sceneCam ? 'Scene cam' : 'Free cam';
+  cam.textContent = T(S.sceneCam ? 'Scene cam' : 'Free cam');
   cam.onclick = () => {
     S.sceneCam = !S.sceneCam;
-    cam.textContent = S.sceneCam ? 'Scene cam' : 'Free cam';
+    cam.textContent = T(S.sceneCam ? 'Scene cam' : 'Free cam');
   };
   seek.oninput = () => {
     S.frame = +seek.value;
     S.playing = false;
     S.seeked = true;
-    document.getElementById('playBtn').textContent = 'Play';
+    document.getElementById('playBtn').textContent = T('Play');
   };
   document.getElementById('fsBtn').onclick = toggleFullscreen;
 
@@ -1927,15 +1943,15 @@ function sceneInfo() {
   if (!S) return;
   const s = S.built.scene;
   document.getElementById('vinfo').textContent =
-    S.name + ' · room ' + s.room + ' · ' + S.built.actors.length + ' actors, '
-    + s.entities.length + ' entities, ' + s.subtitles.length + ' cues, '
-    + s.duration + ' frames · assembled in ' + S.load.toFixed(0) + ' ms · '
-    + 'pose ' + S.ms.toFixed(1) + ' ms/frame'
-    + (S.audio ? ' · ' + S.audio.voiceCount + ' voice clips'
+    S.name + ' · ' + T('room {0}', s.room) + ' · '
+    + T('{0} actors, {1} entities, {2} cues, {3} frames · assembled in {4} ms · pose {5} ms/frame',
+        S.built.actors.length, s.entities.length, s.subtitles.length, s.duration,
+        S.load.toFixed(0), S.ms.toFixed(1))
+    + (S.audio ? ' · ' + T('{0} voice clips', S.audio.voiceCount)
                  + (S.audio.bgm ? ' + BGM' : '') : '')
-    + (S.built.warnings.length ? ' · ' + S.built.warnings.length + ' warnings' : '')
-    + ' · WASD to fly, drag to look, right-drag to orbit'
-    + ' (any of them switches to free cam)';
+    + (S.built.warnings.length ? ' · ' + T('{0} warnings', S.built.warnings.length) : '')
+    + ' · ' + T('WASD to fly, drag to look, right-drag to orbit'
+    + ' (any of them switches to free cam)');
 }
 
 /** Camera, subtitle and letterbox for the current frame. */
@@ -2086,7 +2102,7 @@ function fullscreenChanged() {
   const on = !!(document.fullscreenElement || document.webkitFullscreenElement);
   const b = document.getElementById('fsBtn');
   if (b) {
-    b.textContent = on ? 'Exit fullscreen' : 'Fullscreen';
+    b.textContent = T(on ? 'Exit fullscreen' : 'Fullscreen');
     b.classList.toggle('on', on);
   }
   resize();                            // canvas size and, in Modern, aspect
