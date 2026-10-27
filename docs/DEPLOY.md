@@ -1,11 +1,11 @@
-# Serving the cutscene site at `trapt.robkrum.com`
+# Serving the Trapt pages
 
 There are two different sites in this repository, and they have very different
 hosting problems.
 
-**The ISO page** ([`tools/web/pick.html`](../tools/web/pick.html)) is ~780 KB
+**The ISO page** ([`tools/web/pick.html`](../tools/web/pick.html)) is ~940 KB
 of code and no game data — the visitor supplies their own disc and the browser
-decodes it. That is what `trapt.robkrum.com` serves; skip to §3.1.
+decodes it. It is published to **GitHub Pages**; skip to §3.1.
 
 **The exported site** (`tools/site.py`) is a directory of plain files with all
 149 cutscenes already decoded — no build step, no runtime, nothing
@@ -112,42 +112,59 @@ and joining it disturbs nothing.
 
 There are two different things that could sit behind that block.
 
-### 3.1 The ISO page — what `trapt.robkrum.com` serves
+### 3.1 The ISO page — GitHub Pages
 
 [`tools/web/pick.html`](../tools/web/pick.html) ships **no game data**. The
 visitor supplies their own disc and the browser does what `export.py` does
-([`BROWSER.md`](BROWSER.md)). That is ~780 KB of code, and it makes the
-redistribution question at the top of this file go away.
+([`BROWSER.md`](BROWSER.md)). That is ~940 KB of code, and it makes the
+redistribution question at the top of this file go away — which is also what
+makes it fit for a public GitHub repository.
 
 `deploy/build-web.py` turns the checkout into a servable tree: `pick.html`
-becomes `index.html`, the 21 scripts it names are copied out (the test suites
-and `stub_three.js` are not), `../vendor/three.min.js` lands under `vendor/`,
-and every script filename gets a content hash.
+becomes `index.html`, the scripts it names are copied out (the test suites and
+`stub_three.js` are not), `../vendor/three.min.js` lands under `vendor/`, and
+every script filename gets a content hash. Every path in it is relative, so
+the same tree works at `https://<user>.github.io/Trapt/` and at a domain root.
+
+[`.github/workflows/pages.yml`](../.github/workflows/pages.yml) does the rest
+on every push to `main`: parse every module, run the no-disc suites, build
+into `_site`, and deploy it with `actions/deploy-pages`. Forgejo ignores
+`.github/workflows` while `.forgejo/workflows` exists, so the CI on
+`code.robkrum.com` is unaffected.
+
+To switch it on, once:
 
 ```sh
-git clone https://code.robkrum.com/rob/Trapt.git ~/Trapt
-python3 ~/Trapt/deploy/build-web.py /srv/trapt-web --prune
-cd ~/Trapt/deploy
-docker compose -f docker-compose.web.yml up -d
-docker compose -f ~/forgejo/docker-compose.yml exec caddy \
-  caddy reload --config /etc/caddy/Caddyfile
+gh repo create Trapt --public --source . --remote github   # or an existing repo
+git push github main
+gh api -X POST repos/{owner}/Trapt/pages -f build_type=workflow
 ```
 
-The hashing is what makes the cache policy in `deploy/Caddyfile.web` safe:
-nothing in `tools/web/` is versioned, so without it the only correct policy is
-revalidate-everything. With it, scripts are `immutable` for a year and
-`index.html` — the one file that names them — is the only thing revalidated. A
-deploy changes the names of exactly the files whose bytes changed.
+(or Settings → Pages → Source: **GitHub Actions**). Pages on a free account
+needs the repository public; check nothing in it is game data first —
+`.gitignore` keeps out `*.iso`, `*.zip`, `*.bin` and `*.elf`, and `out/` and
+`.scratch/` hold the extracted assets.
 
-`index.html` also carries a `Content-Security-Policy` meta tag that the build
-writes, with a sha256 pinning the page's single inline script. `default-src`
-is `'none'`; `blob:` and `data:` are allowed for images and media because the
-page makes object URLs for decoded ADX and canvas textures. No network origin
-appears in it at all, which is accurate — the page never fetches anything.
+**A custom domain** such as `trapt.robkrum.com`: set it under Settings →
+Pages (a `CNAME` file in the artifact is ignored by Actions deploys), then in
+Cloudflare add `CNAME trapt -> <user>.github.io`, **DNS only** (grey) until
+GitHub has issued its certificate, then tick *Enforce HTTPS*.
 
-Updating is `git pull` and re-running the build; the container reads the
-directory per request and needs no restart. `--prune` removes the previous
-build's hashed filenames, one file at a time and naming each.
+What Pages cannot do, and what replaces it:
+
+| was in the Caddy config | on Pages |
+|---|---|
+| `Content-Security-Policy` | already a `<meta>` written by the build, sha256-pinned to the one inline script |
+| `Referrer-Policy: no-referrer` | a `<meta name="referrer">`, also written by the build |
+| `immutable` for a year on the hashed scripts | Pages sends `max-age=600` for everything; the hashed names still mean a stale script can never be paired with a new `index.html` |
+| `frame-ancestors 'none'`, `nosniff`, COOP | not settable. The page holds no session and no secrets, so being framed costs nothing |
+
+To check a build locally the way Pages serves it:
+
+```sh
+python3 deploy/build-web.py /tmp/trapt-web/Trapt
+python3 -m http.server -d /tmp/trapt-web 8000   # http://localhost:8000/Trapt/
+```
 
 ### 3.2 The exported site
 
@@ -166,9 +183,6 @@ buy nothing because Cloudflare caches the compressed response at the edge, so
 the origin compresses almost nothing. The container is capped at
 `mem_limit: 128m`, which is a ceiling and not a reservation — Caddy serving
 static files sits nearer 20 MB.
-
-Both files use the compose project name `trapt` and the container name
-`trapt`, so bringing one up replaces the other rather than colliding with it.
 
 > An earlier draft of this file said 25 GB, inferred from the droplet's size
 > rather than measured. The box reports 48 GB with 18 GB free, so disk was
