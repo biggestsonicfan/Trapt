@@ -60,6 +60,12 @@ class Region:
     def root(self):
         """The disc directory, or a clear failure saying where it looked."""
         if self._root is None:
+            # TRAPT_ROOT names this disc even when the region was picked by
+            # code -- `use('us')` -- rather than found by `_select`.
+            env = os.environ.get('TRAPT_ROOT')
+            if env and of_root(env) is self:
+                self._root = env
+                return env
             for r in self.roots:
                 if os.path.isfile(os.path.join(r, self.elf_name)):
                     self._root = r

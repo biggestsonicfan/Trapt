@@ -960,6 +960,49 @@ PINE takes a single client, so anything holding it locks everything else out,
 and it reads one byte per round trip. A savestate is free, repeatable, and
 works offline. `docs/PS2SHADER.md` makes the same point about the GS state.
 
+### 8.10 Grading: every capture, one score each
+
+§5 was done by hand: identify a state, render its frame, diff it against the
+screenshot, read a number. `tools/grade.py` does that for every savestate at
+once, so a fix is judged on all of the captures rather than the one it was
+made against, and a regression shows up as a number instead of a hunch:
+
+```
+python tools/grade.py --out grades/              # every state, with pictures
+python tools/grade.py --save grade.json          # write the scores down
+python tools/grade.py --baseline grade.json      # exit 1 if any got worse
+```
+
+Each graded state gets the whole frame's `mae` (the §5 number, 0..255 at
+512x224), a signed `bias` per channel (positive = the viewer is too bright),
+`edges` (how well the two images' outlines correlate) and a `shift` (the
+whole-pixel offset that would line the screenshot up; anything but `(0, 0)`
+is a capture problem to rule out first). Then the same per **region** -- every
+entity the page drew, the letterbox and subtitles as `overlay`, and `clear`
+-- with each region's share of the frame's total error, which is the list to
+work down. A big bias with good edges is lighting; poor edges with no bias
+is geometry, pose or camera.
+
+The regions come from an ownership buffer `pdiag.render` now fills in (`ids`):
+the opaque surface that won Z at each pixel, or a blended one drawn over it
+at alpha 0.5 or more.
+
+A state is skipped, never graded against a guess, when it is not in a
+cutscene or when its camera is held across a shot and no counter says which
+frame of it the screenshot is (§8.2).
+
+**The floor is about 1.5, not 0.** `tools/test_grade.py` forges states whose
+answer is known -- e001's camera and counter at 7422 in EE RAM, the viewer's
+own frame scaled to 640x480 as the screenshot -- and the round trip through
+PCSX2's size and back costs 1.51. It also checks that a 20% darker capture
+reads as positive bias and fails the baseline, and that a 3 px offset reads as
+`shift (-3, 0)`. That suite is in `test_all.js`.
+
+Building it turned up that `pdiag.py` had stopped reading current pages at
+all: an entity's clip entry grew a third field (`0x83`'s start offset, the
+e001 corpse) and pdiag still unpacked two. It reads both shapes now and
+honours the offset the way `player.html` does.
+
 ---
 
 ## 9. The torch flames, and what the oracle said
