@@ -4,6 +4,7 @@
     python grade.py a.p2s b.p2s --out dir   # these, with a picture of each
     python grade.py --save grade.json       # write the scores down
     python grade.py --baseline grade.json   # and fail if any got worse
+    python grade.py --browser DISC.iso      # grade the page itself
 
 `oracle.py` says which frame of which cutscene a savestate is a picture of;
 this renders that frame the way the page does (`pdiag.py`, a port of the
@@ -36,12 +37,22 @@ The screenshot is taken at whatever size PCSX2 wrote it and resampled to
 512x224 -- comparisons are made at the GS's own resolution, never above it
 (see docs/VIEWER.md 5 on why point sampling at 640x480 lies).
 
+``--browser DISC.iso`` grades the page instead of the port: `web/frames.mjs`
+opens `pick.html` in headless Chrome (SwiftShader, so no GPU), turns PS2
+mode and the game-font subtitles on, and reads back the 512x224 target at
+each state's frame.  That picture has what the port does not draw -- sprite
+effects, effect meshes and the effect VM -- so it is the number to quote for
+"does the page match the PS2".  The region masks still come from the port,
+whose geometry is the page's; the effect pixels land in whichever region
+they cover.  Needs `node` and `google-chrome` on PATH.
+
 A state the oracle cannot place -- not in a cutscene, or a cutscene whose
 camera it cannot match -- is listed and skipped, not graded against a guess.
 """
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -59,6 +70,13 @@ GS_SIZE = (512, 224)
 # pdiag is deterministic, so this is room for numpy, not for noise.
 TOLERANCE = 0.05
 SHIFT_X, SHIFT_Y = 8, 4
+# The screenshot is older than EE RAM.  The oracle reads the frame the game
+# is *computing*; the PNG is the frame on screen, which the GS finished two
+# vsyncs before.  Rendering the page at oracle frame -6..+1 over the seven
+# capture states puts the best match at -2 for the moving shots -- state 04,
+# a fast pan, scores 5.42 at 0 and 4.05 at -2 -- so every state is drawn
+# at its oracle frame minus this.
+SHOT_LAG = 2
 
 
 # ------------------------------------------------------------------ images
@@ -213,9 +231,33 @@ def picture(view, hw, path):
     Image.fromarray(stack.astype(np.uint8)).save(path)
 
 
-def run(paths, pages, out_dir=None, log=print):
+def browser_frames(iso, wanted, log=print):
+    """`{(name, frame): rgb 0..255}` rendered by the page itself."""
+    work = tempfile.mkdtemp(prefix='trapt-grade-')
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        args = ['%s:%d' % w for w in sorted(set(wanted))]
+        proc = subprocess.run(['node', os.path.join(here, 'web', 'frames.mjs'),
+                               iso, work] + args,
+                              capture_output=True, text=True)
+        if proc.returncode:
+            log(proc.stderr.strip())
+        out = {}
+        W, H = GS_SIZE
+        for name, frame in set(wanted):
+            path = os.path.join(work, '%s-%d.rgba' % (name, frame))
+            if os.path.exists(path):
+                px = np.fromfile(path, np.uint8).reshape(H, W, 4)
+                out[(name, frame)] = px[..., :3].astype(np.float64)
+        return out
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def run(paths, pages, out_dir=None, log=print, browser=None):
     discs = {}
     results = {}
+    placed = []
     for path in paths:
         key = os.path.basename(path)
         reg = (region_mod.of_serial(key) or region_mod.active())
@@ -239,14 +281,26 @@ def run(paths, pages, out_dir=None, log=print):
                 'state has no frame counter to pick between them'
                 % (key, got['cutscene'], span[0], span[1]))
             continue
-        name, frame = got['cutscene'], got['frame']
+        placed.append((key, got, st.read('Screenshot.png')))
+    shots = (browser_frames(browser, [(g['cutscene'], g['frame'] - SHOT_LAG)
+                                      for _, g, _ in placed], log)
+             if browser and placed else {})
+    for key, got, png in placed:
+        name, frame = got['cutscene'], got['frame'] - SHOT_LAG
         t0 = time.time()
         view, region, names = render(pages, name, frame)
-        hw = hardware_frame(st.zip.read('Screenshot.png'))
+        if browser:
+            if (name, frame) not in shots:
+                log('%-36s skipped: the page did not render %s %d'
+                    % (key, name, frame))
+                continue
+            view = shots[(name, frame)]
+        hw = hardware_frame(png)
         g = grade(view, hw, region, names)
-        g.update({'cutscene': name, 'frame': frame,
+        g.update({'cutscene': name, 'frame': got['frame'], 'shown': frame,
                   'residual': got['residual'],
                   'counter': bool(got.get('from_counter')),
+                  'renderer': 'page' if browser else 'pdiag',
                   'seconds': round(time.time() - t0, 1)})
         results[key] = g
         if out_dir:
@@ -258,8 +312,9 @@ def run(paths, pages, out_dir=None, log=print):
 
 
 def report(key, g):
-    lines = ['%-36s %s frame %d   mae %.2f   bias %s   edges %s   shift %s'
-             % (key, g['cutscene'], g['frame'], g['mae'],
+    lines = ['%-36s %s frame %d (shown %d)   mae %.2f   bias %s   edges %s   '
+             'shift %s'
+             % (key, g['cutscene'], g['frame'], g['shown'], g['mae'],
                 '(%+.1f %+.1f %+.1f)' % tuple(g['bias']),
                 '-' if g['edges'] is None else '%.3f' % g['edges'],
                 '(%d, %d)' % tuple(g['shift']))]
@@ -285,6 +340,11 @@ def compare(results, baseline, log=print):
         if b is None:
             log('%-36s new (mae %.2f)' % (key, g['mae']))
             continue
+        if b.get('renderer', 'pdiag') != g['renderer']:
+            log('%-36s the baseline graded %s, this run %s -- not comparable'
+                % (key, b.get('renderer', 'pdiag'), g['renderer']))
+            worse.append(key)
+            continue
         if (b['cutscene'], b['frame']) != (g['cutscene'], g['frame']):
             log('%-36s was %s %d, now %s %d -- the oracle changed its mind'
                 % (key, b['cutscene'], b['frame'], g['cutscene'], g['frame']))
@@ -308,7 +368,7 @@ def main():
         print(__doc__)
         return 0
 
-    VALUED = ('--out', '--save', '--baseline', '--pages')
+    VALUED = ('--out', '--save', '--baseline', '--pages', '--browser')
 
     def opt(flag):
         if flag in argv and argv.index(flag) + 1 < len(argv):
@@ -328,7 +388,7 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
     pages = Pages(opt('--pages'))
     try:
-        results = run(paths, pages, out_dir)
+        results = run(paths, pages, out_dir, browser=opt('--browser'))
     finally:
         pages.close()
     if not results:

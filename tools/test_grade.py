@@ -84,7 +84,8 @@ def main():
     work = tempfile.mkdtemp(prefix='trapt-test-grade-')
     pages = grade.Pages(os.path.join(work, 'pages'))
     os.makedirs(pages.dir)
-    view, region, names = grade.render(pages, NAME, FRAME)
+    # what the screen showed when EE RAM was at FRAME
+    view, region, names = grade.render(pages, NAME, FRAME - grade.SHOT_LAG)
     shifted = np.zeros_like(view)
     shifted[:, 3:] = view[:, :-3]
     states = {

@@ -116,7 +116,146 @@ function newEntity(track, index, kind, label) {
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
            emitter: null, grid: null, flags: null, mirror: false,
-           trackLen: null };
+           trackLen: null, fx: null, block: 0, size: null, billboard: 0 };
+}
+
+// ---------------------------------------------------------------- effect VM
+//
+// An effect track is not a timeline but a **per-frame program**.  The game
+// runs it from the top every frame (FUN_001C8A10, dispatch table 0x00376660)
+// with a local clock at vm+0xb0, a condition flag at vm+0xac and a bank of
+// registers the `C5` argument tag names:
+//
+//   0x04 (a, b, c)    cond = clock == a; with c > 0, every c frames from a
+//   0x03 n            if !cond, skip the next n calls
+//   0xA4 n            cond = r16 == n: r16 is the track's state
+//   0x0D-0x1C, 0xA6   one calculator, 0x001C7240: (dst, a, b, mode, op),
+//                     mode 1 float / 0 int; op 0 set 1 add 2 sub 3 mul 4 div
+//                     8 wrap dst into [a, b]; 10 compare (x, y, cmp) -> cond
+//   0x7C (u, v, m)    material m's UV offset   (model vtable +0x60)
+//   0x7D (a, m)       material m's alpha       (model vtable +0x5C)
+//   0x7E (r,g,b,a, m) material m's colour and alpha
+//   0x84 / 0x8C       one handler, 0x001C15D0: (x, y, z, mode), the mode
+//                     picking a model method at +0x88 + 4*mode.  The disc
+//                     uses mode 0 with 0x84 (1818 times: position) and mode
+//                     8 with 0x8C (1049: scale) and nothing else
+//   0x01              this frame is done;  0x00 the track is over
+//
+// `m` is the .SMI material's flags word (+0x40), not its index.
+// `ef_e004_20` is the whole idea in one file: at clock 0 it builds the fire
+// mesh and zeroes four registers; every frame it fades two materials in
+// (r6 += .008 while r6 <= .4) and scrolls their UVs; at 50 it sets r16 = 10,
+// and state 10 knocks both alphas below zero and ends the track.  Read as a
+// timeline it drew the fire for the rest of the cutscene.
+const FX_YIELD = 0x01, FX_SKIP = 0x03, FX_STATE = 0xA4;
+const FX_UV = 0x7C, FX_ALPHA = 0x7D, FX_CMP = 0xA6;
+const FX_STATE_REG = 16;
+const OP_PLACE = 0x8C;                            // 0x84's handler, scale mode
+const PLACE_POS = 0, PLACE_SCALE = 8;
+// `0xB8(name, mode)` hands both to model method +0x84.  The disc only ever
+// writes ("none", 3), 45 times, and every model it is written for is a flat
+// XY card -- ef_m061_10's fire is a radius-1 disc with z = 0 -- so mode 3 is
+// face-the-camera.  e004 1646 proves it: the camera sits level with the
+// fire's z there, and a card left in the XY plane vanishes edge-on.
+const OP_BILLBOARD = 0xB8;
+const FX_MAX_FRAMES = 3600;
+const isCalc = (op) => (op >= 0x0D && op <= 0x1C) || op === FX_CMP;
+const isReg = (a) => !!(a && typeof a === 'object' && 'reg' in a);
+
+/**
+ * Run an effect track's program frame by frame.  Returns null for a track
+ * that never touches a register or a material (a plain timeline, which `run`
+ * already reads), else `{end, mats}`: the local frame the track ended on
+ * (null if it outlives FX_MAX_FRAMES) and, per material id, one
+ * `[alpha, u, v, r, g, b]` per local frame -- what that frame drew with.
+ */
+function fxRun(calls) {
+  calls = calls.filter((c) => c.op !== null);
+  if (!calls.some((c) => c.op === FX_UV || c.op === FX_ALPHA
+                         || c.args.some(isReg))) return null;
+  const R = new Map();
+  const val = (a) => (isReg(a) ? (R.get(a.reg) || 0) : num(a));
+  const mats = new Map();
+  const mat = (id) => {
+    if (!mats.has(id)) mats.set(id, { now: [1, 0, 0, 1, 1, 1], frames: [] });
+    return mats.get(id);
+  };
+  // Which block each call belongs to, so a track with two blocks moves each
+  // on its own; `run` numbers the entities it makes the same way.
+  const blockOf = [];
+  let blk = -1;
+  for (const c of calls) { if (c.op === OP_BLOCK_BEGIN) blk++; blockOf.push(blk); }
+  const place = new Map();       // block -> {now: [px,py,pz, sx,sy,sz], frames}
+  let cond = false;
+  for (let t = 0; t < FX_MAX_FRAMES; t++) {
+    let ended = false;
+    for (let pc = 0; pc < calls.length; pc++) {
+      const { op, args } = calls[pc];
+      if (op === OP_END) { ended = true; break; }
+      if (op === FX_YIELD) break;
+      if (op === FX_SKIP) { if (!cond) pc += int(args[0]); continue; }
+      if (op === OP_AT_TIME) {
+        const a = int(args[0]), b = int(args[1]), c = int(args[2]);
+        if (c > 0) cond = t >= a && (b < 0 || t <= b) && (t - a) % c === 0;
+        else if (b >= 0) cond = t >= a && t <= b;
+        else cond = t === a;
+        continue;
+      }
+      if (op === FX_STATE) { cond = (R.get(FX_STATE_REG) || 0) === int(args[0]); continue; }
+      if (isCalc(op) && args.length >= 5) {
+        const fl = int(args[3]) === 1, kind = int(args[4]);
+        const fix = (x) => (fl ? x : Math.trunc(x));
+        if (kind === 10) {
+          const x = fix(val(args[0])), y = fix(val(args[1]));
+          cond = [x === y, x > y, x < y, x >= y, x <= y, x !== y][int(args[2])] || false;
+          continue;
+        }
+        if (!isReg(args[0])) continue;
+        const a = fix(val(args[1])), b = fix(val(args[2]));
+        let r = R.get(args[0].reg) || 0;
+        if (kind === 0) r = a;
+        else if (kind === 1) r = a + b;
+        else if (kind === 2) r = a - b;
+        else if (kind === 3) r = a * b;
+        else if (kind === 4) r = b ? a / b : 0;
+        else if (kind === 8 && b > a) r = a + ((((r - a) % (b - a)) + (b - a)) % (b - a));
+        else continue;
+        R.set(args[0].reg, fix(r));
+        continue;
+      }
+      if (op === FX_ALPHA && args.length >= 2) mat(int(args[1])).now[0] = val(args[0]);
+      else if (op === FX_UV && args.length >= 3) {
+        const m = mat(int(args[2])).now;
+        m[1] = val(args[0]); m[2] = val(args[1]);
+      } else if (op === OP_TINT && args.length >= 5) {
+        const m = mat(int(args[4])).now;
+        m[3] = val(args[0]); m[4] = val(args[1]); m[5] = val(args[2]);
+        m[0] = val(args[3]);
+      } else if ((op === OP_TRANSFORM || op === OP_PLACE) && args.length >= 4) {
+        const mode = int(args[3]);
+        if (mode !== PLACE_POS && mode !== PLACE_SCALE) continue;
+        if (!place.has(blockOf[pc]))
+          place.set(blockOf[pc], { now: [null, null, null, 1, 1, 1], frames: [] });
+        const now = place.get(blockOf[pc]).now, k = mode === PLACE_POS ? 0 : 3;
+        for (let i = 0; i < 3; i++) now[k + i] = val(args[i]);
+      }
+    }
+    if (ended) return { end: t, mats: mats, place: place };
+    for (const m of mats.values()) m.frames.push(m.now.slice());
+    for (const m of place.values()) m.frames.push(m.now.slice());
+  }
+  return { end: null, mats: mats, place: place };
+}
+
+/**
+ * A material's `[alpha, u, v, r, g, b]` at local frame `t`, or null.  With
+ * `fx.place` and a block number, that block's `[px, py, pz, sx, sy, sz]`
+ * instead -- position null where the program never set one.
+ */
+function fxAt(fx, id, t, table) {
+  const m = fx && (table || fx.mats).get(id);
+  if (!m || !m.frames.length) return null;
+  return m.frames[Math.max(0, Math.min(m.frames.length - 1, t))];
 }
 
 /**
@@ -153,9 +292,10 @@ const colourAt = (e, local) => sample(e.colourKeys, local, [1, 1, 1, 1]);
 function run(scene, trackName, blob, frameBase, origin) {
   frameBase = frameBase || 0;
   origin = origin || null;
-  let frame = frameBase, entity = null, pendingVoice = null;
+  let frame = frameBase, entity = null, pendingVoice = null, blocks = 0;
   const trackVis = [];
-  for (const call of ssc.parse(blob)) {
+  const calls = ssc.parse(blob);
+  for (const call of calls) {
     if (call.op === null) continue;
     const code = call.op, args = call.args;
     if (code === OP_AT_TIME) { if (args.length) frame = int(args[0]) + frameBase; continue; }
@@ -199,6 +339,7 @@ function run(scene, trackName, blob, frameBase, origin) {
                          args.length > 1 && isStr(args[1]) ? args[1] : null);
       entity.start = frame;
       entity.origin = origin;
+      entity.block = blocks++;
       scene.entities.push(entity);
     // ------------------------------------------------------ sprite effects
     // A sprite effect names a **texture** here where a model effect names an
@@ -272,11 +413,17 @@ function run(scene, trackName, blob, frameBase, origin) {
         entity.clips.push([frame, args[0],
           args.length > 3 && typeof args[3] === 'number' ? args[3] : 0]);
       else if (code === OP_ROOT_BONE) entity.rootBone = args[0];
+      else if (code === OP_BILLBOARD) entity.billboard = args.length > 1 ? int(args[1]) : 3;
       else if (code === OP_ATTACH)
         entity.attachments.push([args[0], args[1],
                                  args.length > 2 ? num(args[2]) : 1.0]);
       else if (code === OP_TRANSFORM) entity.transform = args.slice(0, 4).map(num);
       else if (code === OP_SCALE) entity.scale = args.slice(0, 4).map(num);
+      // Mode 8 of the transform call: a true scale, unlike 0x80.  Register
+      // arguments are the effect VM's to resolve, frame by frame.
+      else if (code === OP_PLACE && args.length >= 4 && int(args[3]) === PLACE_SCALE
+               && !args.slice(0, 3).some(isReg))
+        entity.size = args.slice(0, 3).map(num);
       else if (code === OP_LIGHT_TYPE) {
         entity.light = LIGHT_KINDS[args.length ? int(args[0]) : -1] || 'unknown';
         entity.lightParent = !!(args.length > 1 && num(args[1]));
@@ -285,9 +432,19 @@ function run(scene, trackName, blob, frameBase, origin) {
     }
     if (code === OP_END) break;
   }
+  // Only a spawned effect is a per-frame program.  Actor tracks use the same
+  // registers -- Allura's in e004 fades her material 2 with r0 -- but they are
+  // cue-driven timelines (`0x04` then `0x05` waits), and run frame by frame
+  // the end_track at their foot fires on frame 0.
+  const fx = origin ? fxRun(calls) : null;
   for (const e of scene.entities)
     if (e.track === trackName) {
       e.visibility = trackVis.slice();
+      // Shared, not copied: every block of one spawn runs the same program.
+      if (fx && e.start >= frameBase) {
+        e.fx = fx;
+        if (fx.end !== null && e.trackLen === null) e.trackLen = fx.end;
+      }
       // How long the track ran.  A sprite block with no `0x6E` alpha keys
       // has nothing else saying when it is over -- e004's spark tracks are
       // thirty frames long and carry only `0x80` and the emitter -- so
@@ -409,7 +566,7 @@ function visibleAt(entity, frame) {
   return vis;
 }
 
-const api = { compile, run, mergeMasterClips, family, text, renderModels,
+const api = { compile, run, fxRun, fxAt, mergeMasterClips, family, text, renderModels,
               clipAt, visibleAt, num, sample, sizeAt, colourAt,
               KIND_MODEL, KIND_LIGHT, KIND_CAMERA };
 if (typeof module !== 'undefined') module.exports = api;

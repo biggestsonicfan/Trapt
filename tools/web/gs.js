@@ -46,12 +46,17 @@ attribute vec3 normal;
 attribute vec2 uv;
 attribute vec4 vcol;
 uniform mat4 modelMatrix, modelViewMatrix, projectionMatrix;
-uniform mat3 normalMatrix;
+uniform vec2 uvOff;            // an effect track's 0x7C scroll
 varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
 void main() {
   vP = (modelMatrix * vec4(position, 1.0)).xyz;
-  vN = normalMatrix * normal;
-  vUv = uv;
+  // World space, like vP and every light.  Not three's normalMatrix: that is
+  // the inverse transpose of *modelView* and puts the normal in view space,
+  // so the cast was lit by a rig that turned with the camera -- Allura 33
+  // levels dark at e001 7422.  Groups here translate (and effects scale
+  // uniformly), so the model matrix's 3x3 is the right one; FRAG normalises.
+  vN = mat3(modelMatrix) * normal;
+  vUv = uv + uvOff;
   vC = vcol;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
@@ -80,6 +85,7 @@ uniform float alphaRef;        // AREF / 128
 uniform float aTest;           // material arms TEST ATE=1 (.SMI +0x42 & 0x60)
 uniform float blendOn;         // material goes through the ALPHA blend unit
 uniform float ps2;             // 0 = bypass the GS emulation entirely
+uniform float fxAlpha;         // an effect track's 0x7D/0x7E material alpha
 varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
 vec3 point(vec3 c, vec3 pos, vec2 rng, vec3 n) {
   vec3 d = pos - vP;
@@ -158,7 +164,7 @@ void main() {
     col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);  // ACES
     col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
   }
-  gl_FragColor = vec4(col, blendOn > 0.5 ? base.a : 1.0);
+  gl_FragColor = vec4(col, blendOn > 0.5 ? base.a * clamp(fxAlpha, 0.0, 1.0) : 1.0);
 }`;
 
 const POST_V = `
@@ -504,6 +510,29 @@ function lightsFor(THREE, lightEntities, roomDir) {
   return rig;
 }
 
+/**
+ * Move the rig's camera-parented lights onto the camera, as player.html does
+ * before every frame.  ELF 0x001D44B0 rebuilds a parented light each frame as
+ * `camera_rotation * offset + eye`, with the offset's x along -right: `joyu`'s
+ * (10, -5, 0) at e001 7422 lands at (4.140, 5.258, -37.819), which
+ * `eye - 10*R - 5*U` reproduces to 5e-5.  `joyu` is the key light on the
+ * cast; left at its raw offset it sits near the world origin and Allura comes
+ * out 33 levels darker than the hardware frame.
+ */
+function placeCameraLights(rig, camera) {
+  if (!rig || !rig.points.some((l) => l.cam)) return;
+  camera.updateMatrixWorld();
+  const e = camera.matrixWorld.elements;
+  for (const l of rig.points) {
+    if (!l.cam) continue;
+    // three's camera looks down its -Z, so forward is the negated third column
+    l.p.copy(camera.position);
+    l.p.x += -l.off.x * e[0] + l.off.y * e[4] - l.off.z * e[8];
+    l.p.y += -l.off.x * e[1] + l.off.y * e[5] - l.off.z * e[9];
+    l.p.z += -l.off.x * e[2] + l.off.y * e[6] - l.off.z * e[10];
+  }
+}
+
 /** One material, with the same uniform set player.html builds. */
 function makeMaterial(THREE, mt, opts) {
   const o = opts || {};
@@ -542,6 +571,8 @@ function makeMaterial(THREE, mt, opts) {
       aTest: { value: mt.atest ? 1 : 0 },
       blendOn: { value: blend ? 1 : 0 },
       ps2: { value: o.ps2 === false ? 0 : 1 },
+      uvOff: { value: new THREE.Vector2() },
+      fxAlpha: { value: 1 },
     },
   });
 }
@@ -570,6 +601,7 @@ function makePost(THREE) {
 }
 
 const api = { VERT, FRAG, POST_V, POST_F, makeMaterial, makePost, lightsFor,
+             placeCameraLights,
               defaultLights, cameraAspect, LOOK, AREF_OPAQUE,
               CRT_ACC_F, CRT_BLUR_F, CRT_F, CRT, makeCrt,
               RT_W, RT_H, OUT_ASPECT };

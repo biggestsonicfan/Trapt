@@ -21,6 +21,11 @@
 (function () {
 'use strict';
 
+// Draw order on top of model.js's 0 (opaque) and 1 (blended): effect models,
+// then sprites, after everything in the room.
+const RO_EFFECT = 2, RO_SPRITE = 3;
+// The GS's largest alpha, 0xFF over 0x80.
+const GS_ALPHA_MAX = 255 / 128;
 const req = (typeof require !== 'undefined');
 const arcMod = req ? require('./arc.js') : window.TraptArc;
 const tm2Mod = req ? require('./tm2.js') : window.TraptTm2;
@@ -159,6 +164,12 @@ async function assemble(THREE, disc, name, onProgress) {
       });
       if (e.transform) group.position.set(e.transform[0], e.transform[1],
                                           e.transform[2]);
+      if (e.size) group.scale.set(e.size[0], e.size[1], e.size[2]);
+      // Effects draw after the room, as the game draws them.  three sorts
+      // blended meshes by object origin, and every room mesh's origin is the
+      // world's, so e004's foliage sorted in front of a fire five units from
+      // the lens and painted dark bands of tree line across it.
+      if (e.origin) for (const m of group.children) m.renderOrder = RO_EFFECT;
       // An effect track is spawned at a world point by `0x08`/`0x07` and its
       // blocks are positioned relative to it, so the two add.
       if (e.origin) {
@@ -287,6 +298,7 @@ async function assemble(THREE, disc, name, onProgress) {
       const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
       mesh.visible = false;
+      mesh.renderOrder = RO_SPRITE;
       root.add(mesh);
       sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null,
                      uvBase: uvBase, cellU: u, cellV: v, cell: -1,
@@ -427,15 +439,46 @@ function setCell(s, index) {
 }
 
 /**
- * Turn every live sprite to face `eye`.  A billboard has to be re-aimed
+ * Turn every live sprite, and every billboarded effect model, to face `eye`.  A billboard has to be re-aimed
  * whenever the camera moves, and the viewer's free camera is not the camera
  * `poseAt` knows about, so the page calls this again with the real one.
  */
 function faceSprites(built, eye) {
-  if (!built.sprites || !eye) return;
-  for (const s of built.sprites) {
+  if (!eye) return;
+  for (const s of built.sprites || []) {
     if (!s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
     s.mesh.lookAt(eye[0], eye[1], eye[2]);
+  }
+  // and the `0xB8` effect cards, which are models but flat ones
+  for (const a of built.actors || []) {
+    if (!a.entity.billboard || !a.group.visible
+        || typeof a.group.lookAt !== 'function') continue;
+    a.group.lookAt(eye[0], eye[1], eye[2]);
+  }
+}
+
+/**
+ * Drive an effect model from its track's program: its block's position and
+ * scale, and alpha, UV scroll and colour per material id.  The colour replaces the block tint --
+ * `0x7E` is per material, and e004's fire gives its two layers two oranges.
+ */
+function fxApply(group, e, local) {
+  const fx = e.fx;
+  const pl = sceneMod.fxAt(fx, e.block, local, fx.place);
+  if (pl) {
+    group.scale.set(pl[3], pl[4], pl[5]);
+    if (pl[0] !== null) {
+      const o = e.origin || [0, 0, 0];
+      group.position.set(pl[0] + o[0], pl[1] + o[1], pl[2] + o[2]);
+    }
+  }
+  for (const mesh of group.children) {
+    const u = mesh.material && mesh.material.uniforms;
+    const m = u && sceneMod.fxAt(fx, mesh.userData.matId, local);
+    if (!m) continue;
+    u.fxAlpha.value = m[0];
+    u.uvOff.value.set(m[1], m[2]);
+    u.tint.value.set(m[3], m[4], m[5]);
   }
 }
 
@@ -447,9 +490,13 @@ function poseAt(built, frame) {
   let posed = 0, skipped = 0;
   for (const actor of built.actors) {
     const e = actor.entity;
-    const on = frame >= e.start && sceneMod.visibleAt(e, frame);
+    // An effect track's program says when it is over (scene.js `fxRun`).
+    const age = frame - e.start;
+    const on = frame >= e.start && sceneMod.visibleAt(e, frame)
+      && !(e.fx && e.fx.end !== null && age >= e.fx.end);
     actor.group.visible = on;
     if (!on) { skipped++; continue; }
+    if (e.fx) fxApply(actor.group, e, age);
     const cur = sceneMod.clipAt(e, frame);
     if (!cur) continue;
     const clip = built.clipFor(actor, cur.file);
@@ -523,9 +570,12 @@ function poseAt(built, frame) {
     const [sx, sy] = sceneMod.sizeAt(e, t);
     // The GS treats 0x80 as 1.0, and these colours run past 1 -- 1.5 and 1.8
     // both occur -- so the excess is an overbright the additive blend wants
-    // rather than a value to clamp away.  Only alpha is clamped, because
-    // three.js reads opacity as 0..1.
-    s.mesh.material.color.setRGB(r, g, b);
+    // rather than a value to clamp away.  Alpha past 1 is the same thing --
+    // As is 0..255/128 -- but a WebGL target clamps source alpha to 1 before
+    // it blends, so the excess rides on the colour: the blend is additive,
+    // and colour * alpha is all it ever multiplies out to.
+    const over = Math.min(GS_ALPHA_MAX, Math.max(1, a));
+    s.mesh.material.color.setRGB(r * over, g * over, b * over);
     s.mesh.material.opacity = Math.max(0, Math.min(1, a));
     // Size is in scene units and carries the shape: e001's torch runs from
     // 1 x 2 to 4 x 7, a plume taller than it is wide.

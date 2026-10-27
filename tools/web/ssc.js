@@ -77,6 +77,9 @@ function parse(data) {
         args.push(dv.getInt32(q, false)); q += 4;
       } else if (t === 0xC4) {
         args.push({ c4: dv.getInt32(q, false) }); q += 4;
+      } else if (t === 0xC5) {
+        // a register of the effect VM -- see scene.js `fxRun`
+        args.push({ reg: dv.getInt32(q, false) }); q += 4;
       } else if (t === 0xC2) {
         args.push({ num: dv.getInt32(q, false), den: dv.getInt32(q + 4, false) });
         q += 8;

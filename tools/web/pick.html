@@ -874,6 +874,12 @@ function ensurePost() {
   V.rt = new THREE.WebGLRenderTarget(TraptGs.RT_W, TraptGs.RT_H, {
     minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
     format: THREE.RGBAFormat,
+    // 24-bit Z, as the GS has.  A plain target gets three's DEPTH_COMPONENT16
+    // renderbuffer, which with near = 0.1 resolves ~3.4 units at the facade's
+    // 150: rp03's untextured backing box, 1-12 units behind the wall, fought
+    // through it as flat grey slabs over the windows (e001 7422: mae 8.25 -> 7.43).
+    depthTexture: new THREE.DepthTexture(TraptGs.RT_W, TraptGs.RT_H,
+                                         THREE.UnsignedIntType),
   });
   V.postMat = TraptGs.makePost(THREE);
   V.postScene = new THREE.Scene();
@@ -2126,6 +2132,8 @@ function setEye() {
 
 function drawFrame() {
   ensurePost();
+  // `joyu` and any other camera-parented light follow the shot
+  if (S && S.built) TraptGs.placeCameraLights(S.built.lights, V.camera);
   // the shader wants the eye position for its point lights
   if (V.group)
     V.group.traverse((o) => {

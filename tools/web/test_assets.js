@@ -449,6 +449,7 @@ async function main() {
       '            if isinstance(x, bytes): a.append(ssc.sj(x))',
       '            elif isinstance(x, tuple) and x[0] == "c2": a.append([x[1], x[2]])',
       '            elif isinstance(x, tuple) and x[0] == "c4": a.append(["c4", x[1]])',
+      '            elif isinstance(x, tuple) and x[0] == "c5": a.append(["c5", x[1]])',
       '            else: a.append(x)',
       '        calls.append([off, op[0], op[1], a])',
       '    out[name] = calls',
@@ -469,7 +470,8 @@ async function main() {
       for (let i = 0; i < calls.length && !mismatch; i++) {
         const g = calls[i], w = want[i];
         const ga = g.args.map((x) => (x && typeof x === 'object'
-          ? ('den' in x ? [x.num, x.den] : ['c4', x.c4]) : x));
+          ? ('den' in x ? [x.num, x.den] : 'reg' in x ? ['c5', x.reg] : ['c4', x.c4])
+          : x));
         if (g.offset !== w[0] || g.op !== w[1]
             || (g.op !== null && g.flag !== w[2])
             || JSON.stringify(ga) !== JSON.stringify(w[3]))
@@ -656,17 +658,19 @@ async function main() {
     const spark = built.sprites.find(
       (s) => s.mesh.visible && s.entity.sprite.texture === 'spark.tm2');
     // The keyframes: 0x6D grows the flash 0.5 -> 4.5, 0x6E fades its alpha
-    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).
+    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).  Alpha past 1
+    // cannot reach the blend as alpha, so it rides on the colour: 1.5 * 1.8.
     check('the flash is keyframed, and mid-swell at 1500',
           [+flash.mesh.scale.x.toFixed(2), +flash.mesh.material.opacity.toFixed(2),
            +flash.mesh.material.color.r.toFixed(2)],
-          [3.08, 1, 1.5]);
+          [3.08, 1, 2.7]);
     // A spark has no keys at all -- it takes its colour from 0x80 and its
     // lifetime from the length of its own track.
+    // (0.9, 0.3, 0.1) at an alpha of 1.5, folded in the same way.
     check('a spark takes its colour from 0x80',
           [+spark.mesh.material.color.r.toFixed(2),
            +spark.mesh.material.color.g.toFixed(2),
-           +spark.mesh.material.color.b.toFixed(2)], [0.9, 0.3, 0.1]);
+           +spark.mesh.material.color.b.toFixed(2)], [1.35, 0.45, 0.15]);
     // `0x68`'s four numbers are a cell on a sheet, and a sheet is often a
     // flipbook.  Drawing the sheet put all sixteen rows of e001's explosion
     // on screen as one quad -- a red rectangle over a third of the frame.

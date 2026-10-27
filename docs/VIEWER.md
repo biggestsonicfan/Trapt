@@ -1253,3 +1253,118 @@ What this does *not* settle is the other five flags.  Only the fourth is read.
 `0x77 2 0 0 0 1` carry the spawn spread and the rise, and none of them is
 read, so the thirty-two sit on top of each other. It reads as a bright
 flame that pulses in place rather than a plume climbing off the brazier.
+
+---
+
+## 10. Grading the page itself against PCSX2
+
+§8.10 grades `pdiag.py`, a port of the shader that draws no sprites, effect
+meshes or subtitles. This section is about the page: `pick.html` in PS2 mode
+with the game's own subtitle font, the thing a visitor actually sees.
+
+```
+python tools/grade.py --browser "Trapt (USA).iso" --save page.json
+python tools/grade.py --browser "Trapt (USA).iso" --baseline page.json
+```
+
+`tools/web/frames.mjs` opens the page in headless Chrome (SwiftShader, so no
+GPU), hands it the disc through the file input the way a visitor does, opens
+each cutscene, stops it on the frame, and reads back the 512x224 GS target
+before the post pass scales it. `grade.py` then scores that picture the way
+§8.10 scores pdiag's. Region masks still come from pdiag, whose geometry is
+the page's. A baseline records which renderer it graded, and grading the page
+against a pdiag baseline is refused rather than compared.
+
+### 10.1 Three things the grading itself had wrong
+
+- **PCSX2 2.x states are zstd.** Every member except `Screenshot.png` is zip
+  method 93, which `zipfile` cannot read. `oracle.State.read` decompresses
+  them; it needs the `zstandard` package.
+- **The screenshot is two frames older than EE RAM.** The oracle reads the
+  frame the game is computing; the PNG is the frame on screen. With the page
+  rendered at oracle frame −6..+1 over all seven states, the best match sits
+  at −2. State 04 is a fast pan and settles it: 5.42 at 0, 4.05 at −2.
+  `grade.SHOT_LAG` draws every state at its oracle frame minus 2, and a grade
+  now reports both (`frame 10834 (shown 10832)`).
+- **The page's depth buffer was 16-bit.** The render target had no depth
+  texture of its own. In the far half of the room, depth fought itself, so
+  wall and floor stripes came and went. The target now carries a 24-bit depth
+  texture.
+
+### 10.2 Effect tracks are programs, not timelines
+
+Every spawned effect track (`ef_*.ssc`) is run by the game **once per
+frame, from the top**. That is the main finding of this section. The decoding
+below comes from the handlers in the dispatch table at `0x376660`:
+
+| op | meaning |
+|---|---|
+| `C5 n` (argument tag) | register `n` of the track's VM |
+| `0x04 (a, b, c)` | set the flag: `t == a`; `a <= t <= b`; or every `c` from `a` |
+| `0x03 n` | skip the next `n` calls unless the flag is set. This was misread as `set_actor_count`. |
+| `0xA4 n` | flag = (r16 == n), the track's state register |
+| `0x0D`–`0x1C`, `0xA6` | `(dst, a, b, float, op)`: 0 set, 1 add, 2 sub, 3 mul, 4 div, 8 wrap into [a, b), 10 compare `(x, y, cmp)` with cmp 0 `==` 1 `>` 2 `<` 3 `>=` 4 `<=` 5 `!=` (handler `0x1C7240`) |
+| `0x7C (u, v, m)` | UV offset of material `m` |
+| `0x7D (a, m)` | alpha of material `m` |
+| `0x7E (r, g, b, a, m)` | colour and alpha of material `m` |
+| `0x84` / `0x8C (x, y, z, mode)` | one handler (`0x1C15D0`), model vtable `+0x88 + 4*mode`. The disc uses mode 0 on `0x84` (1818 times, position) and mode 8 on `0x8C` (1049, scale). |
+| `0xB8 ("none", 3)` | billboard. All 45 uses are on flat XY cards. |
+| `0x01` | this frame is done |
+| `0x00` | the track is over |
+
+`m` is the `.SMI` material's flags word (`+0x40`), not its index.
+
+`ef_e004_20` shows how a program works. At clock 0 it builds the fire mesh and
+zeroes four registers. Every frame it fades two materials in
+(`r6 += .008` while `r6 <= .4`) and scrolls their UVs. At 50 it sets
+`r16 = 10`, and state 10 drops both alphas below zero and ends the track at
+local frame 51. Read as a timeline, the same file drew the fire for the rest
+of the cutscene. `ef_e004_21` holds alpha 0.8/1.3 until 270, then fades and
+ends at 444.
+
+`web/scene.js` `fxRun` runs the VM for every spawned track that touches a
+register or a material. It records, for each local frame, each material's
+`[alpha, u, v, r, g, b]` and each block's position and scale. `play.js`
+`fxApply` poses from those tables, and the shader gained `uvOff` and
+`fxAlpha` uniforms. `scene.py` `_fx_end` ports only the end frame, which is
+all the Python side needs, and `test_assets` keeps the two in step.
+
+Actor tracks use the same registers (Allura's material 2 fades on `r0`), but
+they are cue-driven timelines: run frame by frame, the `end_track` at their
+foot would fire on frame 0. So only spawned tracks are run as programs.
+
+### 10.3 Draw order and the GS's alpha
+
+- three.js sorts blended objects by object origin, and room meshes sit at the
+  world origin. A fire 100 units into the room therefore drew *under* the
+  foliage bands. Effect meshes now draw at `renderOrder` 2 and sprites at 3,
+  after the room.
+- A sprite's colour key can carry alpha above 1. On the GS, alpha 0x80 is
+  1.0 and the register goes to 0xFF, so the excess brightens rather than
+  clipping. The page now multiplies the colour by `min(255/128, max(1, a))`
+  and clamps opacity at 1. `test_assets`' flash and spark expectations moved
+  with it.
+
+### 10.4 Where it stands
+
+| state | scene | shown | page before | page now | pdiag |
+|---|---|---|---|---|---|
+| 00 | e004 | 1418 | 16.66 | **9.21** | 17.89 |
+| 03 | e001 | 3703 | 3.53 | 3.49 | 3.56 |
+| 04 | e001 | 10832 | 3.65 | 3.58 | 3.99 |
+| 05 | e004 | 1648 | 15.36 | 14.83 | 19.46 |
+| 06 | e001 | 1339 | 4.26 | 4.25 | 4.13 |
+| 07 | e004 | 2127 | 8.86 | **5.12** | 5.25 |
+| 08 | e001 | 7420 | 4.73 | 4.73 | 4.86 |
+
+The mean is 6.46 for the page and 8.45 for pdiag. The "before" column is the
+page at the start of this work, already at the corrected frames.
+
+Still wrong:
+
+- **e004 1648.** The hardware has a warm wash over the whole frame and
+  brighter fire on the left. Doubling the mirrored sprites' size gained only
+  about 0.5, so that is not it.
+- **`0xAC f`.** It hands a float to model vtable `+0xD4`. It is not decoded
+  and not applied. It is a guess, not a finding, that it is behind the wash.
+- **e004 1418.** Allura's arm pose is off.
