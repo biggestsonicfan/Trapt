@@ -118,6 +118,7 @@ python order.py --check         # the tables vs. what is on the disc
 | `stagescript.py` | `B##EVENT.ARC` -- where the player starts, what is placed, who walks in |
 | `pcsx2pad.py` | a PCSX2 `[Pad1]` turned into browser input |
 | `oracle.py` | what a PCSX2 savestate is a picture of -- the cutscene and frame, from the live camera |
+| `grade.py` | score the viewer against every PCSX2 savestate: mae, bias, edges and where the error lives; `--baseline` fails on a regression (docs/VIEWER.md §8.10) |
 | `ssc.py` | `.SSC` compiled scene-script reader (cutscene bytecode + subtitles) |
 | `sai.py` | `.SAI` skeletal animation reader |
 | `cam.py` | `.CAM` camera-track reader |

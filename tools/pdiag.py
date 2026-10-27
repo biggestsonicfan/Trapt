@@ -380,12 +380,18 @@ def look_at(eye, target, roll=0.0):
 
 
 def render(parts, eye, target, fov, roll, rig, size, mode='shaded',
-           bg=(6, 6, 10)):
+           bg=(6, 6, 10), ids=None):
     """Z-buffered, nearest-neighbour, per-fragment lighting.
 
     Screen y runs down, so the signed area `d` is positive exactly when
     `(b-a)x(c-a)` points at the camera -- which is what GL calls front-facing.
+
+    `ids`, an `(H, W)` int array, comes back holding the index into `parts`
+    of whatever owns each pixel (-1 for none): the opaque surface that won Z,
+    or a blended one drawn over it at alpha 0.5 or more.  `grade.py` uses it
+    to say which entity a difference from the hardware lives on.
     """
+    owner = {id(p): i for i, p in enumerate(parts)}
     opt = rig.opt
     W, H = size if isinstance(size, tuple) else (size, size)
     img = np.tile(np.array(bg, np.float64)/255.0, (H, W, 1))
@@ -518,9 +524,15 @@ def render(parts, eye, target, fov, roll, rig, size, mode='shaded',
                 a = np.clip(base[alive, 3], 0, 1)[:, None]
                 tile[hit2] = (np.clip(src*a + tile[hit2], 0, 1) if additive
                               else src*a + tile[hit2]*(1.0-a))
+                if ids is not None:
+                    over = hit2.copy()
+                    over[hit2] = a[:, 0] >= 0.5
+                    ids[y0:y1+1, x0:x1+1][over] = owner[id(part)]
             else:
                 sub[hit2] = zz[hit2]
                 tile[hit2] = src
+                if ids is not None:
+                    ids[y0:y1+1, x0:x1+1][hit2] = owner[id(part)]
     return Image.fromarray((np.clip(img, 0, 1)*255).astype(np.uint8))
 
 
@@ -685,12 +697,15 @@ def gather(S, B, frame, only=None, room=True, textured=True, texcache=None):
         if not vis or frame < ent.get('start', 0) or (end is not None
                                                       and frame >= end):
             continue
+        # `[start, key, offset]`: the offset is `0x83`'s start within the
+        # clip -- zero everywhere but e001's corpse, which is authored in
+        # absolute scene time.  Older pages carry only the first two.
         cur = None
-        for st, key in ent['clips']:
-            if st <= frame:
-                cur = (st, key)
+        for c in ent['clips']:
+            if c[0] <= frame:
+                cur = (c[0], c[1], c[2] if len(c) > 2 else 0)
         clip = S['clips'][cur[1]] if cur else None
-        t = frame-cur[0] if cur else 0
+        t = frame-cur[0]+cur[2] if cur else 0
         off = ent.get('position') or [0, 0, 0]
         tint = np.array(ent.get('tint') or [1, 1, 1], float)
         for mk in ent['models']:
@@ -834,8 +849,9 @@ def main():
     print('%s frame %g: %d parts, %d triangles%s' % (
         S['name'], frame, len(parts), sum(len(p['F']) for p in parts),
         '  [legacy shader]' if o.legacy else ''))
-    print('  camera %s -> %s, fov %.1f' % (tuple(np.round(eye, 2)),
-                                           tuple(np.round(tgt, 2)), fov))
+    print('  camera %s -> %s, fov %.1f' % (tuple(np.round(eye, 2).tolist()),
+                                           tuple(np.round(tgt, 2).tolist()),
+                                           fov))
     img = render(parts, eye, tgt, fov, roll, rig, _size(opt('--size', '640')),
                  opt('--mode', 'shaded'))
     if opt('--mode', 'shaded') == 'shaded':

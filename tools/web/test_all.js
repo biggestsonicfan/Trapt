@@ -38,7 +38,11 @@ const SUITES = [
   { file: 'test_stage.js', disc: true },
   { file: 'test_stageview.js', disc: true },
   { file: path.join('..', 'test_order.js'), disc: true },
+  // Python: finds its disc through region.py (TRAPT_ROOT), not the ISO arg.
+  { file: path.join('..', 'test_grade.py'), disc: true, python: true },
 ];
+const PYTHON = process.env.PYTHON
+  || (process.platform === 'win32' ? 'python' : 'python3');
 
 let failed = 0, ran = 0, skipped = 0;
 const rows = [];
@@ -51,9 +55,10 @@ for (const suite of SUITES) {
     continue;
   }
   const argv = [path.join(HERE, suite.file)];
-  if (suite.disc && isoArg) argv.push(isoArg);
+  if (suite.disc && isoArg && !suite.python) argv.push(isoArg);
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, argv, { cwd: HERE, encoding: 'utf8' });
+  const r = spawnSync(suite.python ? PYTHON : process.execPath, argv,
+                      { cwd: HERE, encoding: 'utf8' });
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   const out = (r.stdout || '') + (r.stderr || '');
   const passed = (out.match(/^ {2}ok /gm) || []).length;
