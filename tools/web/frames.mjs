@@ -52,15 +52,23 @@ const chrome = spawn('google-chrome', ['--headless=new', '--no-sandbox',
   '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
   '--user-data-dir=' + ud, '--remote-debugging-port=0',
   '--window-size=1280,1600', '--autoplay-policy=no-user-gesture-required',
-  'about:blank'], { stdio: 'ignore', env: { ...process.env, TMPDIR: ud } });
-// Chrome writes into its profile until it has exited, so the profile goes
-// only after the exit event; removing it sooner leaves files behind.
+  'about:blank'], { stdio: 'ignore', detached: true, env: { ...process.env, TMPDIR: ud } });
+// Chrome writes into its profile until it has exited -- its helpers too,
+// after the browser process has gone -- so the whole process group is
+// stopped, and the profile removed until it stays removed.
 const gone = new Promise((r) => chrome.once('exit', r));
 const finish = async (code) => {
   server.close();
-  try { chrome.kill(); } catch {}
-  await Promise.race([gone, new Promise((r) => setTimeout(r, 5000))]);
-  try { fs.rmSync(ud, { recursive: true, force: true }); } catch {}
+  const within = (ms) => Promise.race([gone.then(() => true),
+                                       new Promise((r) => setTimeout(() => r(false), ms))]);
+  const group = (sig) => { try { process.kill(-chrome.pid, sig); } catch {} };
+  group('SIGTERM');
+  if (!(await within(5000))) { group('SIGKILL'); await within(5000); }
+  group('SIGKILL');                       // stragglers in the group
+  for (let i = 0; i < 20 && fs.existsSync(ud); i++) {
+    try { fs.rmSync(ud, { recursive: true, force: true }); } catch {}
+    await sleep(250);
+  }
   process.exit(code);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
