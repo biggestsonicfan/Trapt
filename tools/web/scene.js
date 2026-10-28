@@ -505,8 +505,8 @@ function run(scene, trackName, blob, frameBase, origin) {
       const rate = int(args[0]);
       entity.grid = { rate, cols, rows, cells, life: rate * cells };
     } else if ((code === OP_FX_EMIT_A || code === OP_FX_EMIT_B) && entity) {
-      // Structure only: what these steer is not established, so they are
-      // carried and not used.
+      // A ribbon's shape: `0xC8` (segments, -, wander, width) and `0xC9`
+      // (U span, U jitter, U base, U scroll).  play.js `ribbonAt` draws it.
       if (!entity.emitter) entity.emitter = {};
       entity.emitter[code.toString(16)] = args.map(num);
     } else if (code === OP_TINT && entity) {

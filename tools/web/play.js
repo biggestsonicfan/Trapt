@@ -199,9 +199,8 @@ async function assemble(THREE, disc, name, onProgress) {
   // finger, hand, elbow and forearm at once.  A block with a `0x9F` grid is
   // an emitter and becomes a *cloud* of quads -- see `count` below.
   //
-  // This is not the game's particle system -- `0xC8`/`0xC9` clearly steer a
-  // count and a spread that nothing here reads, so a trail of eight sparks
-  // comes out as one sprite at the emitter.  Size and colour over time are
+  // A `0xC8` block bound to two bones or more is not a sprite at all but a
+  // ribbon through them -- see `ribbonAt`.  Size and colour over time are
   // the game's own, straight off the keyframes.
   const sprites = [];
   for (const e of scene.entities) {
@@ -264,6 +263,39 @@ async function assemble(THREE, disc, name, onProgress) {
       ? Math.round(e.emitter.c8[0]) : 0;
     const points = e.binds.length ? e.binds : [null];
 
+    // ...except that a `0xC8` block bound to two bones or more is not
+    // particles at all.  It is a **ribbon**: one strip of `0xC8[0]` segments
+    // threaded through the bones in bind order (`ribbonAt`).  The bones are
+    // its spine, so it gets one mesh and no quad per bone.
+    if (emitted > 0 && e.binds.length >= 2) {
+      const n = Math.min(MAX_PARTICLES, emitted);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array((n + 1) * 6), 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array((n + 1) * 4), 2));
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array((n + 1) * 6), 3));
+      // a triangle strip, two vertices per step along the spine
+      const idx = [];
+      for (let k = 0; k < n; k++) {
+        const a = 2 * k;
+        idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+      geo.setIndex(idx);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, depthWrite: false, vertexColors: true,
+        blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        color: new THREE.Color(1, 1, 1), opacity: 0,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      mesh.renderOrder = RO_SPRITE;
+      root.add(mesh);
+      sprites.push({ entity: e, mesh: mesh, bind: null, actor: null,
+                     ribbon: { n: n, id: sprites.length, binds: e.binds, bones: [] },
+                     phase: 0 });
+      continue;
+    }
+
     // The emission slots, flattened: which point each particle comes from and
     // how old it is.  A grid block runs a full set at every point; a `0xC8`
     // block has one shared budget dealt round-robin between them.
@@ -315,6 +347,18 @@ async function assemble(THREE, disc, name, onProgress) {
   }
   // Resolve each bind to the actor that carries the bone, once.
   for (const s of sprites) {
+    if (s.ribbon) {
+      // every bind rides the same actor; the spine is its bones in order
+      for (const [file, bone] of s.ribbon.binds) {
+        const want = file.toLowerCase();
+        const actor = actors.find((a) => a.file.toLowerCase().replace(/\.smi$/, '') === want)
+                   || actors.find((a) => a.file.toLowerCase().startsWith(want)) || null;
+        const index = actor ? actor.model.nodes.findIndex((n) => n.name === bone) : -1;
+        if (index < 0) { warnings.push('ribbon bound to ' + file + ':' + bone + ', which is not in the scene'); continue; }
+        s.ribbon.bones.push({ actor: actor, index: index });
+      }
+      continue;
+    }
     if (!s.bind) continue;
     const want = s.bind[0].toLowerCase();
     s.actor = actors.find((a) => a.file.toLowerCase().replace(/\.smi$/, '') === want)
@@ -451,10 +495,129 @@ function setCell(s, index) {
  * whenever the camera moves, and the viewer's free camera is not the camera
  * `poseAt` knows about, so the page calls this again with the real one.
  */
+/**
+ * A `0xC8` ribbon at `frame`: writes the strip's vertices, UVs and colours
+ * and returns whether there is anything to draw.
+ *
+ * This is the game's trail object, read off the ELF.  `0xCA` appends each
+ * bone to an eight-slot list (`FUN_001C1D50` -> `0x0021EB30`), `0xC8` and
+ * `0xC9` only store, and the object's update (`0x0021ECD0`) rebuilds the
+ * strip every frame with `0x00197840`:
+ *
+ * - the spine is the bones in bind order, one straight piece per pair, and
+ *   the strip's `n + 1` steps are spaced evenly along its whole length;
+ * - at each step the cross-section is a segment `width` long, centred
+ *   `wander` off the spine.  Its direction is fixed per frame; the centre's
+ *   angle random-walks by at most pi/(n+1) a step, so the band twists a
+ *   little along its length.  `width` is `0xC8[3]` x (0.9..1.1) and `wander`
+ *   `0xC8[2]` x (0.8..1.2), both re-rolled every frame; the walk's seed is
+ *   re-rolled one frame in four.  `0xC8[1]` is passed and never read;
+ * - U runs along the strip, `0xC9[0]` across it, from `0xC9[2]` plus up to
+ *   half of `0xC9[1]` either way, re-rolled every third frame (`0x00197450`
+ *   -- `0xC9[3]`, a scroll rate, is 0 everywhere on the disc).  V is 0 on
+ *   one edge and 1 on the other;
+ * - alpha along it is 1 - (2t - 1)^2 (`0x00197560`, `0x0019B4E0`): nothing
+ *   at either end bone, full halfway.
+ *
+ * The game's own random numbers are not reproducible here, so this draws
+ * from a hash of the frame: the same shape, its own dice.  The game also
+ * turns each piece's frame by the effect object's matrix and flips Y and Z
+ * after; neither moves the band off its spine, and the page's bones are
+ * already in the space it draws in.
+ */
+function ribbonAt(s, frame, local) {
+  const r = s.ribbon, e = s.entity, n = r.n;
+  const spine = [];
+  for (const b of r.bones) {
+    const m = b.actor.lastMats && b.actor.lastMats[b.index];
+    if (!m) return false;
+    const g = b.actor.group.position;
+    spine.push([m[12] + g.x, m[13] + g.y, m[14] + g.z]);
+  }
+  if (spine.length < 2) return false;
+
+  // Each piece's frame: Z along the piece, X and Y any pair square to it.
+  const pieces = [];
+  let total = 0;
+  for (let i = 0; i + 1 < spine.length; i++) {
+    const a = spine[i], b = spine[i + 1];
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const len = Math.hypot(d[0], d[1], d[2]);
+    const z = len > 0 ? [d[0] / len, d[1] / len, d[2] / len] : [0, 0, 1];
+    const up = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let x = [up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]];
+    const xl = Math.hypot(x[0], x[1], x[2]);
+    x = [x[0] / xl, x[1] / xl, x[2] / xl];
+    const y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    pieces.push({ origin: a, x: x, y: y, z: z, from: total, to: total + len });
+    total += len;
+  }
+
+  // Dice: an LCG like the game's (1664525, 1013904223), seeded from a hash.
+  const hash = (a, b) => {
+    let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x632be5ab, 0xc2b2ae35);
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+    return (h ^ (h >>> 13)) >>> 0;
+  };
+  const lcg = (seed) => {
+    let st = seed >>> 0;
+    return () => { st = (Math.imul(st, 1664525) + 1013904223) >>> 0; return st / 4294967296; };
+  };
+  const frameDice = lcg(hash(r.id, frame));
+  const half = (x) => x * (frameDice() - 0.5);       // FUN_00185EA0
+  // the walk's seed holds until a frame rolls 0 of 4
+  let seedFrame = frame;
+  while (seedFrame > frame - 64 && hash(r.id * 7 + 1, seedFrame) % 4 !== 0) seedFrame--;
+  const c8 = e.emitter.c8, c9 = e.emitter.c9 || [1, 1, 0, 0];
+  const wander = c8[2] * (1 + half(0.4));
+  const width = c8[3] * (1 + half(0.2));
+  const walk = lcg(hash(r.id * 7 + 2, seedFrame));
+
+  const N = n + 1;
+  let phi = (walk() - 0.5) * Math.PI;
+  const ox = width * 0.5 * Math.cos(phi), oy = width * 0.5 * Math.sin(phi);
+  let step = 0;
+  const pos = s.mesh.geometry.attributes.position.array;
+  const put = (v, lx, ly, lz) => {
+    const p = pieces.find((q) => lz <= q.to + 1e-6) || pieces[pieces.length - 1];
+    const zl = lz - p.from;
+    for (let c = 0; c < 3; c++)
+      pos[v * 3 + c] = p.origin[c] + p.x[c] * lx + p.y[c] * ly + p.z[c] * zl;
+  };
+  for (let k = 0; k < N; k++) {
+    step += (walk() - 0.5) * Math.PI / 4;
+    if (Math.abs(step) > Math.PI / (N * 2)) step = (Math.PI / N) * (walk() - 0.5);
+    phi += step;
+    const x = wander * Math.cos(phi) + ox, y = wander * Math.sin(phi) + oy;
+    const z = total / n * k;
+    put(2 * k, x, y, z);
+    put(2 * k + 1, x - 2 * ox, y - 2 * oy, z);
+  }
+  s.mesh.geometry.attributes.position.needsUpdate = true;
+
+  // UVs, re-rolled every third frame
+  const uvDice = lcg(hash(r.id * 7 + 3, Math.floor(local / 3)));
+  const u0 = c9[2] + c9[1] * (uvDice() - 0.5);
+  const uv = s.mesh.geometry.attributes.uv.array;
+  const col = s.mesh.geometry.attributes.color.array;
+  for (let k = 0; k < N; k++) {
+    const u = u0 + k * c9[0] / N;
+    uv[k * 4] = u; uv[k * 4 + 1] = 0;
+    uv[k * 4 + 2] = u; uv[k * 4 + 3] = 1;
+    // the blend is additive, so the alpha profile can ride on the colour
+    const t = (2 * k / n) - 1, w = Math.max(0, 1 - t * t);
+    for (let c = 0; c < 6; c++) col[k * 6 + c] = w;
+  }
+  s.mesh.geometry.attributes.uv.needsUpdate = true;
+  s.mesh.geometry.attributes.color.needsUpdate = true;
+  s.mesh.position.set(0, 0, 0);
+  return true;
+}
+
 function faceSprites(built, eye) {
   if (!eye) return;
   for (const s of built.sprites || []) {
-    if (!s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
+    if (s.ribbon || !s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
     // `0xAC`: the game draws the sprite this far toward the eye (scene.js).
     const pull = s.entity.pull, b = s.base;
     if (pull && b) {
@@ -626,6 +789,11 @@ function poseAt(built, frame) {
     const over = Math.min(GS_ALPHA_MAX, Math.max(1, a));
     s.mesh.material.color.setRGB(r * over, g * over, b * over);
     s.mesh.material.opacity = Math.max(0, Math.min(1, a));
+    if (s.ribbon) {
+      s.mesh.visible = ribbonAt(s, frame, local);
+      if (s.mesh.visible) lit++;
+      continue;
+    }
     // Size is in scene units and carries the shape: e001's torch runs from
     // 1 x 2 to 4 x 7, a plume taller than it is wide.
     s.mesh.scale.set(sx || 1, sy || 1, 1);

@@ -565,9 +565,8 @@ facade, but it will matter in a room the camera enters.
   `RT_E001.ARC` pair one-to-one with `DATA/SOUND/VOICE/M####.ADX` and each has
   a known frame from the subtitle table — an ideal sample set for cracking it.
 * **Effects are played as billboards, not as particle systems.** Sprite
-  effects render — see §7 — but `0xC8`/`0xC9` clearly steer an emitter count
-  and a spread that nothing reads, so a burst of eight sparks comes out as one
-  sprite at the emitter rather than a trail.
+  effects render — see §7. The one exception is a `0xC8` block bound to
+  two or more bones, which is a ribbon and is drawn as one (§10.7).
 * **One particle, where the hardware has a cloud** (§9.3). The flipbook runs
   and the timing is the game's, but a single billboard spends most of its
   cycle faded out, so a torch flickers rather than burns steadily.
@@ -607,7 +606,7 @@ From the dispatch table at `0x00376660`, and from the data:
 | `0x6D` | `FUN_001C47F0` | `(sx, sy, frame)` — a size keyframe |
 | `0x6E` | `FUN_001C46A0` | `(r, g, b, a, frame)` — a colour keyframe |
 | `0xCA` | `FUN_001C1D50` | `(actor, bone)` — bind the emitter to a bone |
-| `0xC8`, `0xC9` | | emitter parameters; structure only |
+| `0xC8`, `0xC9` | `0x0021EB00`, `0x0021EAE0` | a ribbon's `(segments, -, wander, width)` and `(U span, U jitter, U base, U scroll)`; §10.7 |
 | `0xAA` | `FUN_001C46A0` | **the same handler as `0x6E`** -- an alias |
 | `0xAB` | `FUN_001C47F0` | **the same handler as `0x6D`** -- an alias |
 
@@ -1429,3 +1428,43 @@ fades it out from 1750 to 1850. In e001 and e024 it stays hidden for the
 whole scene. Before this, the page drew the gauntlet all through e004, and
 that is what made her arm at 1418 look wrong. The material program is in
 `scene.js` only; `scene.py` has `0xB2` but not the material VM.
+
+### 10.7 `0xC8` is a ribbon, not a spark cloud
+
+§9.4 found that `0xC8` and `0xC9` only store, and that no reader of `+0x210`
+showed up in the effect module. The reader is in another module: `0x0021F270`
+(the trail class, vtable `0x004791A0`) copies all eight fields to `+0x196`
+through `+0x1B0` of its own object. The game uses the same class elsewhere,
+calling `0x0021EB00`, `0x0021EAE0` and `0x0021EB30` directly from `0x003177E4`.
+It is a **triangle strip**: `0x001982D0` allocates `(count + 1) * 2`
+vertices, so `0xC8[0]` is the number of segments, not a number of particles.
+Each `0xCA` bind appends the bone's matrix to the strip's eight-slot list
+(`FUN_001C1D50` -> `0x0021EB30`).
+
+Every frame the update (`0x0021ECD0`) rebuilds the strip with `0x00197840`:
+
+- the spine is the bound bones in bind order, one straight piece per pair;
+  the `count + 1` steps are spaced evenly along its whole length;
+- at each step the cross-section is a segment `0xC8[3]` x (0.9..1.1) long,
+  centred `0xC8[2]` x (0.8..1.2) off the spine. Its direction is random but
+  fixed for the frame, and the centre's angle random-walks by at most
+  pi/(count+1) a step, so the band twists a little. `0xC8[1]` is passed and
+  never read. The walk's seed is re-rolled one frame in four
+  (`rand % 4 == 0`), the two scales every frame;
+- `0x00197450` lays U along the strip (`0xC9[2]` plus up to half of
+  `0xC9[1]` either way, `0xC9[0]` over the length, re-rolled every third
+  frame; `0xC9[3]` scrolls it and is 0 on the disc). V is 0 on one edge and
+  1 on the other;
+- `0x00197560` gives each step the effect's colour, with alpha times
+  `1 - (2t - 1)^2` (`0x0019B4E0`): nothing at the end bones, full halfway.
+
+In e004, `ef_e004_11` (8 segments, width 2) runs finger -> hand -> elbow, and
+`_12` (16, width 3) runs on to `ude_R`. Each is spawned twice. Those are the
+two long flame streaks along Allura's forearm and face at 1418 that the page
+was missing; the page had drawn a 1-unit spark per bone. `play.js` `ribbonAt`
+draws the strip. Its dice are a hash of the frame, because the game's come
+from its global RNG, so the bands have the hardware's size and texture but
+not its exact angles. State 00 went from 9.01 to 8.96: edges 0.655 -> 0.702,
+Allura's bias (-38.0 -16.1 -8.4) -> (-24.3 -11.1 -5.5), and the fire region
+(x 200-330, y 70-125) from (92, 40, 29) to (111, 47, 33) against the
+hardware's (148, 68, 46).

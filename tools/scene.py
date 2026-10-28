@@ -524,8 +524,8 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             entity.grid = {'rate': rate, 'cols': cols, 'rows': rows,
                            'cells': cells, 'life': rate * cells}
         elif code in (OP_FX_EMIT_A, OP_FX_EMIT_B) and entity is not None:
-            # Structure only: a count and three numbers, then four more.  What
-            # they steer is not established, so they are carried and not used.
+            # A ribbon's shape: `0xC8` (segments, -, wander, width) and `0xC9`
+            # (U span, U jitter, U base, U scroll); docs/VIEWER.md 10.7.
             if entity.emitter is None:
                 entity.emitter = {}
             entity.emitter['%02x' % code] = [_num(a) for a in args]
