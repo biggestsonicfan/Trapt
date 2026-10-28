@@ -78,6 +78,7 @@ uniform sampler2D map; uniform float hasMap;
 uniform vec4 diffuse; uniform vec3 tint;
 uniform vec3 ambient, dirColour, dirDir;
 uniform vec3 pt0c, pt0p, pt1c, pt1p; uniform vec2 pt0r, pt1r;
+uniform vec3 lightAt; uniform float bound;   // see bindLights
 uniform vec3 fogColour; uniform vec2 fogRange; uniform float fogOn;
 uniform vec3 eye; uniform float exposure;
 uniform float lit;             // 1 = shade from normals, 0 = baked vertex colour
@@ -88,6 +89,14 @@ uniform float ps2;             // 0 = bypass the GS emulation entirely
 uniform float fxAlpha;         // an effect track's 0x7D/0x7E material alpha
 varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
 vec3 point(vec3 c, vec3 pos, vec2 rng, vec3 n) {
+  // A bound model's point lights are directionals from one point on it,
+  // dimmed linearly between near and far (ELF 0x001B79B0), as the VU1 kernel
+  // gets them; an unbound one keeps the per-pixel falloff.
+  if (bound > 0.5) {
+    vec3 d = pos - lightAt;
+    float att = clamp(1.0 - (length(d) - rng.x) / max(rng.y - rng.x, 0.001), 0.0, 1.0);
+    return c * max(dot(n, normalize(d)), 0.0) * att;
+  }
   vec3 d = pos - vP;
   float att = 1.0 - smoothstep(rng.x, max(rng.y, rng.x + 0.001), length(d));
   return c * max(dot(n, normalize(d)), 0.0) * att;
@@ -473,6 +482,17 @@ function defaultLights(THREE) {
 }
 
 /**
+ * The weight the light list stores with a light when it is made (ELF
+ * 0x001B7060): CIE L* of the colour's Rec.601 luminance, the colour taken
+ * as hundredths.  0.2 grey is 1.8066 and e004's `ude`, made at 0.3, 2.7099,
+ * both as read out of the state-00 savestate.
+ */
+function lightWeight(c) {
+  const y = 0.01 * (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]);
+  return y > 0.008856 ? 116 * Math.cbrt(y) - 16 : 903.3 * y;
+}
+
+/**
  * Resolve a scene's `0x64` kind-6 blocks into the uniform set the shader
  * wants.  `roomDir` is what `sli.js` read out of the room, which is the only
  * place a directional light's aim exists -- the script block carries a colour
@@ -483,15 +503,22 @@ function defaultLights(THREE) {
 function lightsFor(THREE, lightEntities, roomDir) {
   const rig = defaultLights(THREE);
   rig.points = [];                      // the scene's own lights replace them
-  let haveAmb = false;
+  let haveAmb = false, dirW = -1;
   for (const l of lightEntities) {
-    const c = new THREE.Vector3().fromArray(
-      l.scale ? l.scale.slice(0, 3) : [1, 1, 1]);
+    // An effect light's colour is its program's: the first frame's is the
+    // one it was made with, and play.js `lightsAt` steps it after that.
+    const run = l.fx && l.fx.light && l.fx.light.get(l.block);
+    const made = run && run.frames.length ? run.frames[0]
+      : (l.scale ? l.scale.slice(0, 3) : [1, 1, 1]);
+    const c = new THREE.Vector3().fromArray(made);
     if (l.light === 'ambient') {
       // several ambient blocks in one scene do sum; the fallback does not
       if (haveAmb) rig.ambient.add(c); else rig.ambient.copy(c);
       haveAmb = true;
     } else if (l.light === 'directional') {
+      // a model takes the heaviest directional (0x001B6820)
+      if (lightWeight(made) <= dirW) continue;
+      dirW = lightWeight(made);
       rig.dirColour.copy(c);
       if (roomDir) rig.dirDir.fromArray(roomDir).normalize();
     } else {
@@ -503,6 +530,8 @@ function lightsFor(THREE, lightEntities, roomDir) {
         // `joyu` rides the camera: its position is an offset in camera space
         cam: !!l.lightParent,
         off: new THREE.Vector3().fromArray(p),
+        w: lightWeight(made),
+        ent: l, on: true,
       });
     }
   }
@@ -533,6 +562,41 @@ function placeCameraLights(rig, camera) {
   }
 }
 
+/**
+ * A model's own copy of the rig: the scene's ambient and directional, and
+ * two point slots that `bindLights` fills for it each frame.
+ */
+function modelRig(THREE, rig) {
+  return { ambient: rig.ambient, dirColour: rig.dirColour, dirDir: rig.dirDir,
+           points: zeroPoints(THREE), at: new THREE.Vector3(), cam: false };
+}
+
+/**
+ * Bind the scene's point lights to one model, as ELF 0x001B6820 does every
+ * frame: score each by its stored weight times its linear falloff at `at`,
+ * a point on the model (Allura's is her `koshi` bone), and keep the best two.
+ * The rest light nothing on it.  In e004 state 00 that is `ude` (2.16) and
+ * `joyu` (1.29); `rt_poi`, 31 units off, misses out at 1.25 -- which is what
+ * the savestate's VU1 light block holds (docs/VIEWER.md 10.15).
+ */
+function bindLights(rig, mrig, at) {
+  const ranked = [];
+  for (const l of rig.points) {
+    if (!l.w || l.on === false) continue;
+    const d = Math.hypot(l.p.x - at.x, l.p.y - at.y, l.p.z - at.z);
+    const near = l.r.x, far = Math.max(l.r.y, near + 1e-3);
+    const att = Math.min(1, Math.max(0, 1 - (d - near) / (far - near)));
+    if (att > 0) ranked.push([l.w * att, l]);
+  }
+  ranked.sort((a, b) => b[0] - a[0]);
+  for (let i = 0; i < mrig.points.length; i++) {
+    const dst = mrig.points[i], src = ranked[i] && ranked[i][1];
+    if (!src) { dst.c.set(0, 0, 0); continue; }
+    dst.c.copy(src.c); dst.p.copy(src.p); dst.r.copy(src.r);
+  }
+  mrig.at.set(at.x, at.y, at.z);
+}
+
 /** One material, with the same uniform set player.html builds. */
 function makeMaterial(THREE, mt, opts) {
   const o = opts || {};
@@ -560,6 +624,7 @@ function makeMaterial(THREE, mt, opts) {
       dirColour: { value: rig.dirColour }, dirDir: { value: rig.dirDir },
       pt0c: { value: pts[0].c }, pt0p: { value: pts[0].p }, pt0r: { value: pts[0].r },
       pt1c: { value: pts[1].c }, pt1p: { value: pts[1].p }, pt1r: { value: pts[1].r },
+      lightAt: { value: rig.at || new THREE.Vector3() }, bound: { value: rig.at ? 1 : 0 },
       fogColour: { value: fog ? new THREE.Color(fog[2], fog[3], fog[4])
                               : new THREE.Color() },
       fogRange: { value: new THREE.Vector2(fog ? fog[0] : 0, fog ? fog[1] : 1e9) },
@@ -601,7 +666,7 @@ function makePost(THREE) {
 }
 
 const api = { VERT, FRAG, POST_V, POST_F, makeMaterial, makePost, lightsFor,
-             placeCameraLights,
+             placeCameraLights, lightWeight, modelRig, bindLights,
               defaultLights, cameraAspect, LOOK, AREF_OPAQUE,
               CRT_ACC_F, CRT_BLUR_F, CRT_F, CRT, makeCrt,
               RT_W, RT_H, OUT_ASPECT };

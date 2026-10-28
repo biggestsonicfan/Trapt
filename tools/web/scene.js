@@ -28,6 +28,8 @@ const ssc = (typeof require !== 'undefined') ? require('./ssc.js') : window.Trap
 
 const OP_END = 0x00, OP_AT_TIME = 0x04, OP_CUE = 0x05, OP_SPAWN = 0x06;
 const OP_SPAWN_FX_AT = 0x07, OP_SPAWN_FX = 0x08;   // spawn a track at a point
+const OP_SPAWN_FX_BONE = 0x0C;                     // ... on the spawner's bone
+const OP_LIGHT_LIFE = 0x69;                        // a light block's life, frames
 const OP_PLAY_ANIM = 0x55, OP_LETTERBOX = 0x57, OP_VOICE = 0x59;
 const OP_BGM_START = 0x5A, OP_BGM_STOP = 0x5B;
 const OP_FADE_IN = 0x53, OP_FADE_OUT = 0x54;
@@ -117,6 +119,7 @@ function newEntity(track, index, kind, label) {
            models: [], attachments: [], rootBone: null, transform: null,
            scale: null, clips: [], visibility: [], parts: [], light: null,
            lightRange: null, lightParent: false, origin: null, tint: null,
+           lightLife: null, bone: null,
            start: 0, end: null,
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
@@ -207,6 +210,7 @@ function fxRun(calls) {
   let blk = -1;
   for (const c of calls) { if (c.op === OP_BLOCK_BEGIN) blk++; blockOf.push(blk); }
   const place = new Map();       // block -> {now: [px,py,pz, sx,sy,sz], frames}
+  const light = new Map();       // block -> {now: [r, g, b], frames}: 0x80
   let cond = false;
   for (let t = 0; t < FX_MAX_FRAMES; t++) {
     let ended = false;
@@ -239,13 +243,22 @@ function fxRun(calls) {
         else if (kind === 2) r = a - b;
         else if (kind === 3) r = a * b;
         else if (kind === 4) r = b ? a / b : 0;
+        // A random draw in [a, b]; the page takes the middle, so a flicker
+        // (e004's `ude` light, 0.3..0.5 every eighth frame) holds its mean.
+        else if (kind === 6) r = (a + b) / 2;
         else if (kind === 8 && b > a) r = a + ((((r - a) % (b - a)) + (b - a)) % (b - a));
         else if (kind === 9) r = Math.min(b, Math.max(a, r));
         else continue;
         R.set(args[0].reg, fix(r));
         continue;
       }
-      if (op === FX_ALPHA && args.length >= 2) mat(int(args[1])).now[0] = val(args[0]);
+      if (op === OP_SCALE && args.length >= 3) {
+        // On a light block this is the colour, and an effect light sets it
+        // from registers every few frames: `ude` is r0 * (0.9, 0.3, 0.1).
+        if (!light.has(blockOf[pc])) light.set(blockOf[pc], { now: [1, 1, 1], frames: [] });
+        const now = light.get(blockOf[pc]).now;
+        for (let i = 0; i < 3; i++) now[i] = val(args[i]);
+      } else if (op === FX_ALPHA && args.length >= 2) mat(int(args[1])).now[0] = val(args[0]);
       else if (op === FX_UV && args.length >= 3) {
         const m = mat(int(args[2])).now;
         m[1] = val(args[0]); m[2] = val(args[1]);
@@ -262,11 +275,12 @@ function fxRun(calls) {
         for (let i = 0; i < 3; i++) now[k + i] = val(args[i]);
       }
     }
-    if (ended) return { end: t, mats: mats, place: place };
+    if (ended) return { end: t, mats: mats, place: place, light: light };
     for (const m of mats.values()) m.frames.push(m.now.slice());
     for (const m of place.values()) m.frames.push(m.now.slice());
+    for (const m of light.values()) m.frames.push(m.now.slice());
   }
-  return { end: null, mats: mats, place: place };
+  return { end: null, mats: mats, place: place, light: light };
 }
 
 /**
@@ -435,6 +449,11 @@ function run(scene, trackName, blob, frameBase, origin) {
       scene.effects.push({ frame: frame, track: args[0],
         pos: args.slice(1, 4).map(num),
         target: code === OP_SPAWN_FX_AT && args.length > 4 ? int(args[4]) : null });
+    // `0x0C (track, bone)` spawns an effect on one of the spawning actor's
+    // bones: Allura's e004 track lights her right elbow with `ef_e004_13`.
+    else if (code === OP_SPAWN_FX_BONE && args.length > 1)
+      scene.effects.push({ frame: frame, track: args[0], pos: [0, 0, 0],
+                           bone: { owner: trackName, name: args[1] } });
     else if (code === OP_CAMERA) scene.cameraFile = args[1];
     else if (code === OP_BGM_START) scene.bgm.push([frame, 'start', int(args[0])]);
     else if (code === OP_BGM_STOP) scene.bgm.push([frame, 'stop', int(args[0])]);
@@ -559,6 +578,8 @@ function run(scene, trackName, blob, frameBase, origin) {
         entity.lightParent = !!(args.length > 1 && num(args[1]));
       } else if (code === OP_LIGHT_RANGE)
         entity.lightRange = args.slice(0, 2).map(num);
+      else if (code === OP_LIGHT_LIFE && entity.kind === KIND_LIGHT && args.length)
+        entity.lightLife = int(args[0]);
     }
     if (code === OP_END) break;
   }
@@ -662,7 +683,20 @@ function compile(name, assets) {
     let key = fx.track.toLowerCase();
     if (!/\.ssc$/.test(key)) key += '.ssc';
     const b2 = assets.get(key);
-    if (b2) run(scene, key + '#' + i, b2, fx.frame, fx.pos);
+    if (!b2) return;
+    if (!fx.bone) { run(scene, key + '#' + i, b2, fx.frame, fx.pos); return; }
+    // A bone-bound spawn keeps only its lights.  Its model and sprite
+    // blocks (e418, e423, e424, e415) would want the bone too, and nothing
+    // has measured them yet.
+    const side = Object.assign({}, scene, { entities: [], events: [], tracks: [],
+      effects: [], subtitles: [], bgm: [], fades: [], letterbox: [] });
+    run(side, key + '#' + i, b2, fx.frame, fx.pos);
+    for (const e of side.entities) {
+      if (e.kind !== KIND_LIGHT) continue;
+      e.index = scene.entities.length;
+      e.bone = fx.bone;
+      scene.entities.push(e);
+    }
   });
 
   let last = 0;

@@ -627,6 +627,7 @@ uniform sampler2D map; uniform float hasMap;
 uniform vec4 diffuse; uniform vec3 tint;
 uniform vec3 ambient, dirColour, dirDir;
 uniform vec3 pt0c, pt0p, pt1c, pt1p; uniform vec2 pt0r, pt1r;
+uniform vec3 lightAt; uniform float bound;   // see bindLights
 uniform vec3 fogColour; uniform vec2 fogRange; uniform float fogOn;
 uniform vec3 eye; uniform float exposure;
 uniform float lit;             // 1 = shade from normals, 0 = baked vertex colour
@@ -637,6 +638,14 @@ uniform float ps2;             // 0 = bypass the GS emulation entirely
 uniform float fxAlpha;         // an effect track's 0x7D/0x7E material alpha
 varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
 vec3 point(vec3 c, vec3 pos, vec2 rng, vec3 n) {
+  // A bound model's point lights are directionals from one point on it,
+  // dimmed linearly between near and far (ELF 0x001B79B0), as the VU1 kernel
+  // gets them; an unbound one keeps the per-pixel falloff.
+  if (bound > 0.5) {
+    vec3 d = pos - lightAt;
+    float att = clamp(1.0 - (length(d) - rng.x) / max(rng.y - rng.x, 0.001), 0.0, 1.0);
+    return c * max(dot(n, normalize(d)), 0.0) * att;
+  }
   vec3 d = pos - vP;
   float att = 1.0 - smoothstep(rng.x, max(rng.y, rng.x + 0.001), length(d));
   return c * max(dot(n, normalize(d)), 0.0) * att;

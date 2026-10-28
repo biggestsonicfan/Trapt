@@ -2134,6 +2134,8 @@ function drawFrame() {
   ensurePost();
   // `joyu` and any other camera-parented light follow the shot
   if (S && S.built) TraptGs.placeCameraLights(S.built.lights, V.camera);
+  // then each model takes the two point lights the game would bind to it
+  if (S && S.built) TraptPlay.lightsAt(S.built, S.frame);
   // the shader wants the eye position for its point lights
   if (V.group)
     V.group.traverse((o) => {

@@ -1866,3 +1866,109 @@ the two 0.20 point lights; dropping `rt_poi` and taking `ude` at w leaves
 -10/0/+3 and +1/+5/+7. Which lights the game picks for a model is still
 unknown (§5.3: feeding all 12 resident lights is worse), and so is whether
 w scales the colour. None of this is implemented.
+
+### 10.15 The lights the game binds to a model
+
+§10.14 left open which lights the game gives a model. This section reads the
+answer out of the ELF and the state-00 savestate, and the page now does the
+same.
+
+**The rule (ELF `0x001B6820`, called per model from the cutscene actor draw
+`0x001D6750`).** It walks the light list at `*(0x00482908)`, newest first. A
+light takes part if its mask is 0 or shares a bit with the manager's
+`+0xA0`, which is `0x00100000` in a cutscene. The script's lights carry
+`0x00100000` and the room's `.sli` lights carry 1, so `65/inf_light` and
+`65/ambient1` never light the cast. `ude`'s mask is 0, so it always passes.
+Each light is scored at one point P on the model (`0x001B7B00`):
+
+- directional: its stored weight
+- point: weight x `1 - (d - near) / (far - near)`, clamped to 0..1
+- black (kind 5): nothing; its colour comes off every slot instead
+
+The model keeps the best directional and the **best two** point lights.
+Ambient is the oldest kind-4 light. A point light then becomes a directional
+from P (`0x001B79B0`): its direction is P to the light and its colour is
+multiplied by the same falloff. The VU1 kernel (`vudis.py`, around 0x094)
+gets a 3x3 direction matrix, three colours and the ambient, and computes
+`amb + sum(colour x max(N.L, 0))` per vertex.
+
+The weight is made once, when the light is (`0x001B7060`): CIE L* of the
+colour's Rec.601 luminance, with the colour taken as hundredths. That's
+1.8066 for 0.2 grey and 2.7099 for 0.3. `ude` is made at 0.3, from its
+program's first frames, so its weight is 2.7099 even when it burns at 0.5.
+
+**P is the root bone.** `0x001D6750` passes the world position of the node at
+actor `+0x210`, or the model's root if that's negative. For Allura it is
+`koshi`, the bone her block names with `0xB3`. The live slot record at
+`0x00ED6DF0` gives two light directions. Traced back from `joyu` and `ude`,
+the two lines meet within 0.04 units at (-0.04, 11.79, 147.84). The page's
+`koshi` at 1418 is at (-0.06, 11.80, 147.76).
+
+**Allura, state 00.** Her VU1 light block, in the two DMA buffers at
+`0x0059F340` and `0x0069F340`:
+
+| slot | light | colour on the light | stored weight | P to light | falloff at P | colour sent |
+|---|---|---|---|---|---|---|
+| directional | `rt_inf` | 0.30 grey | 2.7099 | (0.347, 0.780, 0.520) | - | 0.30 |
+| point 1 | `ude` | r0 x (0.9, 0.3, 0.1), range 0-20 | 2.7099 | 4.1 to the right elbow | 0.80 | (0.264, 0.088, 0.029) |
+| point 2 | `joyu` | 0.20 grey, range 0-60 | 1.8066 | 17.1 to (13.1, 8.9, 137.3) | 0.715 | 0.143 |
+| ambient | `rt_amb` | 0.15 grey | 1.3549 | - | - | 0.15 |
+
+- **`rt_poi` is not bound.** At (0, 15, 117) it is 31 units from P and scores
+  1.81 x 0.69 = 1.25. That is below `joyu` (1.29) and `ude` (2.16).
+- **`ude` is bound**, with its hue. The colour sent is 0.293 x (0.9, 0.3, 0.1).
+  0.293 = r0 x 0.80 needs r0 = 0.37, and r0 is drawn at random in 0.3..0.5
+  every eighth frame (calc kind 6). The light list already holds the next
+  draw, 0.5.
+- So of §10.14's four grey terms, the page had one too many: `rt_poi`.
+
+**`joyu`'s position.** The drawn block puts `joyu` at (13.1, 8.9, 137.3).
+The page puts it at (13.1, 8.9, 137.1) for the frame it grades. The light
+list's (-1.585, 7.771, 136.617) is the camera two frames later (the
+screenshot lag, §10). It is not where the drawn frame had it. Only the
+`joyu` term, with the page's binding:
+
+| `joyu` term (x255) | 01_h | 03_h |
+|---|---|---|
+| at the page's position (= the drawn one) | 22.0 | 22.1 |
+| at the light list's position | 25.2 | 26.9 |
+
+**What the page does now.** Each model has its own two point slots
+(gs.js `modelRig`). Every frame, after the camera's lights move,
+play.js `lightsAt` does `bindLights` at the model's `0xB3` root bone, or at
+its origin. A bound material shades the two slots as directionals from that
+point, with the linear falloff. Unbound materials keep the old per-pixel
+shading. The directional is the heaviest one, not the last. `0x0C (track,
+bone)` spawns now reach both scene readers, but only their light blocks are
+kept. The model and sprite blocks of e415/e418/e423/e424 would need the bone
+too, and nothing has measured them. The effect light takes its colour from
+its program each frame (`0x80` by register) and lives its `0x69` frames. A
+random draw takes the middle of its range.
+
+Per term on Allura's clean pixels (x255): ambient 38 / 38, `rt_inf`
+4.2 / 3.5, `ude` (25.9, 8.6, 2.9) / (44.1, 14.7, 4.9), `joyu` 22.0 / 22.1.
+On 01_h the sum is (90.7, 73.3, 67.7); it was 92 grey. On 03_h it is
+(108.0, 78.6, 68.7); it was 96. Against the screenshot:
+
+| material | screenshot | before | now | mae before | now |
+|---|---|---|---|---|---|
+| `c01f_a_01_h` | 126, 58, 40 | 128, 69, 52 | 129, 59, 41 | 22.7 | 19.4 |
+| `c01f_a_03_h` | 136, 59, 45 | 137, 75, 65 | 146, 64, 49 | 15.8 | 8.9 |
+
+Page grade (`--browser`, display softening on):
+
+| state | cutscene frame | mae before | mae after | the cast's mae |
+|---|---|---|---|---|
+| 00 | e004 1420 | 6.87 | **6.50** | `c01f_a_h` 30.18 -> 26.39 |
+| 03 | e001 3705 | 3.00 | **2.73** | `c21m_a_h` 7.39 -> 4.15, `c15m_a_h` 6.00 -> 4.54 |
+| 04 | e001 10834 | 2.56 | 2.54 | |
+| 05 | e004 1650 | 5.43 | **5.17** | `c01f_a_h` 9.12 -> 8.32 |
+| 06 | e001 1341 | 3.18 | 3.17 | |
+| 07 | e004 2129 | 3.95 | **3.69** | `c01f_a_h` 7.61 -> 5.91 |
+| 08 | e001 7422 | 4.06 | 4.09 | |
+| mean | | 4.15 | **3.98** | |
+
+In state 00, Allura's bias goes from (+9.9, +17.0, +16.9) to (+14.1, +9.2,
++6.2). The grey excess is mostly gone. What's left is red, and most of it
+is on 03_h, about 10 levels hot. One possible cause is the flicker: the
+page uses r0 = 0.4 where the game drew 0.37.

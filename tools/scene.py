@@ -32,6 +32,7 @@ OP_SPAWN = 0x06
 OP_PRELOAD = 0x09
 OP_SPAWN_FX_AT = 0x07      # (track, x, y, z, target) -- offset from a target
 OP_SPAWN_FX = 0x08         # (track, x, y, z, flags)  -- world position
+OP_SPAWN_FX_BONE = 0x0C    # (track, bone) -- on one of the spawner's bones
 OP_SCENE_BEGIN = 0x50
 OP_SCENE_END = 0x51
 OP_FADE_IN = 0x53
@@ -57,6 +58,7 @@ OP_VISIBLE = 0xA2
 OP_ROOT_BONE = 0xB3
 OP_LIGHT_TYPE = 0xB4
 OP_LIGHT_RANGE = 0xB5
+OP_LIGHT_LIFE = 0x69       # a light block's life, in frames
 OP_ATTACH = 0xB7
 # `0xB2 (name, show, 0)`, ELF 0x001C20C0 -> 0x001D53F0: hide the model's node
 # `name` and what hangs under it (show 0 adds the name to a four-slot list at
@@ -186,6 +188,8 @@ class Entity:
         self.light_range = None   # (near, far)
         self.light_parent = False # `0xB4` arg1: ride the camera (see below)
         self.light_dir = None     # inherited from the room's `.sli`
+        self.light_life = None    # `0x69` on a light block, frames
+        self.bone = None          # (spawner track, bone) for a `0x0C` spawn
         self.origin = None        # world position a `0x08` spawn placed it at
         self.tint = None          # (r, g, b, w) from `0x7E`; w is not alpha
         self.start = 0            # frame the block ran on
@@ -307,7 +311,8 @@ class Scene:
         self.fog = None           # (near, far, r, g, b)
         self.room_model = None    # '<room>.smi' from DATA/ROOM/<ROOM>_ALL.ARC
         self.room_lights = []     # <room>.sli, the room's own light set
-        self.effects = []         # [(frame, track, (x,y,z), target)] from 0x07/0x08
+        self.effects = []         # [(frame, track, (x,y,z), target, bone)]
+                                  # from 0x07/0x08/0x0C
         self.events = []          # (frame, track, opcode, args)
         self.archives = {}        # lower-case member name -> bytes
         self.loose = {}           # lower-case base name -> bytes (streamed .sai)
@@ -433,7 +438,11 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             # places and frames, so these are instances rather than names.
             pos = tuple(_num(a) for a in args[1:4])
             tgt = _int(args[4]) if code == OP_SPAWN_FX_AT and len(args) > 4 else None
-            scene.effects.append((frame, ssc.sj(args[0]), pos, tgt))
+            scene.effects.append((frame, ssc.sj(args[0]), pos, tgt, None))
+        elif code == OP_SPAWN_FX_BONE and len(args) > 1:
+            # Allura's e004 track lights her right elbow with `ef_e004_13`.
+            scene.effects.append((frame, ssc.sj(args[0]), (0.0, 0.0, 0.0), None,
+                                  (track_name, ssc.sj(args[1]))))
         elif code == OP_CAMERA:
             scene.camera_file = ssc.sj(args[1])
         elif code == OP_BGM_START:
@@ -593,6 +602,8 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
                 entity.light_parent = bool(len(args) > 1 and _num(args[1]))
             elif code == OP_LIGHT_RANGE:
                 entity.light_range = tuple(_num(a) for a in args[:2])
+            elif code == OP_LIGHT_LIFE and entity.kind == KIND_LIGHT and args:
+                entity.light_life = _int(args[0])
         if code == OP_END:
             break
     # Only a spawned effect is a per-frame program; actor tracks use the
@@ -760,6 +771,16 @@ def _num(a):
 
 # ------------------------------------------------------------------- loading
 
+def _keep_lights(scene, marks, bone):
+    """A bone-bound (`0x0C`) spawn keeps only its lights, riding `bone`;
+    nothing has measured what its model and sprite blocks should do yet."""
+    new = [e for e in scene.entities[marks[0]:] if e.kind == KIND_LIGHT]
+    del scene.entities[marks[0]:], scene.events[marks[1]:]
+    for e in new:
+        e.bone, e.index = bone, len(scene.entities)
+        scene.entities.append(e)
+
+
 def load(name, disc=None):
     """Build a `Scene` for cutscene `name` (e.g. ``'e001'``)."""
     disc = disc or Disc()
@@ -802,15 +823,18 @@ def load(name, disc=None):
     # Effect tracks last, because the spawns that name them come out of the
     # tracks above.  Each spawn is its own instance: `ef_e001_20` is spawned
     # three times at three positions, and each wants its own entities.
-    for i, (at, tname, pos, _tgt) in enumerate(list(scene.effects)):
+    for i, (at, tname, pos, _tgt, bone) in enumerate(list(scene.effects)):
         key = tname.lower()
         if not key.endswith('.ssc'):
             key += '.ssc'
         blob = scene.archives.get(key)
         if blob is None:
             continue
+        marks = len(scene.entities), len(scene.events)
         counts['%s@%d' % (key, at)] = _run(scene, '%s#%d' % (key, i), blob,
                                           frame_base=at, origin=pos)
+        if bone is not None:
+            _keep_lights(scene, marks, bone)
 
     scene.opcounts = counts
     scene.duration = max([f for f, _, _, _ in scene.events] or [0]) + 1

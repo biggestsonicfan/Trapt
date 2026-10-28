@@ -154,8 +154,10 @@ async function assemble(THREE, disc, name, onProgress) {
         model = smiMod.parse(blob);
         posed = smiMod.bindPose(model);
       } catch (err) { warnings.push(file + ': ' + err.message); continue; }
+      // Each model is lit by the lights bound to it (gs.js `bindLights`)
+      const rig = gsMod.modelRig(THREE, lights);
       const group = modelMod.build(THREE, model, posed, texFor, {
-        lights: lights, fog: scene.fog,
+        lights: rig, fog: scene.fog,
         // `0x80` on a model block is a material multiplier, not a scale.
         // `0x7E` on an effect block is the same kind of thing -- a colour --
         // so whichever the block carried wins, with 0x7E taking precedence
@@ -187,7 +189,8 @@ async function assemble(THREE, disc, name, onProgress) {
         return names;
       });
       actors.push({ entity: e, model: model, group: group, file: file,
-                    clips: new Map(), bind: posed, partsOf: partsOf });
+                    clips: new Map(), bind: posed, partsOf: partsOf, rig: rig,
+                    root: model.nodes.findIndex((n) => n.name === e.rootBone) });
     }
   }
 
@@ -368,6 +371,8 @@ async function assemble(THREE, disc, name, onProgress) {
     if (s.boneIndex < 0)
       warnings.push('effect bound to bone ' + s.bind[1] + ', which ' + s.bind[0] + ' has not');
   }
+
+  boneLights(lights, actors, warnings);
 
   // --- the room, static geometry under the same root
   let room = null;
@@ -881,7 +886,50 @@ function poseAt(built, frame) {
   return out;
 }
 
-const api = { assemble, poseAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
+/** A light spawned on a bone (`0x0C`) follows it: find whose bone it is. */
+function boneLights(rig, actors, warnings) {
+  for (const l of rig.points) {
+    const b = l.ent && l.ent.bone;
+    if (!b) continue;
+    l.actor = actors.find((a) => a.entity.track === b.owner) || null;
+    l.boneIndex = l.actor ? l.actor.model.nodes.findIndex((n) => n.name === b.name) : -1;
+    if (l.boneIndex < 0) warnings.push('light bound to ' + b.owner + ':' + b.name + ', which is not in the scene');
+  }
+}
+
+/** Where node `i` of a posed actor is in the world, or its group's origin. */
+function nodeAt(actor, i) {
+  const g = actor.group.position, m = i >= 0 && actor.lastMats && actor.lastMats[i];
+  return m ? { x: m[12] + g.x, y: m[13] + g.y, z: m[14] + g.z } : { x: g.x, y: g.y, z: g.z };
+}
+
+/**
+ * Light every model for `frame`, after `poseAt` and after the camera's
+ * lights have moved (gs.js `placeCameraLights`).  An effect light lives its
+ * `0x69` frames, takes its program's colour, and rides its bone; then each
+ * visible model binds the best two point lights at its root bone (ELF
+ * 0x001D6750 passes `koshi` for Allura), or at its origin.
+ */
+function lightsAt(built, frame) {
+  const rig = built.lights;
+  for (const l of rig.points) {
+    const e = l.ent;
+    if (!e || !e.fx) continue;
+    const t = frame - e.start;
+    l.on = t >= 0 && (e.lightLife === null || t < e.lightLife)
+      && !(e.fx.end !== null && t >= e.fx.end);
+    const c = sceneMod.fxAt(e.fx, e.block, t, e.fx.light);
+    if (c) l.c.set(c[0], c[1], c[2]);
+    if (l.actor && l.boneIndex >= 0 && l.actor.lastMats) {
+      const p = nodeAt(l.actor, l.boneIndex);
+      l.p.set(p.x, p.y, p.z);
+    }
+  }
+  for (const a of built.actors)
+    if (a.rig && a.group.visible) gsMod.bindLights(rig, a.rig, nodeAt(a, a.root));
+}
+
+const api = { assemble, poseAt, lightsAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptPlay = api;
 })();
