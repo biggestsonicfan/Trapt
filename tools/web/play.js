@@ -508,8 +508,11 @@ function setCell(s, index) {
  *   the strip's `n + 1` steps are spaced evenly along its whole length;
  * - at each step the cross-section is a segment `width` long, centred
  *   `wander` off the spine.  Its direction is fixed per frame; the centre's
- *   angle random-walks by at most pi/(n+1) a step, so the band twists a
- *   little along its length.  `width` is `0xC8[3]` x (0.9..1.1) and `wander`
+ *   angle random-walks round the spine, its step reset only once it reaches
+ *   a whole radian, so the band corkscrews -- the game's own strips in
+ *   state 00's RAM turn 0.4 rad a step, 330-400 degrees end to end.  That
+ *   is what puts e004's two bands on opposite sides of Allura's forearm.
+ *   `width` is `0xC8[3]` x (0.9..1.1) and `wander`
  *   `0xC8[2]` x (0.8..1.2), both re-rolled every frame; the walk's seed is
  *   re-rolled one frame in four.  `0xC8[1]` is passed and never read;
  * - U runs along the strip, `0xC9[0]` across it, from `0xC9[2]` plus up to
@@ -585,8 +588,11 @@ function ribbonAt(s, frame, local) {
       pos[v * 3 + c] = p.origin[c] + p.x[c] * lx + p.y[c] * ly + p.z[c] * zl;
   };
   for (let k = 0; k < N; k++) {
+    // The game truncates the step to an integer before it tests it
+    // (`cvt.w.s`, then `abs` at 0x00132D40), so the limit only bites once
+    // the step reaches a whole radian: the band corkscrews round its spine.
     step += (walk() - 0.5) * Math.PI / 4;
-    if (Math.abs(step) > Math.PI / (N * 2)) step = (Math.PI / N) * (walk() - 0.5);
+    if (Math.abs(Math.trunc(step)) > Math.PI / (N * 2)) step = (Math.PI / N) * (walk() - 0.5);
     phi += step;
     const x = wander * Math.cos(phi) + ox, y = wander * Math.sin(phi) + oy;
     const z = total / n * k;

@@ -1447,8 +1447,8 @@ Every frame the update (`0x0021ECD0`) rebuilds the strip with `0x00197840`:
   the `count + 1` steps are spaced evenly along its whole length;
 - at each step the cross-section is a segment `0xC8[3]` x (0.9..1.1) long,
   centred `0xC8[2]` x (0.8..1.2) off the spine. Its direction is random but
-  fixed for the frame, and the centre's angle random-walks by at most
-  pi/(count+1) a step, so the band twists a little. `0xC8[1]` is passed and
+  fixed for the frame, and the centre's angle random-walks round the spine
+  (§10.8: it corkscrews, not "twists a little"). `0xC8[1]` is passed and
   never read. The walk's seed is re-rolled one frame in four
   (`rand % 4 == 0`), the two scales every frame;
 - `0x00197450` lays U along the strip (`0xC9[2]` plus up to half of
@@ -1468,3 +1468,73 @@ not its exact angles. State 00 went from 9.01 to 8.96: edges 0.655 -> 0.702,
 Allura's bias (-38.0 -16.1 -8.4) -> (-24.3 -11.1 -5.5), and the fire region
 (x 200-330, y 70-125) from (92, 40, 29) to (111, 47, 33) against the
 hardware's (148, 68, 46).
+
+### 10.8 Measured: the ribbons at 1418, and the game's own strips
+
+§10.7's ribbons moved state 00 by only 0.05, so part 9 measured what they
+cover instead of retuning them. The two hardware bands at graded frame 1418
+are the pixels the hardware has and the ribbon-less page lacks after its even
+grey lift (`L(hw) - L(page x 1.13 + 4) > 30`, two largest blobs): a **face
+band**, x 204-268, y 65-95, centroid (239, 83), and a **forearm band**,
+x 256-319, y 103-125, centroid (290, 115). Both run nearly level, about 65 px
+by 20.
+
+At 1418 only `_12`'s two strips are alive: `_11` has a 30-frame track and
+was spawned at 1172 and 1182. The zero-offset centreline is the bone chain
+itself, finger (325, 71) -> hand (297, 93) -> elbow (242, 101) -> `ude_R`
+(221, 105). It runs **between** the bands: the face band is 18 px above it
+and the forearm band 21 px below. That is the wander offset (about 0.9
+units, about 20 px at that depth) on *opposite* sides. The page's centrelines,
+with its offset, were (296, 55) -> (274, 73) -> (247, 81) -> (218, 89) ->
+(197, 96) for one strip and nearly the same for the other: both above the
+spine. They covered 61 % of the face band and 0 % of the forearm band, and
+68 % of their lit pixels fell outside both.
+
+Savestate 00's EE RAM holds the game's own two strips (trail objects at
+`0x00F8F200` and `0x00F90500`; vertices at `0x00F8F690` and `0x00F90990`,
+written with Y and Z negated). Read back, they settle every question about
+the strip's geometry:
+
+| | the game, in RAM | the page |
+|---|---|---|
+| bones | finger, hand, elbow, `ude_R`, within 0.07 of the page's | same |
+| effect matrix `+0x40` | identity | not applied; no difference |
+| instances | two objects, own seeds (28746, 53977) | two |
+| width | 2.74 and 3.21 (3 x 0.91, 3 x 1.07) | 3 x (0.9..1.1) |
+| wander | 0.85-0.97 | 0.8 x (0.8..1.2) |
+| cross-section | fixed per frame, 31 and -81 degrees | fixed per frame, (-90, 90) |
+| facing | the bones' frame; no camera input | same |
+| centre's turn per step | 0.39 and 0.44 rad on average, up to 0.8 | **at most 0.09** |
+| vertex colour | (229, 76, 25), alpha 192 x profile | (0.9, 0.3, 0.1) x 1.5 at 0x80 = 1 |
+
+The one mistake was the turn. `0x00197840` tests the step after `cvt.w.s`
+and an integer `abs` (`0x00132D40`), so the reset at pi/(2(count+1)) only
+fires once the step reaches a whole radian. The page compared the float, which
+kept every band on one side of its spine. Fixed in `ribbonAt`.
+
+The page's dice are a hash, so one frame is one draw. Over 24 draws at 1418
+(the ribbons' ids offset, nothing else changed), with the game's vertices
+dropped into the page's two meshes as the reference:
+
+| ribbons | whole frame | face / forearm band lit | fire region x 200-330, y 70-125 |
+|---|---|---|---|
+| none | 8.94 | 0 / 0 | (89, 39, 28) |
+| old turn, 24 draws | 8.89 +- 0.15 | 0.24 / 0.21 | (105, 44, 31) |
+| fixed turn, 24 draws | **8.81 +- 0.12** | 0.35 / 0.35 | (117, 49, 34) |
+| the game's own vertices | 8.69 | 0.53 / 0.53 | (130, 53, 36) |
+| the game's vertices, colour x 255/128 | 8.93 | 0.64 / 0.59 | (147, 66, 44) |
+| hardware | | | (148, 68, 46) |
+
+The graded draw is unlucky: state 00 went from 8.96 to **9.06** (edges
+0.702 -> 0.691, Allura's bias (-24.3 -11.1 -5.5) -> (-22.2 -10.7 -5.3)).
+Its two strips happen to start on the same angle: their seeds give
+near-identical LCG draws at 1418-1419 (0.864 / 0.868 for the first).
+
+So the fire region's remaining red splits about evenly. Geometry is about
+13: the page's dice against the game's, which nothing short of the game's RNG
+closes. Colour is about 17. The game packs the ribbon's colour as
+`(229, 76, 25, 192)`: RGB x 255, alpha x 128, so with the GS's 0x80 = 1.0
+the texture is modulated by 1.79 / 0.59 / 0.20, twice the page's. The packing
+happens upstream of `0x00197560`, which only copies `+0xA8`. The writer is
+not found yet, and the factor is not applied: with geometry this far off,
+twice the light in the wrong places costs as much as it gains (8.69 -> 8.93).
