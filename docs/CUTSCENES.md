@@ -310,7 +310,8 @@ Named so far (from decompiling each handler):
 | op | name | args |
 |---|---|---|
 | `0x00` | `end_track` | |
-| `0x03` | `set_actor_count` | n |
+| `0x01` | `yield` | — this frame of an effect program is done |
+| `0x03` | `skip` | n — skip the next n calls unless the flag is set (was misread as `set_actor_count`; see VIEWER.md §10) |
 | `0x04` | `at_time` | start, end, step |
 | `0x05` | `cue` | 0, `#index` |
 | `0x06` | `spawn_track` | `"file.ssc"`, 0 |

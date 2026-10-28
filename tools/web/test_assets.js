@@ -449,6 +449,7 @@ async function main() {
       '            if isinstance(x, bytes): a.append(ssc.sj(x))',
       '            elif isinstance(x, tuple) and x[0] == "c2": a.append([x[1], x[2]])',
       '            elif isinstance(x, tuple) and x[0] == "c4": a.append(["c4", x[1]])',
+      '            elif isinstance(x, tuple) and x[0] == "c5": a.append(["c5", x[1]])',
       '            else: a.append(x)',
       '        calls.append([off, op[0], op[1], a])',
       '    out[name] = calls',
@@ -469,7 +470,8 @@ async function main() {
       for (let i = 0; i < calls.length && !mismatch; i++) {
         const g = calls[i], w = want[i];
         const ga = g.args.map((x) => (x && typeof x === 'object'
-          ? ('den' in x ? [x.num, x.den] : ['c4', x.c4]) : x));
+          ? ('den' in x ? [x.num, x.den] : 'reg' in x ? ['c5', x.reg] : ['c4', x.c4])
+          : x));
         if (g.offset !== w[0] || g.op !== w[1]
             || (g.op !== null && g.flag !== w[2])
             || JSON.stringify(ga) !== JSON.stringify(w[3]))
@@ -620,14 +622,18 @@ async function main() {
     const THREE = stubThree();
     const built = await play.assemble(THREE, disc, 'e004', () => {});
     check('assembles with no warnings', built.warnings, []);
-    check('17 billboards -- one per emitter point', built.sprites.length, 17);
-    const bound = built.sprites.filter((s) => s.bind);
-    check('14 of them are bound to a bone', bound.length, 14);
+    // ef_e004_11 and _12 are `0xC8` blocks bound to three and four bones:
+    // each is one ribbon threaded through them (play.js `ribbonAt`), spawned
+    // twice; the other three are billboards.
+    check('7 effects -- 4 ribbons and 3 billboards', built.sprites.length, 7);
+    const ribbons = built.sprites.filter((s) => s.ribbon);
+    check('the ribbons are the 0xC8 blocks, 8 and 16 segments',
+          ribbons.map((s) => s.ribbon.n).sort((x, y) => x - y), [8, 8, 16, 16]);
     check('and every bind resolved to an actor and a real bone',
-          bound.filter((s) => !s.actor || s.boneIndex < 0).length, 0);
-    check('the bones are the right arm, finger to shoulder',
-          [...new Set(bound.map((s) => s.bind[1]))].sort(),
-          ['hiji_R', 'te_R', 'ude_R', 'yubi_2_1_R']);
+          ribbons.filter((s) => s.ribbon.bones.length !== s.ribbon.binds.length).length, 0);
+    check('their spines run down the right arm from the finger',
+          [...new Set(ribbons.map((s) => s.ribbon.binds.map((b) => b[1]).join(' ')))].sort(),
+          ['yubi_2_1_R te_R hiji_R', 'yubi_2_1_R te_R hiji_R ude_R']);
     check('spark.tm2 decoded -- it is a format-1 TIM2',
           !!built.textures.get('spark.tm2'), true);
 
@@ -644,10 +650,10 @@ async function main() {
       return by;
     };
     check('nothing before the first spawn', lit(1150), {});
-    check('sparks once it starts', lit(1175), { 'spark.tm2': 7 });
-    check('both spawns overlap', lit(1190), { 'spark.tm2': 14 });
+    check('sparks once it starts', lit(1175), { 'spark.tm2': 2 });
+    check('both spawns overlap', lit(1190), { 'spark.tm2': 4 });
     check('the flash joins them', lit(1500),
-          { 'ef_s014c.tm2': 3, 'spark.tm2': 8 });
+          { 'ef_s014c.tm2': 3, 'spark.tm2': 2 });
     check('and everything is gone by the end', lit(1700), {});
 
     play.poseAt(built, 1500);
@@ -656,28 +662,24 @@ async function main() {
     const spark = built.sprites.find(
       (s) => s.mesh.visible && s.entity.sprite.texture === 'spark.tm2');
     // The keyframes: 0x6D grows the flash 0.5 -> 4.5, 0x6E fades its alpha
-    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).
+    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).  `0x001D9200`
+    // packs R as (char)(int)(1.5 * 255) = 382, which wraps to 126: savestate
+    // 05's glow carries (126, 51, 25).  Alpha past 1 cannot reach the blend
+    // as alpha, so it rides on the colour: 126/255 * 1.8.
     check('the flash is keyframed, and mid-swell at 1500',
           [+flash.mesh.scale.x.toFixed(2), +flash.mesh.material.opacity.toFixed(2),
            +flash.mesh.material.color.r.toFixed(2)],
-          [3.08, 1, 1.5]);
+          [3.08, 1, 0.89]);
     // A spark has no keys at all -- it takes its colour from 0x80 and its
     // lifetime from the length of its own track.
+    // (0.9, 0.3, 0.1) at an alpha of 1.5, folded in the same way.  The
+    // sparks are ribbons, whose RGB `0x001D9200` packs x 255 for a GS that
+    // reads 0x80 as 1.0: so x 255/128 on top, after the byte truncates
+    // 0.9 to 229/255.
     check('a spark takes its colour from 0x80',
           [+spark.mesh.material.color.r.toFixed(2),
            +spark.mesh.material.color.g.toFixed(2),
-           +spark.mesh.material.color.b.toFixed(2)], [0.9, 0.3, 0.1]);
-    // `0x68`'s four numbers are a cell on a sheet, and a sheet is often a
-    // flipbook.  Drawing the sheet put all sixteen rows of e001's explosion
-    // on screen as one quad -- a red rectangle over a third of the frame.
-    const rect = (s) => {
-      const uv = s.mesh.geometry.attributes.uv.array;
-      const us = [uv[0], uv[2], uv[4], uv[6]], vs = [uv[1], uv[3], uv[5], uv[7]];
-      return [+Math.min(...us).toFixed(3), +Math.max(...us).toFixed(3),
-              +Math.min(...vs).toFixed(3), +Math.max(...vs).toFixed(3),
-              +s.mesh.geometry.width.toFixed(3),
-              +s.mesh.geometry.height.toFixed(3)];
-    };
+           +spark.mesh.material.color.b.toFixed(2)], [2.68, 0.89, 0.29]);
     // `ef_s014c.tm2` is the one texture on the disc that is a quadrant rather
     // than a whole sprite: measured out of its pixels, its alpha is a clean
     // radial falloff centred on its bottom-right *corner* -- flat 255 out to
@@ -694,40 +696,80 @@ async function main() {
       const pos = s014c.mesh.geometry.attributes.position.array;
       const uv = s014c.mesh.geometry.attributes.uv.array;
       // Mirroring is only right if the tile's bottom-right corner -- the
-      // middle of the glow -- is the corner all four copies meet at.
+      // middle of the glow -- is the corner all four copies meet at.  With
+      // flipY off that is uv (1, 1), inset to 0.99 as savestate 05 has it.
       let meet = 0, wrong = 0;
       for (let i = 0; i < uv.length / 2; i++) {
         const atCentre = pos[i * 3] === 0 && pos[i * 3 + 1] === 0;
-        const isHot = uv[i * 2] === 1 && uv[i * 2 + 1] === 0;
+        const isHot = Math.abs(uv[i * 2] - 0.99) < 1e-6 && Math.abs(uv[i * 2 + 1] - 0.99) < 1e-6;
         if (atCentre && isHot) meet++;
         else if (atCentre !== isHot) wrong++;
       }
       check('every copy puts the glow centre at the middle', [meet > 0, wrong], [true, 0]);
       const xs = [], ys = [];
       for (let i = 0; i < pos.length; i += 3) { xs.push(pos[i]); ys.push(pos[i + 1]); }
-      check('and the four together still fill the unit quad',
+      // Each copy is a whole unit, as the game's 2x2 mesh runs -1..1.
+      check('and each of the four is a whole unit',
             [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)],
-            [-0.5, 0.5, -0.5, 0.5]);
+            [-1, 1, -1, 1]);
     }
     // The quad is always unit -- the shape is the size keys' job, and they
     // disagree with the cell.  e001's torch is a 64x16 cell, four times as
     // wide as tall, whose keys run (1, 2) to (4, 7): taller than wide, which
     // is what a hardware capture of frame 10834 shows.
-    check('an unflagged sheet is one quad taking the whole texture',
-          rect(built.sprites.find(
-            (s) => s.entity.sprite.texture === 'spark.tm2')),
-          [0, 1, 0, 1, 1, 1]);
-    check('and spark.tm2 is not flagged',
-          built.sprites.find(
-            (s) => s.entity.sprite.texture === 'spark.tm2').entity.mirror, false);
+    check('and spark.tm2 is not flagged', spark.entity.mirror, false);
     check('every live billboard is aimed at the camera',
-          built.sprites.filter((s) => s.mesh.visible && !s.mesh.lookingAt).length, 0);
-    check('a spark rides the bone rather than sitting at the origin',
+          built.sprites.filter((s) => s.mesh.visible && !s.ribbon && !s.mesh.lookingAt).length, 0);
+    // The ribbon's shape, straight off 0x00197840: two vertices a step, a
+    // cross-section 0xC8[3] long (x 0.9..1.1) centred 0xC8[2] (x 0.8..1.2)
+    // off the spine, U along it and V across, alpha 1 - (2t - 1)^2.
+    const big = ribbons.find((s) => s.mesh.visible && s.ribbon.n === 16);
+    const shape = () => {
+      const pos = big.mesh.geometry.attributes.position.array;
+      const uv = big.mesh.geometry.attributes.uv.array;
+      const col = big.mesh.geometry.attributes.color.array;
+      const spine = big.ribbon.bones.map((b) => {
+        const m = b.actor.lastMats[b.index], g = b.actor.group.position;
+        return [m[12] + g.x, m[13] + g.y, m[14] + g.z];
+      });
+      const toSpine = (p) => {
+        let best = Infinity;
+        for (let i = 0; i + 1 < spine.length; i++) {
+          const a = spine[i], d = spine[i + 1].map((v, c) => v - a[c]);
+          const dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+          const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]
+                                             + (p[2] - a[2]) * d[2]) / dd));
+          best = Math.min(best, Math.hypot(...p.map((v, c) => v - a[c] - d[c] * t)));
+        }
+        return best;
+      };
+      let far = 0, wmin = Infinity, wmax = 0;
+      for (let k = 0; k <= 16; k++) {
+        const p = [pos[k * 6], pos[k * 6 + 1], pos[k * 6 + 2]];
+        const q = [pos[k * 6 + 3], pos[k * 6 + 4], pos[k * 6 + 5]];
+        far = Math.max(far, toSpine(p), toSpine(q));
+        const w = Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+        wmin = Math.min(wmin, w); wmax = Math.max(wmax, w);
+      }
+      return { far, wmin, wmax, uv, col, pos };
+    };
+    play.poseAt(built, 1500);
+    const sh = shape();
+    check('the strip is 17 steps of two vertices', sh.pos.length / 3, 34);
+    check('its cross-section is 3 units, give or take a tenth',
+          [sh.wmin >= 2.7 - 1e-3, sh.wmax <= 3.3 + 1e-3], [true, true]);
+    check('and no vertex strays further from the spine than wander + half width',
+          sh.far <= 0.8 * 1.2 + 1.65 + 1e-3, true);
+    check('V runs 0 to 1 across it, U along it by 1/17 a step',
+          [sh.uv[1], sh.uv[3], +(sh.uv[4] - sh.uv[0]).toFixed(4)], [0, 1, +(1 / 17).toFixed(4)]);
+    check('alpha is nothing at the end bones and full halfway',
+          [sh.col[0], sh.col[16 * 6], sh.col[8 * 6]], [0, 0, 1]);
+    check('a ribbon rides the arm rather than sitting at the origin',
           (() => {
             play.poseAt(built, 1190);
-            const a = spark.mesh.position.z;
+            const a = big.mesh.geometry.attributes.position.array[8 * 6 + 2];
             play.poseAt(built, 1200);
-            return Math.abs(spark.mesh.position.z - a) > 1;
+            return Math.abs(big.mesh.geometry.attributes.position.array[8 * 6 + 2] - a) > 1;
           })(), true);
   }
 

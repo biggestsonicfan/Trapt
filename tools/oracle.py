@@ -45,6 +45,8 @@ import struct
 import sys
 import zipfile
 
+ZIP_ZSTD = 93
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import region as region_mod
 
@@ -111,10 +113,30 @@ class State:
         self._ee = None
         self._found = None
 
+    def read(self, name):
+        """A member of the state.  PCSX2 2.x stores all but the screenshot
+        zstd-compressed (zip method 93), which `zipfile` cannot open."""
+        info = self.zip.getinfo(name)
+        if info.compress_type != ZIP_ZSTD:
+            return self.zip.read(name)
+        try:
+            import zstandard
+        except ImportError:
+            raise SystemExit('%s: %s is zstd-compressed; pip install zstandard'
+                             % (os.path.basename(self.path), name))
+        with open(self.path, 'rb') as f:
+            f.seek(info.header_offset)
+            head = f.read(30)
+            skip = struct.unpack_from('<HH', head, 26)
+            f.seek(info.header_offset + 30 + skip[0] + skip[1])
+            raw = f.read(info.compress_size)
+        return zstandard.ZstdDecompressor().decompress(
+            raw, max_output_size=info.file_size)
+
     @property
     def ee(self):
         if self._ee is None:
-            self._ee = self.zip.read('eeMemory.bin')
+            self._ee = self.read('eeMemory.bin')
         return self._ee
 
     def vec4(self, addr):
@@ -234,7 +256,7 @@ class State:
 
     def screenshot(self, out_path):
         with open(out_path, 'wb') as f:
-            f.write(self.zip.read('Screenshot.png'))
+            f.write(self.read('Screenshot.png'))
         return out_path
 
     def has(self, member):

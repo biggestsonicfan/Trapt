@@ -1,8 +1,8 @@
 // Trapt live-state probe over PCSX2 PINE (port 28011).
-// Usage:  node pine-probe.mjs [--watch] [--interval ms]
+// Usage:  node pcsx2/pine-probe.mjs [--watch] [--interval ms]
 // Requires: PCSX2 running with EnablePINE=true and Trapt booted.
 
-import { PineClient } from './hkmodd/PCSX2-MCP/pcsx2-mcp-server/dist/pine-client.js';
+import { PineClient } from '../hkmodd/PCSX2-MCP/pcsx2-mcp-server/dist/pine-client.js';
 
 const WATCH = process.argv.includes('--watch');
 const IVAL = Number((process.argv.find(a => a.startsWith('--interval=')) || '').split('=')[1]) || 1000;

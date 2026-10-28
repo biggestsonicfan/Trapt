@@ -28,6 +28,8 @@ const ssc = (typeof require !== 'undefined') ? require('./ssc.js') : window.Trap
 
 const OP_END = 0x00, OP_AT_TIME = 0x04, OP_CUE = 0x05, OP_SPAWN = 0x06;
 const OP_SPAWN_FX_AT = 0x07, OP_SPAWN_FX = 0x08;   // spawn a track at a point
+const OP_SPAWN_FX_BONE = 0x0C;                     // ... on the spawner's bone
+const OP_LIGHT_LIFE = 0x69;                        // a light block's life, frames
 const OP_PLAY_ANIM = 0x55, OP_LETTERBOX = 0x57, OP_VOICE = 0x59;
 const OP_BGM_START = 0x5A, OP_BGM_STOP = 0x5B;
 const OP_FADE_IN = 0x53, OP_FADE_OUT = 0x54;
@@ -37,6 +39,11 @@ const OP_TINT = 0x7E;                              // (r, g, b, w); w is not alp
 const OP_SCALE = 0x80, OP_MODEL = 0x82, OP_ANIM = 0x83, OP_TRANSFORM = 0x84;
 const OP_VISIBLE = 0xA2, OP_ROOT_BONE = 0xB3, OP_LIGHT_TYPE = 0xB4;
 const OP_LIGHT_RANGE = 0xB5, OP_ATTACH = 0xB7, OP_CAMERA = 0xB9, OP_FOG = 0xC7;
+// `0xB2 (name, show, 0)` FUN_001C20C0 -> 0x1D53F0: hides the model's node
+// `name` and everything under it, through a list of up to four names at model
+// +0x22C (show 0 adds the name, 1 takes it out).  On the disc it is always
+// "buki", the weapon: e001's guards and courtiers are posed holding nothing.
+const OP_HIDE_PART = 0xB2;
 // Sprite effects.  Handlers, from the dispatch table at 0x00376660:
 //   0x68 FUN_001C4C90  string + 4 ints -> effect vtable +0x80
 //   0x6D FUN_001C47F0  two numbers + a frame -> a keyframe list
@@ -110,13 +117,281 @@ function text(raw) {
 function newEntity(track, index, kind, label) {
   return { track: track, index: index, kind: kind, label: label,
            models: [], attachments: [], rootBone: null, transform: null,
-           scale: null, clips: [], visibility: [], light: null,
+           scale: null, clips: [], visibility: [], parts: [], light: null,
            lightRange: null, lightParent: false, origin: null, tint: null,
+           lightLife: null, bone: null,
            start: 0, end: null,
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
            emitter: null, grid: null, flags: null, mirror: false,
-           trackLen: null };
+           trackLen: null, fx: null, block: 0, size: null, billboard: 0,
+           pull: 0, act: null };
+}
+
+// ---------------------------------------------------------------- effect VM
+//
+// An effect track is not a timeline but a **per-frame program**.  The game
+// runs it from the top every frame (FUN_001C8A10, dispatch table 0x00376660)
+// with a local clock at vm+0xb0, a condition flag at vm+0xac and a bank of
+// registers the `C5` argument tag names:
+//
+//   0x04 (a, b, c)    cond = clock == a; with c > 0, every c frames from a
+//   0x03 n            if !cond, skip the next n calls
+//   0xA4 n            cond = r16 == n: r16 is the track's state
+//   0x0D-0x1C, 0xA0, 0xA1, 0xA5, 0xA6, 0xA9
+//                     one calculator, 0x001C7240: (dst, a, b, mode, op),
+//                     mode 1 float / 0 int; op 0 set 1 add 2 sub 3 mul 4 div
+//                     8 wrap dst into [a, b]; 9 clamp dst into [a, b];
+//                     10 compare (x, y, cmp) -> cond
+//   0x7C (u, v, m)    material m's UV offset   (model vtable +0x60)
+//   0x7D (a, m)       material m's alpha       (model vtable +0x5C)
+//   0x7E (r,g,b,a, m) material m's colour and alpha
+//   0x84 / 0x8C       one handler, 0x001C15D0: (x, y, z, mode), the mode
+//                     picking a model method at +0x88 + 4*mode.  The disc
+//                     uses mode 0 with 0x84 (1818 times: position) and mode
+//                     8 with 0x8C (1049: scale) and nothing else
+//   0x01              this frame is done;  0x00 the track is over
+//
+// `m` is the .SMI material's flags word (+0x40), not its index.
+// `ef_e004_20` is the whole idea in one file: at clock 0 it builds the fire
+// mesh and zeroes four registers; every frame it fades two materials in
+// (r6 += .008 while r6 <= .4) and scrolls their UVs; at 50 it sets r16 = 10,
+// and state 10 knocks both alphas below zero and ends the track.  Read as a
+// timeline it drew the fire for the rest of the cutscene.
+const FX_YIELD = 0x01, FX_SKIP = 0x03, FX_STATE = 0xA4;
+const FX_UV = 0x7C, FX_ALPHA = 0x7D, FX_CMP = 0xA6;
+const FX_STATE_REG = 16;
+const OP_PLACE = 0x8C;                            // 0x84's handler, scale mode
+const PLACE_POS = 0, PLACE_SCALE = 8;
+// `0xB8(name, mode)` hands both to model method +0x84.  The disc only ever
+// writes ("none", 3), 45 times, and every model it is written for is a flat
+// XY card -- ef_m061_10's fire is a radius-1 disc with z = 0 -- so mode 3 is
+// face-the-camera.  e004 1646 proves it: the camera sits level with the
+// fire's z there, and a card left in the XY plane vanishes edge-on.
+const OP_BILLBOARD = 0xB8;
+// `0xAC(f)` pulls the block f world units toward the camera, every frame --
+// a depth push, not a blend.  The handler (0x1C4550) hands f to vtable +0xD4.
+// On the effect class (vtable 0x4785D0, block kinds 1/2/3/8) that is
+// 0x1D8EE0 -> 0x21D720: the drawable stores -f at +0x20C and sets bit 0x20,
+// and the draw (0x2202EC, 0x22152C, 0x222C5C) adds
+// +0x20C * normalize(pos - eye) to the position.  The model class
+// (0x1D76F0 -> 0x1D8BEC) does the same to its world matrix.  e004's glow
+// sprites use 2 and 3: pulled through the fire mesh they sit in, they are
+// drawn whole instead of cut by it.
+const OP_TOWARD_EYE = 0xAC;
+const FX_MAX_FRAMES = 3600;
+// The dispatch table sends these to the calculator too; Allura's e004 fade
+// clamps with 0xA1.
+const FX_CALC_EXTRA = [0xA0, 0xA1, 0xA5, FX_CMP, 0xA9];
+const isCalc = (op) => (op >= 0x0D && op <= 0x1C) || FX_CALC_EXTRA.includes(op);
+const isReg = (a) => !!(a && typeof a === 'object' && 'reg' in a);
+
+/**
+ * Run an effect track's program frame by frame.  Returns null for a track
+ * that never touches a register or a material (a plain timeline, which `run`
+ * already reads), else `{end, mats}`: the local frame the track ended on
+ * (null if it outlives FX_MAX_FRAMES) and, per material id, one
+ * `[alpha, u, v, r, g, b]` per local frame -- what that frame drew with.
+ */
+function fxRun(calls) {
+  calls = calls.filter((c) => c.op !== null);
+  if (!calls.some((c) => c.op === FX_UV || c.op === FX_ALPHA
+                         || c.args.some(isReg))) return null;
+  const R = new Map();
+  const val = (a) => (isReg(a) ? (R.get(a.reg) || 0) : num(a));
+  const mats = new Map();
+  const mat = (id) => {
+    if (!mats.has(id)) mats.set(id, { now: [1, 0, 0, 1, 1, 1], frames: [] });
+    return mats.get(id);
+  };
+  // Which block each call belongs to, so a track with two blocks moves each
+  // on its own; `run` numbers the entities it makes the same way.
+  const blockOf = [];
+  let blk = -1;
+  for (const c of calls) { if (c.op === OP_BLOCK_BEGIN) blk++; blockOf.push(blk); }
+  const place = new Map();       // block -> {now: [px,py,pz, sx,sy,sz], frames}
+  const light = new Map();       // block -> {now: [r, g, b], frames}: 0x80
+  let cond = false;
+  for (let t = 0; t < FX_MAX_FRAMES; t++) {
+    let ended = false;
+    for (let pc = 0; pc < calls.length; pc++) {
+      const { op, args } = calls[pc];
+      if (op === OP_END) { ended = true; break; }
+      if (op === FX_YIELD) break;
+      if (op === FX_SKIP) { if (!cond) pc += int(args[0]); continue; }
+      if (op === OP_AT_TIME) {
+        const a = int(args[0]), b = int(args[1]), c = int(args[2]);
+        if (c > 0) cond = t >= a && (b < 0 || t <= b) && (t - a) % c === 0;
+        else if (b >= 0) cond = t >= a && t <= b;
+        else cond = t === a;
+        continue;
+      }
+      if (op === FX_STATE) { cond = (R.get(FX_STATE_REG) || 0) === int(args[0]); continue; }
+      if (isCalc(op) && args.length >= 5) {
+        const fl = int(args[3]) === 1, kind = int(args[4]);
+        const fix = (x) => (fl ? x : Math.trunc(x));
+        if (kind === 10) {
+          const x = fix(val(args[0])), y = fix(val(args[1]));
+          cond = [x === y, x > y, x < y, x >= y, x <= y, x !== y][int(args[2])] || false;
+          continue;
+        }
+        if (!isReg(args[0])) continue;
+        const a = fix(val(args[1])), b = fix(val(args[2]));
+        let r = R.get(args[0].reg) || 0;
+        if (kind === 0) r = a;
+        else if (kind === 1) r = a + b;
+        else if (kind === 2) r = a - b;
+        else if (kind === 3) r = a * b;
+        else if (kind === 4) r = b ? a / b : 0;
+        // A random draw in [a, b]; the page takes the middle, so a flicker
+        // (e004's `ude` light, 0.3..0.5 every eighth frame) holds its mean.
+        else if (kind === 6) r = (a + b) / 2;
+        else if (kind === 8 && b > a) r = a + ((((r - a) % (b - a)) + (b - a)) % (b - a));
+        else if (kind === 9) r = Math.min(b, Math.max(a, r));
+        else continue;
+        R.set(args[0].reg, fix(r));
+        continue;
+      }
+      if (op === OP_SCALE && args.length >= 3) {
+        // On a light block this is the colour, and an effect light sets it
+        // from registers every few frames: `ude` is r0 * (0.9, 0.3, 0.1).
+        if (!light.has(blockOf[pc])) light.set(blockOf[pc], { now: [1, 1, 1], frames: [] });
+        const now = light.get(blockOf[pc]).now;
+        for (let i = 0; i < 3; i++) now[i] = val(args[i]);
+      } else if (op === FX_ALPHA && args.length >= 2) mat(int(args[1])).now[0] = val(args[0]);
+      else if (op === FX_UV && args.length >= 3) {
+        const m = mat(int(args[2])).now;
+        m[1] = val(args[0]); m[2] = val(args[1]);
+      } else if (op === OP_TINT && args.length >= 5) {
+        const m = mat(int(args[4])).now;
+        m[3] = val(args[0]); m[4] = val(args[1]); m[5] = val(args[2]);
+        m[0] = val(args[3]);
+      } else if ((op === OP_TRANSFORM || op === OP_PLACE) && args.length >= 4) {
+        const mode = int(args[3]);
+        if (mode !== PLACE_POS && mode !== PLACE_SCALE) continue;
+        if (!place.has(blockOf[pc]))
+          place.set(blockOf[pc], { now: [null, null, null, 1, 1, 1], frames: [] });
+        const now = place.get(blockOf[pc]).now, k = mode === PLACE_POS ? 0 : 3;
+        for (let i = 0; i < 3; i++) now[k + i] = val(args[i]);
+      }
+    }
+    if (ended) return { end: t, mats: mats, place: place, light: light };
+    for (const m of mats.values()) m.frames.push(m.now.slice());
+    for (const m of place.values()) m.frames.push(m.now.slice());
+    for (const m of light.values()) m.frames.push(m.now.slice());
+  }
+  return { end: null, mats: mats, place: place, light: light };
+}
+
+/**
+ * A material's `[alpha, u, v, r, g, b]` at local frame `t`, or null.  With
+ * `fx.place` and a block number, that block's `[px, py, pz, sx, sy, sz]`
+ * instead -- position null where the program never set one.
+ */
+function fxAt(fx, id, t, table) {
+  const m = fx && (table || fx.mats).get(id);
+  if (!m || !m.frames.length) return null;
+  return m.frames[Math.max(0, Math.min(m.frames.length - 1, t))];
+}
+
+// ---------------------------------------------------------------- actor VM
+//
+// An actor track is the same VM, but not restarted every frame: it keeps its
+// place.  `0x04 (t)` then `0x05 (0, #k)` is a wait -- until the clock reaches
+// t, jump back to call k and end the frame -- so a few calls between two
+// waits run once per frame.  Allura's e004 track is the case on screen:
+//
+//   0xB0 (0, 2)                      hide material 2, her gauntlet, at once
+//   at 1430: 0xB0 (1, 2), r0 = 0     show it, then every frame until 1530
+//            r0 += .01, clamp [0,1], 0x7D (r0, 2)        fade it in
+//   at 1750: the same with -= until 1850                 and out again
+//
+// `0xB0 (on, m)` (0x001C2E00) hands (m, on, 1) to model vtable +0x68, which
+// shows or hides every material whose flags word is m.  `0x9D (a, m)` goes
+// to +0x38; it comes right before the fade, so it is taken to switch m to
+// the blend unit, which any alpha below 1 here does anyway.
+const OP_MAT_SHOW = 0xB0;
+const ACT_MAX_FRAMES = 30000;
+
+/**
+ * Run an actor track's material program.  Null when the track never touches
+ * a material, else `{mats}` as `fxRun` returns it, indexed by track clock
+ * (the scene's frame), and two more fields: 1 shown / 0 hidden by `0xB0`,
+ * and 1 once a `0x7E` has set the colour.
+ * The tables stop at the last change; `fxAt` holds the last row after it.
+ */
+function actorRun(calls) {
+  calls = calls.filter((c) => c.op !== null);
+  if (!calls.some((c) => c.op === FX_UV || c.op === FX_ALPHA || c.op === OP_MAT_SHOW
+                         || (c.op === OP_TINT && c.args.length >= 5))) return null;
+  const R = new Map();
+  const val = (a) => (isReg(a) ? (R.get(a.reg) || 0) : num(a));
+  const mats = new Map();
+  const mat = (id) => {
+    if (!mats.has(id)) mats.set(id, { now: [1, 0, 0, 1, 1, 1, 1, 0], frames: [] });
+    return mats.get(id);
+  };
+  let pc = 0, cond = false, last = -1;
+  for (let t = 0; t < ACT_MAX_FRAMES && pc < calls.length; t++) {
+    let touched = false;
+    for (let steps = 0; pc < calls.length && steps < 10000; steps++) {
+      const { op, args } = calls[pc++];
+      if (op === OP_END) { pc = calls.length; break; }
+      if (op === FX_YIELD) break;
+      if (op === OP_AT_TIME) {
+        // A wait has to fire even if it is reached late, so `>=`.
+        const a = int(args[0]), b = int(args[1]), c = int(args[2]);
+        if (c > 0) cond = t >= a && (b < 0 || t <= b) && (t - a) % c === 0;
+        else cond = t >= a && (b < 0 || t <= b);
+        continue;
+      }
+      if (op === OP_CUE) {
+        const k = args.length > 1 && args[1] && typeof args[1] === 'object' ? args[1].c4 : null;
+        if (!cond && k !== null && k !== undefined) { pc = k; break; }
+        continue;
+      }
+      if (op === FX_SKIP) { if (!cond) pc += int(args[0]); continue; }
+      if (op === FX_STATE) { cond = (R.get(FX_STATE_REG) || 0) === int(args[0]); continue; }
+      if (isCalc(op) && args.length >= 5) {
+        const fl = int(args[3]) === 1, kind = int(args[4]);
+        const fix = (x) => (fl ? x : Math.trunc(x));
+        if (kind === 10) {
+          const x = fix(val(args[0])), y = fix(val(args[1]));
+          cond = [x === y, x > y, x < y, x >= y, x <= y, x !== y][int(args[2])] || false;
+          continue;
+        }
+        if (!isReg(args[0])) continue;
+        const a = fix(val(args[1])), b = fix(val(args[2]));
+        let r = R.get(args[0].reg) || 0;
+        if (kind === 0) r = a;
+        else if (kind === 1) r = a + b;
+        else if (kind === 2) r = a - b;
+        else if (kind === 3) r = a * b;
+        else if (kind === 4) r = b ? a / b : 0;
+        else if (kind === 8 && b > a) r = a + ((((r - a) % (b - a)) + (b - a)) % (b - a));
+        else if (kind === 9) r = Math.min(b, Math.max(a, r));
+        else continue;
+        R.set(args[0].reg, fix(r));
+        continue;
+      }
+      if (op === FX_ALPHA && args.length >= 2) {
+        mat(int(args[1])).now[0] = val(args[0]); touched = true;
+      } else if (op === FX_UV && args.length >= 3) {
+        const m = mat(int(args[2])).now;
+        m[1] = val(args[0]); m[2] = val(args[1]); touched = true;
+      } else if (op === OP_TINT && args.length >= 5) {
+        const m = mat(int(args[4])).now;
+        m[3] = val(args[0]); m[4] = val(args[1]); m[5] = val(args[2]);
+        m[0] = val(args[3]); m[7] = 1; touched = true;
+      } else if (op === OP_MAT_SHOW && args.length >= 2) {
+        mat(int(args[1])).now[6] = int(args[0]) ? 1 : 0; touched = true;
+      }
+    }
+    for (const m of mats.values()) m.frames.push(m.now.slice());
+    if (touched) last = t;
+  }
+  for (const m of mats.values()) m.frames.length = Math.min(m.frames.length, last + 1);
+  return { mats: mats };
 }
 
 /**
@@ -153,9 +428,10 @@ const colourAt = (e, local) => sample(e.colourKeys, local, [1, 1, 1, 1]);
 function run(scene, trackName, blob, frameBase, origin) {
   frameBase = frameBase || 0;
   origin = origin || null;
-  let frame = frameBase, entity = null, pendingVoice = null;
+  let frame = frameBase, entity = null, pendingVoice = null, blocks = 0;
   const trackVis = [];
-  for (const call of ssc.parse(blob)) {
+  const calls = ssc.parse(blob);
+  for (const call of calls) {
     if (call.op === null) continue;
     const code = call.op, args = call.args;
     if (code === OP_AT_TIME) { if (args.length) frame = int(args[0]) + frameBase; continue; }
@@ -173,6 +449,11 @@ function run(scene, trackName, blob, frameBase, origin) {
       scene.effects.push({ frame: frame, track: args[0],
         pos: args.slice(1, 4).map(num),
         target: code === OP_SPAWN_FX_AT && args.length > 4 ? int(args[4]) : null });
+    // `0x0C (track, bone)` spawns an effect on one of the spawning actor's
+    // bones: Allura's e004 track lights her right elbow with `ef_e004_13`.
+    else if (code === OP_SPAWN_FX_BONE && args.length > 1)
+      scene.effects.push({ frame: frame, track: args[0], pos: [0, 0, 0],
+                           bone: { owner: trackName, name: args[1] } });
     else if (code === OP_CAMERA) scene.cameraFile = args[1];
     else if (code === OP_BGM_START) scene.bgm.push([frame, 'start', int(args[0])]);
     else if (code === OP_BGM_STOP) scene.bgm.push([frame, 'stop', int(args[0])]);
@@ -199,6 +480,7 @@ function run(scene, trackName, blob, frameBase, origin) {
                          args.length > 1 && isStr(args[1]) ? args[1] : null);
       entity.start = frame;
       entity.origin = origin;
+      entity.block = blocks++;
       scene.entities.push(entity);
     // ------------------------------------------------------ sprite effects
     // A sprite effect names a **texture** here where a model effect names an
@@ -242,8 +524,8 @@ function run(scene, trackName, blob, frameBase, origin) {
       const rate = int(args[0]);
       entity.grid = { rate, cols, rows, cells, life: rate * cells };
     } else if ((code === OP_FX_EMIT_A || code === OP_FX_EMIT_B) && entity) {
-      // Structure only: what these steer is not established, so they are
-      // carried and not used.
+      // A ribbon's shape: `0xC8` (segments, -, wander, width) and `0xC9`
+      // (U span, U jitter, U base, U scroll).  play.js `ribbonAt` draws it.
       if (!entity.emitter) entity.emitter = {};
       entity.emitter[code.toString(16)] = args.map(num);
     } else if (code === OP_TINT && entity) {
@@ -261,6 +543,13 @@ function run(scene, trackName, blob, frameBase, origin) {
         }
     } else if (code === OP_VISIBLE) {
       trackVis.push([frame, !((int(args[0]) & VIS_HIDDEN) && int(args[1]))]);
+    } else if (code === OP_HIDE_PART) {
+      // Emitted inside the block and, to bring the weapon back, after it; the
+      // handler acts on the track's current model either way.
+      let owner = entity;
+      for (let i = scene.entities.length - 1; i >= 0 && !owner; i--)
+        if (scene.entities[i].track === trackName) owner = scene.entities[i];
+      if (owner) owner.parts.push([frame, args[0], !!int(args[1])]);
     } else if (entity !== null) {
       if (code === OP_MODEL) entity.models.push(args[0]);
       // arg[3] is a C2 rational (a blend) 588 times on the disc and a C1
@@ -272,22 +561,44 @@ function run(scene, trackName, blob, frameBase, origin) {
         entity.clips.push([frame, args[0],
           args.length > 3 && typeof args[3] === 'number' ? args[3] : 0]);
       else if (code === OP_ROOT_BONE) entity.rootBone = args[0];
+      else if (code === OP_BILLBOARD) entity.billboard = args.length > 1 ? int(args[1]) : 3;
+      else if (code === OP_TOWARD_EYE && args.length && !isReg(args[0])) entity.pull = num(args[0]);
       else if (code === OP_ATTACH)
         entity.attachments.push([args[0], args[1],
                                  args.length > 2 ? num(args[2]) : 1.0]);
       else if (code === OP_TRANSFORM) entity.transform = args.slice(0, 4).map(num);
       else if (code === OP_SCALE) entity.scale = args.slice(0, 4).map(num);
+      // Mode 8 of the transform call: a true scale, unlike 0x80.  Register
+      // arguments are the effect VM's to resolve, frame by frame.
+      else if (code === OP_PLACE && args.length >= 4 && int(args[3]) === PLACE_SCALE
+               && !args.slice(0, 3).some(isReg))
+        entity.size = args.slice(0, 3).map(num);
       else if (code === OP_LIGHT_TYPE) {
         entity.light = LIGHT_KINDS[args.length ? int(args[0]) : -1] || 'unknown';
         entity.lightParent = !!(args.length > 1 && num(args[1]));
       } else if (code === OP_LIGHT_RANGE)
         entity.lightRange = args.slice(0, 2).map(num);
+      else if (code === OP_LIGHT_LIFE && entity.kind === KIND_LIGHT && args.length)
+        entity.lightLife = int(args[0]);
     }
     if (code === OP_END) break;
   }
+  // Only a spawned effect is a per-frame program.  Actor tracks use the same
+  // registers -- Allura's in e004 fades her material 2 with r0 -- but they are
+  // cue-driven timelines (`0x04` then `0x05` waits), and run frame by frame
+  // the end_track at their foot fires on frame 0.
+  const fx = origin ? fxRun(calls) : null;
+  const act = origin ? null : actorRun(calls);
   for (const e of scene.entities)
     if (e.track === trackName) {
       e.visibility = trackVis.slice();
+      // Shared by the track's blocks: materials are addressed by flags word.
+      if (act) e.act = act;
+      // Shared, not copied: every block of one spawn runs the same program.
+      if (fx && e.start >= frameBase) {
+        e.fx = fx;
+        if (fx.end !== null && e.trackLen === null) e.trackLen = fx.end;
+      }
       // How long the track ran.  A sprite block with no `0x6E` alpha keys
       // has nothing else saying when it is over -- e004's spark tracks are
       // thirty frames long and carry only `0x80` and the emitter -- so
@@ -372,7 +683,20 @@ function compile(name, assets) {
     let key = fx.track.toLowerCase();
     if (!/\.ssc$/.test(key)) key += '.ssc';
     const b2 = assets.get(key);
-    if (b2) run(scene, key + '#' + i, b2, fx.frame, fx.pos);
+    if (!b2) return;
+    if (!fx.bone) { run(scene, key + '#' + i, b2, fx.frame, fx.pos); return; }
+    // A bone-bound spawn keeps only its lights.  Its model and sprite
+    // blocks (e418, e423, e424, e415) would want the bone too, and nothing
+    // has measured them yet.
+    const side = Object.assign({}, scene, { entities: [], events: [], tracks: [],
+      effects: [], subtitles: [], bgm: [], fades: [], letterbox: [] });
+    run(side, key + '#' + i, b2, fx.frame, fx.pos);
+    for (const e of side.entities) {
+      if (e.kind !== KIND_LIGHT) continue;
+      e.index = scene.entities.length;
+      e.bone = fx.bone;
+      scene.entities.push(e);
+    }
   });
 
   let last = 0;
@@ -409,8 +733,16 @@ function visibleAt(entity, frame) {
   return vis;
 }
 
-const api = { compile, run, mergeMasterClips, family, text, renderModels,
-              clipAt, visibleAt, num, sample, sizeAt, colourAt,
+/** The node names `0xB2` has hidden on `entity` at `frame`. */
+function hiddenPartsAt(entity, frame) {
+  const hidden = new Set();
+  for (const [f, name, show] of entity.parts || [])
+    if (f <= frame) { if (show) hidden.delete(name); else hidden.add(name); }
+  return hidden;
+}
+
+const api = { compile, run, fxRun, actorRun, fxAt, mergeMasterClips, family, text, renderModels,
+              clipAt, visibleAt, hiddenPartsAt, num, sample, sizeAt, colourAt,
               KIND_MODEL, KIND_LIGHT, KIND_CAMERA };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptScene = api;

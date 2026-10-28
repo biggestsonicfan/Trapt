@@ -74,7 +74,8 @@ function parse(data) {
       shade: dv.getUint32(o + 0x58, true),
       blend: !!(f42 & 0x0005),
       atest: !!(f42 & 0x0060),
-      add: !!(f42 & 0x0005) && !!(f42 & 0x0100),
+      // 0x289000's selector: 1 or 0x10 is ALPHA_1 0x48 (smi.py, VIEWER.md 10.13)
+      add: !!(f42 & 0x0005) && [0x01, 0x10].includes(f42 & 0x213F & ~0x140),
     });
   }
 

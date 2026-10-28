@@ -708,10 +708,22 @@ def gather(S, B, frame, only=None, room=True, textured=True, texcache=None):
         t = frame-cur[0]+cur[2] if cur else 0
         off = ent.get('position') or [0, 0, 0]
         tint = np.array(ent.get('tint') or [1, 1, 1], float)
+        # `0xB2` hides a node and what hangs under it: the weapon.
+        hidden = set()
+        for f, name, shown in ent.get('parts', []):
+            if f <= frame:
+                (hidden.discard if shown else hidden.add)(name)
         for mk in ent['models']:
             md = S['models'][mk]
             Wm = world_matrices(md, clip, t)
             for mi, me in enumerate(md['meshes']):
+                if hidden:
+                    n, under = me.get('base', -1), False
+                    while 0 <= n < len(md['nodes']) and not under:
+                        under = md['nodes'][n]['name'] in hidden
+                        n = md['nodes'][n]['parent']
+                    if under:
+                        continue
                 P, N = skin(me, B, Wm, off)
                 mat = (md['materials'][me['material']]
                        if me['material'] < len(md['materials'])

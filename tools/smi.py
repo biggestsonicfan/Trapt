@@ -81,6 +81,11 @@ class Model:
     __slots__ = ('nodes', 'meshes', 'materials')
 
 
+def blend_mode(f42):
+    """The game's ALPHA_1 selector for a material (0x289000)."""
+    return f42 & 0x213F & ~0x140
+
+
 def _cstr(b):
     i = b.find(b'\0')
     return (b if i < 0 else b[:i]).decode('latin1')
@@ -149,15 +154,14 @@ def parse(data):
             'atest': bool(f42 & 0x0060),
             # Two of the GS's ALPHA equations are in use: 0x44, the lerp
             # `(Cs-Cd)*As>>7 + Cd`, and 0x48, additive `Cs*As>>7 + Cd`, under
-            # which a black source is a no-op.  Bit 0x0100 picks the additive
-            # one.  It lands on 4 of the 148 materials e001 draws and all four
-            # are blended -- 14% of the blends, against the 59-of-396 (15%)
-            # additive share counted in the frame's own GIF packets.
-            # rp03's material 14 is the visible proof: 0x4304, vertex colour
-            # (0,0,0) over a 66%-opaque texture.  Lerped it paints the plaza
-            # doorway's surround solid black; added it contributes nothing,
-            # which is what the hardware frame shows.
-            'add': bool(f42 & 0x0005) and bool(f42 & 0x0100),
+            # which a black source is a no-op.  The game picks one per
+            # material at 0x289000 from mode = f42 & 0x203F: 1 or 0x10 is
+            # 0x48, 2 is 0x42, anything else 0x44 (docs/VIEWER.md 10.13).
+            # Bit 0x0100, which this used
+            # to read as "additive", is not in the mode at all: rp03's
+            # material 14 (0x4304) is 0x44 in state 08's RAM, and e004's fire
+            # card (0x0041) is 0x48.
+            'add': bool(f42 & 0x0005) and blend_mode(f42) in (0x01, 0x10),
         })
 
     m.nodes = []

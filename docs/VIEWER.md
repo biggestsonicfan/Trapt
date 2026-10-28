@@ -565,9 +565,8 @@ facade, but it will matter in a room the camera enters.
   `RT_E001.ARC` pair one-to-one with `DATA/SOUND/VOICE/M####.ADX` and each has
   a known frame from the subtitle table — an ideal sample set for cracking it.
 * **Effects are played as billboards, not as particle systems.** Sprite
-  effects render — see §7 — but `0xC8`/`0xC9` clearly steer an emitter count
-  and a spread that nothing reads, so a burst of eight sparks comes out as one
-  sprite at the emitter rather than a trail.
+  effects render — see §7. The one exception is a `0xC8` block bound to
+  two or more bones, which is a ribbon and is drawn as one (§10.7).
 * **One particle, where the hardware has a cloud** (§9.3). The flipbook runs
   and the timing is the game's, but a single billboard spends most of its
   cycle faded out, so a torch flickers rather than burns steadily.
@@ -607,7 +606,7 @@ From the dispatch table at `0x00376660`, and from the data:
 | `0x6D` | `FUN_001C47F0` | `(sx, sy, frame)` — a size keyframe |
 | `0x6E` | `FUN_001C46A0` | `(r, g, b, a, frame)` — a colour keyframe |
 | `0xCA` | `FUN_001C1D50` | `(actor, bone)` — bind the emitter to a bone |
-| `0xC8`, `0xC9` | | emitter parameters; structure only |
+| `0xC8`, `0xC9` | `0x0021EB00`, `0x0021EAE0` | a ribbon's `(segments, -, wander, width)` and `(U span, U jitter, U base, U scroll)`; §10.7 |
 | `0xAA` | `FUN_001C46A0` | **the same handler as `0x6E`** -- an alias |
 | `0xAB` | `FUN_001C47F0` | **the same handler as `0x6D`** -- an alias |
 
@@ -1242,8 +1241,10 @@ about each other -- one taken from the bytecode, one from the texels.
 So flag 3 means the tile is a quadrant and the billboard is it mirrored into
 all four, laid out so the tile's bottom-right corner meets at the middle.
 `play.js` builds those sprites from four quads instead of one
-(`spriteGeometry`); the footprint is unchanged, since the size keys still
-describe the whole sprite.  Everything else keeps the single quad it had.
+(`spriteGeometry`).  Each quad is a whole unit, so the mirrored sprite is
+twice the size keys across: savestate 05's glow is a 2x2 mesh running -1..1,
+scaled by its size key (§10.11).  Everything else keeps the single quad it
+had.
 
 What this does *not* settle is the other five flags.  Only the fourth is read.
 
@@ -1253,3 +1254,1055 @@ What this does *not* settle is the other five flags.  Only the fourth is read.
 `0x77 2 0 0 0 1` carry the spawn spread and the rise, and none of them is
 read, so the thirty-two sit on top of each other. It reads as a bright
 flame that pulses in place rather than a plume climbing off the brazier.
+
+---
+
+## 10. Grading the page itself against PCSX2
+
+§8.10 grades `pdiag.py`, a port of the shader that draws no sprites, effect
+meshes or subtitles. This section is about the page: `pick.html` in PS2 mode
+with the game's own subtitle font, the thing a visitor actually sees.
+
+```
+python tools/grade.py --browser "Trapt (USA).iso" --save page.json
+python tools/grade.py --browser "Trapt (USA).iso" --baseline page.json
+```
+
+`tools/web/frames.mjs` opens the page in headless Chrome (SwiftShader, so no
+GPU), hands it the disc through the file input the way a visitor does, opens
+each cutscene, stops it on the frame, and reads back the 512x224 GS target
+before the post pass scales it. `grade.py` then scores that picture the way
+§8.10 scores pdiag's. Region masks still come from pdiag, whose geometry is
+the page's. A baseline records which renderer it graded, and grading the page
+against a pdiag baseline is refused rather than compared.
+
+### 10.1 Three things the grading itself had wrong
+
+- **PCSX2 2.x states are zstd.** Every member except `Screenshot.png` is zip
+  method 93, which `zipfile` cannot read. `oracle.State.read` decompresses
+  them; it needs the `zstandard` package.
+- **The screenshot is two frames older than EE RAM.** The oracle reads the
+  frame the game is computing; the PNG is the frame on screen. With the page
+  rendered at oracle frame −6..+1 over all seven states, the best match sits
+  at −2. State 04 is a fast pan and settles it: 5.42 at 0, 4.05 at −2.
+  `grade.SHOT_LAG` draws every state at its oracle frame minus 2, and a grade
+  now reports both (`frame 10834 (shown 10832)`).
+- **The page's depth buffer was 16-bit.** The render target had no depth
+  texture of its own. In the far half of the room, depth fought itself, so
+  wall and floor stripes came and went. The target now carries a 24-bit depth
+  texture.
+
+### 10.2 Effect tracks are programs, not timelines
+
+Every spawned effect track (`ef_*.ssc`) is run by the game **once per
+frame, from the top**. That is the main finding of this section. The decoding
+below comes from the handlers in the dispatch table at `0x376660`:
+
+| op | meaning |
+|---|---|
+| `C5 n` (argument tag) | register `n` of the track's VM |
+| `0x04 (a, b, c)` | set the flag: `t == a`; `a <= t <= b`; or every `c` from `a` |
+| `0x03 n` | skip the next `n` calls unless the flag is set. This was misread as `set_actor_count`. |
+| `0xA4 n` | flag = (r16 == n), the track's state register |
+| `0x0D`–`0x1C`, `0xA6` | `(dst, a, b, float, op)`: 0 set, 1 add, 2 sub, 3 mul, 4 div, 8 wrap into [a, b), 10 compare `(x, y, cmp)` with cmp 0 `==` 1 `>` 2 `<` 3 `>=` 4 `<=` 5 `!=` (handler `0x1C7240`) |
+| `0x7C (u, v, m)` | UV offset of material `m` |
+| `0x7D (a, m)` | alpha of material `m` |
+| `0x7E (r, g, b, a, m)` | colour and alpha of material `m` |
+| `0x84` / `0x8C (x, y, z, mode)` | one handler (`0x1C15D0`), model vtable `+0x88 + 4*mode`. The disc uses mode 0 on `0x84` (1818 times, position) and mode 8 on `0x8C` (1049, scale). |
+| `0xB8 ("none", 3)` | billboard. All 45 uses are on flat XY cards. |
+| `0xAC f` | drawn `f` world units toward the camera, every frame (§10.5) |
+| `0x01` | this frame is done |
+| `0x00` | the track is over |
+
+`m` is the `.SMI` material's flags word (`+0x40`), not its index.
+
+`ef_e004_20` shows how a program works. At clock 0 it builds the fire mesh and
+zeroes four registers. Every frame it fades two materials in
+(`r6 += .008` while `r6 <= .4`) and scrolls their UVs. At 50 it sets
+`r16 = 10`, and state 10 drops both alphas below zero and ends the track at
+local frame 51. Read as a timeline, the same file drew the fire for the rest
+of the cutscene. `ef_e004_21` holds alpha 0.8/1.3 until 270, then fades and
+ends at 444.
+
+`web/scene.js` `fxRun` runs the VM for every spawned track that touches a
+register or a material. It records, for each local frame, each material's
+`[alpha, u, v, r, g, b]` and each block's position and scale. `play.js`
+`fxApply` poses from those tables, and the shader gained `uvOff` and
+`fxAlpha` uniforms. `scene.py` `_fx_end` ports only the end frame, which is
+all the Python side needs, and `test_assets` keeps the two in step.
+
+Actor tracks use the same registers (Allura's material 2 fades on `r0`), but
+they run differently: the VM keeps its pc across frames. That is §10.6.
+
+### 10.3 Draw order and the GS's alpha
+
+- three.js sorts blended objects by object origin, and room meshes sit at the
+  world origin. A fire 100 units into the room therefore drew *under* the
+  foliage bands. Effect meshes now draw at `renderOrder` 2 and sprites at 3,
+  after the room.
+- A sprite's colour key can carry alpha above 1. On the GS, alpha 0x80 is
+  1.0 and the register goes to 0xFF, so the excess brightens rather than
+  clipping. The page now multiplies the colour by `min(255/128, max(1, a))`
+  and clamps opacity at 1. `test_assets`' flash and spark expectations moved
+  with it.
+
+### 10.4 Where it stands
+
+| state | scene | shown | page before | page now | pdiag |
+|---|---|---|---|---|---|
+| 00 | e004 | 1418 | 16.66 | **9.01** | 17.89 |
+| 03 | e001 | 3703 | 3.53 | 3.49 | 3.56 |
+| 04 | e001 | 10832 | 3.65 | 3.02 | 3.99 |
+| 05 | e004 | 1648 | 15.36 | 14.22 | 19.46 |
+| 06 | e001 | 1339 | 4.26 | 4.08 | 4.13 |
+| 07 | e004 | 2127 | 8.86 | **4.50** | 5.25 |
+| 08 | e001 | 7420 | 4.73 | 4.73 | 4.86 |
+
+The mean is 6.15 for the page (6.37 before §10.6) and 8.45 for pdiag. The "before" column is the
+page at the start of this work, already at the corrected frames.
+
+Still wrong:
+
+- **e004 1648, the right third.** The hardware's background there is warm
+  brown (mean RGB 48, 30, 23); the page's is grey (20, 19, 17). No sprite
+  reaches it, and `0xAC` (§10.5) did not touch it.
+- **e004 1418.** What looked like a wrong arm pose was the gauntlet (§10.6).
+  Her bones in EE RAM match the page within 0.05.
+
+### 10.5 `0xAC` is a pull toward the camera
+
+`0xAC f` is not a blend. Handler `0x1C4550` reads one float and calls the
+block object's vtable `+0xD4` with it. The vtable bases come from the
+constructors, which store `run − 8`.
+
+- **Effect blocks.** Kinds 1, 2, 3 and 8 build vtable `0x4785D0` (the `0x64`
+  handler, `0x1C4E30`). There `+0xD4` is `0x1D8EE0`, which runs only when byte
+  `+0x42` of the track's context is zero. It fetches the drawable through
+  `+0xD8`, and `0x21D720` stores `−f` at `+0x20C` and sets bit `0x20` of
+  `+0x10`. The sprite draws (`0x2202EC`, `0x22152C`, `0x222C5C`,
+  `0x222D98`) test that bit and add `+0x20C · normalize(pos − eye)` to the
+  position. `0x10E0B0` is `a − b`, so the sprite moves `f` units toward the eye.
+- **Models.** Vtable `0x4781E0` and its kin take `+0xD4` = `0x1D76F0`, which
+  runs when that byte is *non*-zero. It stores `f` at `+0xF0` and sets
+  `0x2000` in `+0x14`. `0x1D8BEC` then pre-multiplies the world matrix by
+  the same translation toward the eye.
+
+On the disc in e004, only `ef_e004_30` (f = 2) and `ef_e004_31` (f = 3) use
+it. Both are the `ef_s014c.tm2` glow, colour (1.5, 0.2, 0.1) at alpha up to
+1.8 and up to 4.5 units across. They sit inside the fire mesh, and the pull
+brings them out through it. The page applies it to sprites in `faceSprites`,
+from each sprite's unpulled position, so a free camera gets it too. Byte
+`+0x42` was not read from RAM. The sprite path is assumed to be the live one,
+since the sprite class is the only one these tracks build.
+
+At e004 1648 (state 05) the mae went from 14.83 to 14.22, and the red bias from
+−15.9 to −11.6. Before, the glow ended at a hard horizontal edge across
+Allura's arm and hand, where the fire mesh's depth cut it. Now it covers
+them, as on hardware. The changed pixels all lie in x 0..406, and every one
+got warmer (mean +13.8, +2.7, +1.3). The middle third's red went from 47 to
+58 (hardware 67). The right third did not move.
+
+### 10.6 Hidden parts, and actor tracks as programs
+
+- **`0xB2 (name, show, 0)`.** Handler `0x1C20C0` → `0x1D53F0`. Show 0 adds
+  the node name to a four-slot hidden list at model `+0x22C`; show 1 removes
+  it. Attached models get the same call. A mesh whose base node (`+0x2a`) is
+  the named node, or sits under it, is not drawn. On the disc the name is
+  always `buki`, the weapon: 58 hides and 2 shows. `scene.js` and `scene.py`
+  record them on the entity (`parts`), `hiddenPartsAt` answers per frame, and
+  `play.js` and `pdiag.py` skip those meshes.
+- **Actor tracks keep their pc.** `0x04 at_time(t)` followed by
+  `0x05 (0, {c4:k})` means: while the condition is false, jump to call `k`
+  and end the frame. So the track waits at that line, and runs on once the
+  time comes. `scene.js` `actorRun` runs it that way, with `at_time` as
+  `t >= a`.
+- **`0xB0 (on, m)`.** Handler `0x1C2E00` calls model vtable `+0x68(m, on, 1)`:
+  it shows or hides the materials with flags word `m`. `0x9D (a, m)` goes to
+  vtable `+0x38`; the page takes it as "blend this material".
+- **The calculator.** Handler `0x1C7240` also serves `0xA0`, `0xA1`, `0xA5`,
+  `0xA6` and `0xA9`, besides `0x0D`–`0x1C`. Every op that points at it was
+  listed from the table. Op 9 clamps into [a, b]. Without `0xA1`, Allura's
+  alpha read 1.01 at 1648.
+
+Allura's e004 track hides material 2 (the gauntlet: materials 0 and 15) at
+frame 0, shows it at 1430 and fades it in on `r0 += 0.01` until 1530, then
+fades it out from 1750 to 1850. In e001 and e024 it stays hidden for the
+whole scene. Before this, the page drew the gauntlet all through e004, and
+that is what made her arm at 1418 look wrong. The material program is in
+`scene.js` only; `scene.py` has `0xB2` but not the material VM.
+
+### 10.7 `0xC8` is a ribbon, not a spark cloud
+
+§9.4 found that `0xC8` and `0xC9` only store, and that no reader of `+0x210`
+showed up in the effect module. The reader is in another module: `0x0021F270`
+(the trail class, vtable `0x004791A0`) copies all eight fields to `+0x196`
+through `+0x1B0` of its own object. The game uses the same class elsewhere,
+calling `0x0021EB00`, `0x0021EAE0` and `0x0021EB30` directly from `0x003177E4`.
+It is a **triangle strip**: `0x001982D0` allocates `(count + 1) * 2`
+vertices, so `0xC8[0]` is the number of segments, not a number of particles.
+Each `0xCA` bind appends the bone's matrix to the strip's eight-slot list
+(`FUN_001C1D50` -> `0x0021EB30`).
+
+Every frame the update (`0x0021ECD0`) rebuilds the strip with `0x00197840`:
+
+- the spine is the bound bones in bind order, one straight piece per pair;
+  the `count + 1` steps are spaced evenly along its whole length;
+- at each step the cross-section is a segment `0xC8[3]` x (0.9..1.1) long,
+  centred `0xC8[2]` x (0.8..1.2) off the spine. Its direction is random but
+  fixed for the frame, and the centre's angle random-walks round the spine
+  (§10.8: it corkscrews, not "twists a little"). `0xC8[1]` is passed and
+  never read. The walk's seed is re-rolled one frame in four
+  (`rand % 4 == 0`), the two scales every frame;
+- `0x00197450` lays U along the strip (`0xC9[2]` plus up to half of
+  `0xC9[1]` either way, `0xC9[0]` over the length, re-rolled every third
+  frame; `0xC9[3]` scrolls it and is 0 on the disc). V is 0 on one edge and
+  1 on the other;
+- `0x00197560` gives each step the effect's colour, with alpha times
+  `1 - (2t - 1)^2` (`0x0019B4E0`): nothing at the end bones, full halfway.
+
+In e004, `ef_e004_11` (8 segments, width 2) runs finger -> hand -> elbow, and
+`_12` (16, width 3) runs on to `ude_R`. Each is spawned twice. Those are the
+two long flame streaks along Allura's forearm and face at 1418 that the page
+was missing; the page had drawn a 1-unit spark per bone. `play.js` `ribbonAt`
+draws the strip. Its dice are a hash of the frame, because the game's come
+from its global RNG, so the bands have the hardware's size and texture but
+not its exact angles. State 00 went from 9.01 to 8.96: edges 0.655 -> 0.702,
+Allura's bias (-38.0 -16.1 -8.4) -> (-24.3 -11.1 -5.5), and the fire region
+(x 200-330, y 70-125) from (92, 40, 29) to (111, 47, 33) against the
+hardware's (148, 68, 46).
+
+### 10.8 Measured: the ribbons at 1418, and the game's own strips
+
+§10.7's ribbons moved state 00 by only 0.05, so part 9 measured what they
+cover instead of retuning them. The two hardware bands at graded frame 1418
+are the pixels the hardware has and the ribbon-less page lacks after its even
+grey lift (`L(hw) - L(page x 1.13 + 4) > 30`, two largest blobs): a **face
+band**, x 204-268, y 65-95, centroid (239, 83), and a **forearm band**,
+x 256-319, y 103-125, centroid (290, 115). Both run nearly level, about 65 px
+by 20.
+
+At 1418 only `_12`'s two strips are alive: `_11` has a 30-frame track and
+was spawned at 1172 and 1182. The zero-offset centreline is the bone chain
+itself, finger (325, 71) -> hand (297, 93) -> elbow (242, 101) -> `ude_R`
+(221, 105). It runs **between** the bands: the face band is 18 px above it
+and the forearm band 21 px below. That is the wander offset (about 0.9
+units, about 20 px at that depth) on *opposite* sides. The page's centrelines,
+with its offset, were (296, 55) -> (274, 73) -> (247, 81) -> (218, 89) ->
+(197, 96) for one strip and nearly the same for the other: both above the
+spine. They covered 61 % of the face band and 0 % of the forearm band, and
+68 % of their lit pixels fell outside both.
+
+Savestate 00's EE RAM holds the game's own two strips (trail objects at
+`0x00F8F200` and `0x00F90500`; vertices at `0x00F8F690` and `0x00F90990`,
+written with Y and Z negated). Read back, they settle every question about
+the strip's geometry:
+
+| | the game, in RAM | the page |
+|---|---|---|
+| bones | finger, hand, elbow, `ude_R`, within 0.07 of the page's | same |
+| effect matrix `+0x40` | identity | not applied; no difference |
+| instances | two objects, own seeds (28746, 53977) | two |
+| width | 2.74 and 3.21 (3 x 0.91, 3 x 1.07) | 3 x (0.9..1.1) |
+| wander | 0.85-0.97 | 0.8 x (0.8..1.2) |
+| cross-section | fixed per frame, 31 and -81 degrees | fixed per frame, (-90, 90) |
+| facing | the bones' frame; no camera input | same |
+| centre's turn per step | 0.39 and 0.44 rad on average, up to 0.8 | **at most 0.09** |
+| vertex colour | (229, 76, 25), alpha 192 x profile | (0.9, 0.3, 0.1) x 1.5 at 0x80 = 1 |
+
+The one mistake was the turn. `0x00197840` tests the step after `cvt.w.s`
+and an integer `abs` (`0x00132D40`), so the reset at pi/(2(count+1)) only
+fires once the step reaches a whole radian. The page compared the float, which
+kept every band on one side of its spine. Fixed in `ribbonAt`.
+
+The page's dice are a hash, so one frame is one draw. Over 24 draws at 1418
+(the ribbons' ids offset, nothing else changed), with the game's vertices
+dropped into the page's two meshes as the reference:
+
+| ribbons | whole frame | face / forearm band lit | fire region x 200-330, y 70-125 |
+|---|---|---|---|
+| none | 8.94 | 0 / 0 | (89, 39, 28) |
+| old turn, 24 draws | 8.89 +- 0.15 | 0.24 / 0.21 | (105, 44, 31) |
+| fixed turn, 24 draws | **8.81 +- 0.12** | 0.35 / 0.35 | (117, 49, 34) |
+| the game's own vertices | 8.69 | 0.53 / 0.53 | (130, 53, 36) |
+| the game's vertices, colour x 255/128 | 8.93 | 0.64 / 0.59 | (147, 66, 44) |
+| hardware | | | (148, 68, 46) |
+
+The graded draw is unlucky: state 00 went from 8.96 to **9.06** (edges
+0.702 -> 0.691, Allura's bias (-24.3 -11.1 -5.5) -> (-22.2 -10.7 -5.3)).
+Its two strips happen to start on the same angle: their seeds give
+near-identical LCG draws at 1418-1419 (0.864 / 0.868 for the first).
+
+So the fire region's remaining red splits about evenly. Geometry is about
+13: the page's dice against the game's, which nothing short of the game's RNG
+closes. Colour is about 17. The game packs the ribbon's colour as
+`(229, 76, 25, 192)`: RGB x 255, alpha x 128, so with the GS's 0x80 = 1.0
+the texture is modulated by 1.79 / 0.59 / 0.20, twice the page's. The packing
+happens upstream of `0x00197560`, which only copies `+0xA8`. (§10.9: the
+writer is `0x001D9200`, and the factor is now applied.) At this point it was
+not applied: with geometry this far off,
+twice the light in the wrong places costs as much as it gains (8.69 -> 8.93).
+
+### 10.9 The stored seed, and the colour's writer
+
+The trail objects do store their offsets: a 16-bit seed at `+0x194`
+(28746 and 53977 in savestate 00). `0x0021ECD0` re-rolls it on one frame in
+four (`0x00185E60(4) == 0`) and hands it to `0x00197840`, which seeds its own
+LCG (`0x001B8500`: x 0x19660D + 0x3C6EF35F, `0x001B84C0`) with
+`seed ^ 0x075BD924` (`0x001B84E0`). Every angle in the strip comes from that
+LCG. The two numbers the seed does not hold are the wander and width scales
+drawn from the global RNG, and both can be read straight off the strip: width
+is the distance between a step's two vertices (2.735, 3.210), wander is how
+far the midpoint sits from the spine (0.932, 0.911 median).
+
+Replaying `0x00197840` from those fields, with no fitting, rebuilds the RAM
+strips within 0.06 units on the RAM bones and within 0.007-0.028 units on the
+page's bones (the strip is about 3 units wide). The piece frame is the
+yaw/pitch frame of `0x00145420` (X = (z.z, 0, -z.x) normalised, Y = Z x X):
+the page's up = (0, 1, 0) cross gives the same axes, and the effect matrix is
+identity. **The builder has no local mistake left.**
+
+At 1418, ribbons only, against the RAM vertex buffers on screen:
+
+| strips | vertex error (px, edge vertices) | face / forearm band lit | lit pixels outside both bands |
+|---|---|---|---|
+| (a) page dice, graded draw | 69.0 | 0.45 / 0.02 | 0.79 |
+| (a) page dice, 24 draws | 53.3 +- 10.8 | 0.36 / 0.36 | 0.68 |
+| (b) stored seeds replayed on the page's bones | 0.62 | 0.53 / 0.55 | 0.63 |
+| (c) the RAM vertices | 0 | 0.54 / 0.54 | 0.63 |
+
+The colour's writer is `0x001D9200`, a method of the effect script's object
+(vtable slot at `0x0047860C`). It packs the `0x80` colour into `+0xA8` as
+RGB x 255 and alpha x 128 and sets flag 0x100. On that flag `0x0021ECD0`
+copies `+0xA8` to `+0x1B4`, scales the alpha by the fade at `+0xAC`, and
+passes it to the strip (`0x00197540`). `0x00197560` writes it to every vertex
+with the alpha profile. (0.9, 0.3, 0.1, 1.5) packs to (229, 76, 25, 192),
+which is what savestate 00's vertices hold. `0x001D9090`, the slot next to it,
+packs the same way. The page used 0x80 = 1.0 for RGB too, so its ribbons were
+128/255 too dark. `play.js` now applies 255/128 to ribbons only. Sprites go
+through other classes, which this did not check.
+
+The fire region (x 200-330, y 70-125), with the whole-frame error:
+
+| | whole frame | fire region RGB |
+|---|---|---|
+| page dice, page colour, 24 draws | 8.81 +- 0.12 | (117, 49, 34) |
+| page dice, game colour, 24 draws | 9.10 +- 0.19 | (129, 59, 40) |
+| graded draw, page colour | 9.06 | (112, 47, 33) |
+| graded draw, game colour | 9.44 | (119, 55, 37) |
+| stored seeds replayed, page colour | 8.70 | (130, 52, 36) |
+| RAM vertices, page colour | 8.69 | (130, 53, 36) |
+| RAM vertices, game colour | 8.93 | (147, 66, 44) |
+| hardware | | (148, 68, 46) |
+
+So of the fire region's missing (31, 19, 12) against the page dice, about
+(13, 4, 2) is the offsets the trail objects store, and (17, 13, 8) is the
+colour. Together the RAM strips and the game's colour leave (1, 2, 2).
+
+The colour is right, and it still costs score: 8.81 -> 9.10 on the mean,
+9.06 -> 9.44 on the graded draw. Even with the RAM strips the error goes up
+(8.69 -> 8.93), while the region's average matches. Brighter light in the
+wrong pixels costs more per pixel than it saves in the average. Part of the
+reason may be the screenshot lag: the page draws 1418 for a savestate of 1420,
+and in two frames the seed has a 44% chance to re-roll and the scales re-roll
+every frame. So the RAM strips need not be the strips in the picture; that is
+not checked. The page cannot reach the game's seeds without the game's RNG.
+
+### 10.10 The extra light is two frames of motion
+
+The savestate holds frame 1420 and the screenshot is 1418, so first: can the
+trail objects be stepped back two frames? They cannot. `0x0021ECD0` re-rolls
+`+0x194` with `0x00185E60(0xFFFF)` on the frames where `0x00185E60(4) == 0`,
+and it draws wander (`+0x19C` x (1 + 0.4(u - 1/2))) and width (`+0x1A0` x
+(1 + 0.2(u - 1/2))) again on every frame. All three come from the shared
+global RNG at `0x0048E070`. The only stores to `+0x194` are the constructor's
+(`0x0021F7B0`) and that re-roll (`0x0021F0D4`). No earlier seed is kept, and
+nothing counts the draws. The GS.bin framebuffers (FBP 0x70000, 0xE0000) are
+a flat fill, so VRAM cannot pin the frame either.
+
+The difference image is the RAM strips with the game's colour, against the
+hardware frame. Lit means L(page - no ribbons) > 30 or L(hw - (no ribbons x
+1.13 + 4)) > 30, the §10.8 mask. That gives 3081 page pixels and 3195
+hardware pixels, 1319 of them in both.
+
+Where both are lit, there is no halo and no overbright core:
+
+| | ribbon light added, RGB | L, page / hw |
+|---|---|---|
+| both lit (1319 px), game colour | (141, 70, 42) vs (129, 78, 45) | 0.98 |
+| both lit (947 px), page colour (before 3d8a521) | (127, 44, 25) vs (132, 80, 46) | 0.73 |
+| hw's brightest quarter (631 px), game colour | (150, 74, 45) vs (160, 117, 62) | 0.76 |
+| 99th percentile L over lit pixels, game colour | 173 vs 174 | |
+
+The page's lit pixels, by how far each is from the nearest hardware ribbon
+pixel:
+
+| distance | 0 px | 1-3 | 4-8 | 9-20 | > 20 |
+|---|---|---|---|---|---|
+| page pixels | 1319 | 785 | 580 | 373 | 3 |
+| excess L (page - hw), thousands | 19.6 | 44.8 | 45.9 | 35.9 | 0.1 |
+
+So the extra light is whole strip pieces lying 1-20 px off the hardware's.
+The biggest are the arc over the head, ribbon 6's twisted wedge by the
+finger end (k = 0-3), and the upright pieces at the left. That is the size of
+one frame's motion. Rebuilding the same seeds on the RAM bones with width x
+0.9-1.1 and wander x 0.8-1.2 (the corners of the game's ranges) moves the
+vertices 5-12 px on average, and up to 15-32 px. It changes 1841-4191 of the
+4006 lit pixels. A seed re-roll, 44% likely over two frames, replaces the
+strip outright. A software GS render of the RAM strips with `spark.tm2`
+(`DATA/EFFECT/EF_COMMON.ARC`) matches the page's ribbons-only render pixel
+for pixel. So the vertices, UVs, texture and envelope are drawn as stored.
+
+**The 255/128 scale is what `0x001D9200` / `0x00197560` store, and no ribbon
+field is misread.** The light the page adds is the right amount, in strips
+the game drew two frames later. Nothing on the page changes for this.
+
+### 10.11 State 05's warm right third is e004's glow
+
+The lead was 66 additive draws in state 05 against 16 in state 07. That count
+came from scanning the whole of RAM, which picks up old frames' packets: the
+packet buffers are never cleared, and freed memory is filled with 0x7C7C7C7C.
+Walking the real DMA chain instead (master lists at 0x4C7100 / 0x4C7500, six
+calls each, ALPHA_1 = 0x48) gives four additive draws in state 05 and two in
+state 07:
+
+| state | additive draws |
+|---|---|
+| 05 | fire cylinder `cyl3` (SMI at 0x843260, `ef_m061a`/`ef_m061b`, colour (0.6, 0.2, 0.1, 0.8)); two `ef_e004_30` glows (`ef_s014c.tm2`) |
+| 07 | the `c30m_d_w` and `c30m_t_w` weapon glints |
+
+The glows are what the right third lacks. Each is a 12-vertex mesh, four
+mirrored quadrants, and the VU1 data says how it is drawn:
+
+- positions run -1..1, and the matrix scales them by 4.46 along the
+  camera's right and down: the size key;
+- the UVs run 0.01..0.99, with 0.99 at the centre, so the centre samples
+  texel (63, 63), the bright corner of the tile;
+- the material colour is (0.494, 0.2, 0.098, 0.156) = (126, 51, 25)/255 and
+  20/128: the key (1.5, 0.2, 0.1) packed by `0x001D9200`, whose R of 382
+  wraps to 126;
+- the position, the origin pulled 2 units toward the eye, is what the page
+  already had.
+
+The page misread three fields of that draw. It drew each quadrant half a
+unit, so the glow was half its width. Its UVs put the centre at uv (1, 0),
+which with `flipY` off is texel (63, 0), alpha 32 rather than 255: the
+glow was dark in the middle and bright at its edges. And it used R = 1.5
+unwrapped. `play.js` now packs effect colours as `0x001D9200` does
+(`packColour`), builds the quadrants a whole unit with the hardware's UVs,
+and nothing else.
+
+Third means (R, G, B), state 05:
+
+| | left | middle | right | mae |
+|---|---|---|---|---|
+| hardware | (77.5, 38.7, 28.1) | (67.4, 43.8, 33.1) | (48.0, 30.2, 23.3) | |
+| before | (80.4, 31.4, 23.6) | (57.6, 37.0, 30.6) | (20.0, 18.7, 17.4) | 14.22 |
+| size only | (60.2, 27.3, 21.6) | (53.4, 36.1, 30.2) | (23.2, 19.3, 17.7) | 13.47 |
+| size + wrap | (47.9, 27.2, 21.5) | (45.1, 36.0, 30.2) | (21.4, 19.3, 17.6) | 14.66 |
+| size + wrap + UVs | (71.4, 36.7, 25.7) | (71.8, 47.1, 35.1) | (43.7, 28.3, 22.1) | 6.52 |
+
+The size and wrap alone made it worse, because the glow was being drawn
+inside out; with the centre on the right texel the right third comes within
+(-4.3, -1.9, -1.2) of the hardware. The VU1 kernel that turns the material
+colour into a GS colour has not been traced; the page still reads material
+1.0 as GS 0x80.
+
+### 10.12 The screenshot is softer than the GS: grade through that
+
+Parts 24-67 (pins #1738-#1818) tried to write the hardware glow on rt01_21
+as a function of the hidden-page value d and the sampled alpha. Every model
+failed one gate: in band 36-40, pixels sharing round(d) and alpha/4 still
+spread by red sd 4.377 (304 px, 28 cells), over the limit of 4. After that
+the series cut ever-smaller pixel classes, down to two or three pixels each,
+and none of those cuts could lift the fail.
+
+The leftover is not a blend at all. Inside those cells it is:
+
+- **spatial**: the residual of a pixel correlates 0.50 with its right-hand
+  neighbour's, 0.26 two pixels away and 0.08 eight away. A function of each
+  pixel's own (d, alpha) leaves noise, not a smooth field;
+- **the same in R, G and B** (corr 0.95; part 44), while the glow adds
+  R : G : B = 53 : 21 : 11. So it is in the surface under the glow, not the
+  glow;
+- **the page being sharper than the hardware**: it follows blur(page) - page
+  with slope 1.06 (r +0.57), and the flat rt01_11 shows nothing.
+
+The hardware picture is PCSX2's 640x480 `Screenshot.png`, the display
+output. The savestate's own framebuffers (GS.bin pages 56-111 and 112-167,
+PSMCT32 512x224) are a flat 0x80 fill, as in 10.10, because PCSX2's hardware
+renderer doesn't write the frame back. The screenshot is all there is, and it is soft.
+
+Blurring the port's frame (`pdiag`) by a Gaussian of sigma (x, y) before
+scoring, on a grid x 0..2.3, y 0..1, lowers every one of the seven capture
+states' mae. Vertical sigma is 0.5-0.7 on all seven. The best single kernel
+for all seven is x 0.6-1.0, y 0.5-0.7 (-10% mae on average). `grade.py` now
+softens the viewer's frame by `DISPLAY_BLUR = (0.8, 0.6)` before scoring
+(`--sharp` turns it off; a baseline made one way is "not comparable" with
+the other). The page itself (`--browser`), the same seven states:
+
+| state | cutscene frame | mae sharp | mae softened | edges sharp | edges softened |
+|---|---|---|---|---|---|
+| 00 | e004 1420 | 9.44 | 9.19 | 0.665 | 0.674 |
+| 03 | e001 3705 | 3.49 | 2.98 | 0.923 | 0.926 |
+| 04 | e001 10834 | 3.02 | 2.54 | 0.817 | 0.833 |
+| 05 | e004 1650 | 6.52 | 6.13 | 0.786 | 0.834 |
+| 06 | e001 1341 | 4.08 | 3.19 | 0.777 | 0.818 |
+| 07 | e004 2129 | 4.50 | 3.95 | 0.795 | 0.836 |
+| 08 | e001 7422 | 4.73 | 4.08 | 0.823 | 0.839 |
+| mean | | 5.11 | 4.58 | | |
+
+The part-33 gate with the hidden page softened by the same fixed kernel
+(chosen from the seven whole frames, not fitted to the band), rt01_21:
+
+| band | red | green | blue |
+|---|---|---|---|
+| 32-36 | 3.35 -> 3.36 | 2.99 -> 3.02 | 3.37 -> 3.06 |
+| 36-40 | **4.38 -> 3.83** | 4.02 -> 3.63 | 4.09 -> 3.77 |
+| 40-44 | 3.24 -> 3.04 | 2.78 -> 2.83 | 2.47 -> 2.49 |
+| 44-48 | 2.90 -> 2.64 | 2.20 -> 1.98 | 2.10 -> 1.94 |
+
+The fail is gone, and so is the case against "hardware glow = a function of
+d and alpha" built on it. rt01_11 band 44-48 red stays at 4.2 either way;
+it was the other loose end (part 31) and is not the base's softness.
+
+What a later step should not do: test another blend model or another pixel
+class against the unsoftened gate. Compare at the display's softness, or
+ask PCSX2 for a sharp capture (its GS dump, or a screenshot with the
+display filter off) and measure the kernel instead of fitting it.
+
+### 10.13 Additive is the game's mode, not bit 0x100
+
+The page drew a blended material additively when its render flags (`f42`,
+SMI material `+0x42`) had bit 0x100. The game doesn't use that bit. It
+picks ALPHA_1 per material at `0x289000` from mode = `f42 & 0x213F & ~0x140`:
+1 or 0x10 is 0x48 (additive), 2 is 0x42, anything else 0x44 (lerp).
+
+Every base material object in the seven capture states' RAM (`+0xE0` the SMI
+material, `+0xCC` -> `+0x20` ALPHA_1) has the ALPHA_1 that rule gives:
+
+| f42 | mode | ALPHA_1 in RAM | old page rule |
+|---|---|---|---|
+| 0x0041 (e004 fire card `ef_m061`) | 1 | 0x48 | lerp |
+| 0x4241 (`rp03e004`) | 1 | 0x48 | lerp |
+| 0x4301 | 1 | 0x48 | additive |
+| 0x0104 (`c21m`) | 4 | 0x44 | additive |
+| 0x4304 (rp03 material 14) | 4 | 0x44 | additive |
+
+The only objects off the rule carry override bit 0x20 at `+0xD8`. Those are
+the extra forced-0x48 passes from `0x28F330` (kind 2), not the base draw. The
+page doesn't draw those passes yet.
+
+Across the disc's 12085 materials the change affects about 550: 400 effect
+and stage materials become additive (mostly `0x41`, `0x4041`, `0x4001`), and
+150 become lerp (`0x144` on Allura's `c01f_a_h` and other cast, `0x4304`,
+`0x4104`, `0x104`).
+
+The visible case is state 00 (e004 1420). The fire card is a disc 6 units in
+front of the camera that covers the whole frame. Lerped, it painted its
+cloud texture over Allura and darkened her green and blue. On hardware it
+only adds red. The rp03 doorway that bit 0x100 was meant to explain no longer
+turns black under the lerp (pin #1720 measured it).
+
+Page grade (`--browser`, display softening on):
+
+| state | cutscene frame | mae before | mae after |
+|---|---|---|---|
+| 00 | e004 1420 | 9.19 | **6.87** |
+| 03 | e001 3705 | 2.98 | 3.00 |
+| 04 | e001 10834 | 2.54 | 2.56 |
+| 05 | e004 1650 | 6.13 | **5.43** |
+| 06 | e001 1341 | 3.19 | 3.18 |
+| 07 | e004 2129 | 3.95 | 3.95 |
+| 08 | e001 7422 | 4.08 | 4.06 |
+| mean | | 4.58 | **4.15** |
+
+### 10.14 Allura's grey light, term by term (state 00, measured only)
+
+The page lights both of Allura's clean materials with grey: 92 on
+`c01f_a_01_h` and 96 on `c01f_a_03_h` (x255). After the glow comes off,
+the screenshot implies a warm light instead. This section takes that grey
+apart. It's measured from the page's own per-term buffers: a copy of
+`frames.mjs` that swaps the shader's final line for one term at a time. The
+pixels are the grader's, softened as it softens them. Nothing in the page
+changed.
+
+| term (x255, R=G=B) | 01_h (3335 px) | 03_h (2455 px) | where it comes from |
+|---|---|---|---|
+| ambient | 38.0 | 38.0 | `rt_amb` 0.15, `rt_e004_map.ssc` |
+| directional | 4.2 | 3.5 | `rt_inf` 0.30, aimed by `rt01.sli`; mean N.L 0.05 |
+| point `joyu` | 24.2 | 23.8 | 0.20, range 0-60, rides the camera (§5.3) |
+| point `rt_poi` | 24.9 | 30.0 | 0.20 at (0, 15, 117), range 0-100 |
+| vertex colour | — | — | the lit path never reads it; cast meshes carry none |
+| material tint, exposure | x1 | x1 | no `0x80`/`0x7E` on Allura's blocks |
+| **sum** | **91.3** | **95.3** | |
+
+Every term the page uses is grey, and each one is exactly the value the
+script holds. The live light list in EE RAM (`0x00813750`-`0x00813A90`,
+records of 0x80 with the data 0x40 ahead of the name) shows the same four
+values. It also holds three lights the page doesn't build:
+
+| live light | colour | kind | source |
+|---|---|---|---|
+| `65/inf_light` | 0.5, 0.5, 0.6 | directional | `rt01.sli` |
+| `65/ambient1` | 0.3 grey | ambient | `rt01.sli` |
+| **`ude`** | **0.45, 0.15, 0.05** (w 0.5) | point, range 0-20 | **`ef_e004_13.ssc`** |
+
+`ude` is the warm one. Allura's own track `rt_e004_c01f_a_h.ssc` fires
+`0x0C (ef_e004_13, hiji_R)` at 1172. That spawns an effect bound to her
+right elbow. The effect is a kind-6 light block with colour
+`(0.9, 0.3, 0.1) x r0`, and r0 is 0.5 in its late phase, the value in RAM.
+Its life (`0x69`) is 300 frames, so it runs to 1472. Neither `scene.py` nor
+`scene.js` reads `0x0C`: they follow only `0x08`/`0x07` spawns. So this
+light never reaches the page.
+
+Placed at its RAM position (0.648, 14.651, 145.033, the 1420 elbow), it
+would add 24/8/3 on 01_h and 56/19/6 on 03_h. The screenshot fits
+`grey + k x ude` exactly in both materials: grey 62 + 1.13 x ude, and
+grey 58 + 0.62 x ude. Left over after the grey is (27, 9, 3) and
+(35, 12, 4), both the light's own 9:3:1. So the warmth has this light's
+hue. But adding it to the page's grey 92/96 makes things worse, because
+the grey part must also drop by about 30-38. That drop is roughly one of
+the two 0.20 point lights; dropping `rt_poi` and taking `ude` at w leaves
+-10/0/+3 and +1/+5/+7. Which lights the game picks for a model is still
+unknown (§5.3: feeding all 12 resident lights is worse), and so is whether
+w scales the colour. None of this is implemented.
+
+### 10.15 The lights the game binds to a model
+
+§10.14 left open which lights the game gives a model. This section reads the
+answer out of the ELF and the state-00 savestate, and the page now does the
+same.
+
+**The rule (ELF `0x001B6820`, called per model from the cutscene actor draw
+`0x001D6750`).** It walks the light list at `*(0x00482908)`, newest first. A
+light takes part if its mask is 0 or shares a bit with the manager's
+`+0xA0`, which is `0x00100000` in a cutscene. The script's lights carry
+`0x00100000` and the room's `.sli` lights carry 1, so `65/inf_light` and
+`65/ambient1` never light the cast. `ude`'s mask is 0, so it always passes.
+Each light is scored at one point P on the model (`0x001B7B00`):
+
+- directional: its stored weight
+- point: weight x `1 - (d - near) / (far - near)`, clamped to 0..1
+- black (kind 5): nothing; its colour comes off every slot instead
+
+The model keeps the best directional and the **best two** point lights.
+Ambient is the oldest kind-4 light. A point light then becomes a directional
+from P (`0x001B79B0`): its direction is P to the light and its colour is
+multiplied by the same falloff. The VU1 kernel (`vudis.py`, around 0x094)
+gets a 3x3 direction matrix, three colours and the ambient, and computes
+`amb + sum(colour x max(N.L, 0))` per vertex.
+
+The weight is made once, when the light is (`0x001B7060`): CIE L* of the
+colour's Rec.601 luminance, with the colour taken as hundredths. That's
+1.8066 for 0.2 grey and 2.7099 for 0.3. `ude` is made at 0.3, from its
+program's first frames, so its weight is 2.7099 even when it burns at 0.5.
+
+**P is the root bone.** `0x001D6750` passes the world position of the node at
+actor `+0x210`, or the model's root if that's negative. For Allura it is
+`koshi`, the bone her block names with `0xB3`. The live slot record at
+`0x00ED6DF0` gives two light directions. Traced back from `joyu` and `ude`,
+the two lines meet within 0.04 units at (-0.04, 11.79, 147.84). The page's
+`koshi` at 1418 is at (-0.06, 11.80, 147.76).
+
+**Allura, state 00.** Her VU1 light block, in the two DMA buffers at
+`0x0059F340` and `0x0069F340`:
+
+| slot | light | colour on the light | stored weight | P to light | falloff at P | colour sent |
+|---|---|---|---|---|---|---|
+| directional | `rt_inf` | 0.30 grey | 2.7099 | (0.347, 0.780, 0.520) | - | 0.30 |
+| point 1 | `ude` | r0 x (0.9, 0.3, 0.1), range 0-20 | 2.7099 | 4.1 to the right elbow | 0.80 | (0.264, 0.088, 0.029) |
+| point 2 | `joyu` | 0.20 grey, range 0-60 | 1.8066 | 17.1 to (13.1, 8.9, 137.3) | 0.715 | 0.143 |
+| ambient | `rt_amb` | 0.15 grey | 1.3549 | - | - | 0.15 |
+
+- **`rt_poi` is not bound.** At (0, 15, 117) it is 31 units from P and scores
+  1.81 x 0.69 = 1.25. That is below `joyu` (1.29) and `ude` (2.16).
+- **`ude` is bound**, with its hue. The colour sent is 0.293 x (0.9, 0.3, 0.1).
+  0.293 = r0 x 0.80 needs r0 = 0.37, and r0 is drawn at random in 0.3..0.5
+  every eighth frame (calc kind 6). The light list already holds the next
+  draw, 0.5.
+- So of §10.14's four grey terms, the page had one too many: `rt_poi`.
+
+**`joyu`'s position.** The drawn block puts `joyu` at (13.1, 8.9, 137.3).
+The page puts it at (13.1, 8.9, 137.1) for the frame it grades. The light
+list's (-1.585, 7.771, 136.617) is the camera two frames later (the
+screenshot lag, §10). It is not where the drawn frame had it. Only the
+`joyu` term, with the page's binding:
+
+| `joyu` term (x255) | 01_h | 03_h |
+|---|---|---|
+| at the page's position (= the drawn one) | 22.0 | 22.1 |
+| at the light list's position | 25.2 | 26.9 |
+
+**What the page does now.** Each model has its own two point slots
+(gs.js `modelRig`). Every frame, after the camera's lights move,
+play.js `lightsAt` does `bindLights` at the model's `0xB3` root bone, or at
+its origin. A bound material shades the two slots as directionals from that
+point, with the linear falloff. Unbound materials keep the old per-pixel
+shading. The directional is the heaviest one, not the last. `0x0C (track,
+bone)` spawns now reach both scene readers, but only their light blocks are
+kept. The model and sprite blocks of e415/e418/e423/e424 would need the bone
+too, and nothing has measured them. The effect light takes its colour from
+its program each frame (`0x80` by register) and lives its `0x69` frames. A
+random draw takes the middle of its range.
+
+Per term on Allura's clean pixels (x255): ambient 38 / 38, `rt_inf`
+4.2 / 3.5, `ude` (25.9, 8.6, 2.9) / (44.1, 14.7, 4.9), `joyu` 22.0 / 22.1.
+On 01_h the sum is (90.7, 73.3, 67.7); it was 92 grey. On 03_h it is
+(108.0, 78.6, 68.7); it was 96. Against the screenshot:
+
+| material | screenshot | before | now | mae before | now |
+|---|---|---|---|---|---|
+| `c01f_a_01_h` | 126, 58, 40 | 128, 69, 52 | 129, 59, 41 | 22.7 | 19.4 |
+| `c01f_a_03_h` | 136, 59, 45 | 137, 75, 65 | 146, 64, 49 | 15.8 | 8.9 |
+
+Page grade (`--browser`, display softening on):
+
+| state | cutscene frame | mae before | mae after | the cast's mae |
+|---|---|---|---|---|
+| 00 | e004 1420 | 6.87 | **6.50** | `c01f_a_h` 30.18 -> 26.39 |
+| 03 | e001 3705 | 3.00 | **2.73** | `c21m_a_h` 7.39 -> 4.15, `c15m_a_h` 6.00 -> 4.54 |
+| 04 | e001 10834 | 2.56 | 2.54 | |
+| 05 | e004 1650 | 5.43 | **5.17** | `c01f_a_h` 9.12 -> 8.32 |
+| 06 | e001 1341 | 3.18 | 3.17 | |
+| 07 | e004 2129 | 3.95 | **3.69** | `c01f_a_h` 7.61 -> 5.91 |
+| 08 | e001 7422 | 4.06 | 4.09 | |
+| mean | | 4.15 | **3.98** | |
+
+In state 00, Allura's bias goes from (+9.9, +17.0, +16.9) to (+14.1, +9.2,
++6.2). The grey excess is mostly gone. What's left is red, and most of it
+is on 03_h, about 10 levels hot. One possible cause is the flicker: the
+page uses r0 = 0.4 where the game drew 0.37.
+
+### 10.16 Allura's 03_h excess, term by term
+
+State 00 (e004 1418), the clean pixels §10.15 graded, with the page as of
+§10.15. Each light term is rendered alone (the part-71 method: the shader's
+`col =` line replaced by one term, effects hidden). "Pixel" is texture x
+term, through the display softening, x255.
+
+| term | 03_h light | 03_h pixel | 01_h pixel |
+|---|---|---|---|
+| ambient `rt_amb` | 38.0 grey | 25.7, 24.4, 23.3 | 25.6, 22.0, 18.3 |
+| `rt_inf` | 3.5 grey | 2.8, 2.7, 2.6 | 3.3, 2.8, 2.4 |
+| `ude` | 44.1, 14.7, 4.9 | 29.5, 9.3, 3.0 | 19.2, 5.4, 1.5 |
+| `joyu` | 22.1 grey | 14.4, 13.7, 13.2 | 14.4, 12.3, 10.3 |
+| **lit model** | 107.7, 78.3, 68.5 | **72.5, 50.2, 42.1** | 62.4, 42.5, 32.5 |
+| effect layer (the e004 glow) | | **73.4, 14.0, 7.0** | 66.6, 16.4, 8.2 |
+| fog | | 0 | 0 |
+| page | | 145.9, 64.4, 49.3 | 129.1, 59.1, 41.0 |
+| screenshot | | 136.3, 59.3, 45.4 | 126.2, 57.6, 39.6 |
+| page - screenshot | | **+9.6, +5.2, +3.9** | +3.0, +1.6, +1.4 |
+
+The four terms add up to the page with effects hidden (72.7, 50.4, 42.3),
+and nothing clips. Half of each 03_h pixel's red is the effect layer, not
+light.
+
+**No light term accounts for the excess.** Its shape is about 2.5 : 1.3 : 1.
+`ude` is 10 : 3 : 1 and the grey terms follow the texture, 1.1 : 1.05 : 1.
+Taking off enough `ude` to fix red leaves blue 3 levels hot. A grey term cut
+to fix blue leaves red 5 levels hot. The random draw (0.40 on the page, 0.37
+in the game) is 7.5% of `ude`, (2.2, 0.7, 0.2). Fitted per pixel, the
+residual barely follows any term: rms 12.4 falls to 10.4 on `ude`, 10.7 on
+the effect layer, and 10.1 on `ude` plus grey. It is flat across the glow's
+strength (+6.6 to +12.2 red by quartile). 01_h's second glow quartile shows
+the same shape, (+8.9, +5.2, +4.1), and its other three quartiles show
+almost none.
+
+So the excess is not in the four light terms. Nothing was tuned.
+
+### 10.17 Allura's 03_h excess is interior, not registration or an edge
+
+State 00 (e004 1418), the page at 6e7a6e5, and the pixels of §10.15 and
+§10.16: a material's pixels that its own model owns (grade's region) and
+that were grey under the old per-vertex light (channel spread at most 2).
+No new pixels were picked.
+
+| set | pixels | x | y | centroid |
+|---|---|---|---|---|
+| `c01f_a_01_h` | 3335 | 205-372 | 58-166 | (296.6, 102.9) |
+| `c01f_a_03_h` | 2455 | 204-291 | 115-168 | (246.1, 149.1) |
+
+Both sets lie almost wholly in the box of the known coverage miss (x
+203-363, y 58-166: 3272 and 2350 of them). That box is 01_h's own extent.
+The miss is its vertex-coloured part, which the grey test leaves out. The
+01_h band of §10.16 was not used.
+
+**Registration.** The screenshot was moved against the page: the page's
+(x, y) against the screenshot's (x + dx, y + dy). Mean page - screenshot:
+
+| dx, dy | 01_h | 03_h |
+|---|---|---|
+| 0, 0 | +3.0, +1.6, +1.4 | +9.6, +5.2, +3.9 |
+| -1, -1 | +4.1, +2.0, +1.7 | +8.5, +4.5, +3.5 |
+| -1, -2 | +5.4, +2.8, +2.3 | +7.9, +4.3, +3.4 |
+| -2, -2 | +6.2, +3.1, +2.5 | +7.9, +4.2, +3.4 |
+| +1, 0 | +2.9, +1.7, +1.5 | +10.8, +6.3, +5.0 |
+| +2, +2 | +4.7, +3.5, +2.9 | +17.3, +9.2, +7.4 |
+
+None of the 25 offsets in -2..2 brings 03_h's red below +7.9. Where it gets
+lowest, 01_h's red rises 2.4 to 3.2 levels above its (0, 0) match. So
+registration is not the excess.
+
+**Coverage.** All 03_h parts (2) and 01_h parts (5) are opaque, lit and not
+blended. Page alpha is 255 on 2453 of the 2455 03_h pixels (221 and 226 on
+the other two) and on all 3335 of 01_h. The e004 glow is drawn on top of
+them (§10.16). The fragment under it is full-coverage character.
+
+**Neighbours.** A pixel is interior if all 8 of its neighbours belong to
+the same material and model:
+
+| set | n | page | 8-nb page | screenshot | 8-nb screenshot | excess | 8-nb excess |
+|---|---|---|---|---|---|---|---|
+| 03_h interior | 1905 | 148.8, 65.8, 50.5 | 148.7, 65.8, 50.5 | 138.8, 60.5, 46.5 | 138.7, 60.4, 46.5 | **+10.1, +5.3, +4.0** | +10.0, +5.3, +4.0 |
+| 03_h edge | 550 | 135.9, 59.6, 45.1 | 133.4, 58.2, 43.8 | 127.9, 55.0, 41.6 | 123.9, 52.8, 39.4 | +8.1, +4.5, +3.5 | +9.5, +5.4, +4.4 |
+| 01_h interior | 2534 | 127.4, 58.1, 39.9 | 127.5, 58.3, 40.1 | 126.7, 58.0, 39.5 | 126.3, 57.7, 39.4 | +0.7, +0.2, +0.4 | +1.2, +0.5, +0.7 |
+| 01_h edge | 801 | 134.6, 62.3, 44.4 | 132.2, 60.6, 43.0 | 124.4, 56.3, 39.9 | 123.7, 55.7, 39.3 | +10.1, +6.0, +4.4 | +8.4, +4.9, +3.7 |
+
+On 03_h the excess is interior. The interior pixels carry all of it, and
+their neighbours match them to 0.1 in the page and in the screenshot. So it
+is not an edge. (On 01_h it is the other way round: what excess there is
+sits on its edge pixels, and its interior matches to under a level.)
+Nothing was changed.
+
+### 10.18 Allura's 03_h excess is not in the draw state
+
+State 00, e004 frame 1418, the page at 6e7a6e5 (its frame matches §10.17's
+byte for byte). Same interior sets as §10.17: 01_h 2534 pixels, 03_h 1905.
+Each pixel's material was read from the page itself, by drawing every
+material in a flat id colour, and its uniforms and GL state from the
+material. The light values are the page's own term passes (§10.14), before
+the texture multiplies them. ×255, mean over the set:
+
+| input | 01_h interior | 03_h interior | kind |
+|---|---|---|---|
+| page materials | mesh15-19 (5; 103 pixels draw none in the id pass) | mesh13-14 (2) | same |
+| vertex colour, rgb / a | 128, 128, 128 / 128 | 128, 128, 128 / 128 | same (GS 1.0, neutral) |
+| lit | 1 | 1 | same |
+| ambient | 38.0, 38.0, 38.0 | 38.0, 38.0, 38.0 | same |
+| rt_inf | 2.3, 2.3, 2.3 | 2.5, 2.5, 2.5 | same |
+| ude | 25.1, 8.4, 2.8 | 46.0, 15.3, 5.1 | same light, more of it |
+| joyu | 23.7, 23.7, 23.7 | 24.0, 24.0, 24.0 | same |
+| light sum | 89.2, 72.3, 66.9 | 110.5, 79.8, 69.6 | |
+| bound, lightAt | 1, the same point | 1, the same point | same |
+| blend | off (NoBlending, depth write) | off (NoBlending, depth write) | same |
+| texture function | MODULATE, hasMap 1 | MODULATE, hasMap 1 | same |
+| alpha test | not armed | armed, AREF 120/128 | **differs** |
+| texel alpha, page alpha | 255, 255 | 255, 255 | same |
+| tint, exposure, fxAlpha | 1, 1, 1 | 1, 1, 1 | same |
+| diffuse | 229 (unused: textured) | 229 (unused: textured) | same |
+| fog | on, 500-2500 | on, 500-2500 | same (0 here, §10.16) |
+| uv offset, matId | 0, 0xFFFF | 0, 0xFFFF | same (no effect track) |
+| second pass | none; the texture is only its set's own meshes | none; the same | same |
+| per-material multiply/add | none | none | same |
+| e004 glow on top (normal - nofx) | 66.6, 16.6, 8.3 | 73.2, 13.8, 6.9 | same layer |
+
+One input differs: 03_h arms the alpha test and 01_h does not. Every texel
+under it has alpha 255, so the test passes everywhere and drops nothing. It
+is neither a warm bias nor a scale. The ude light is bigger on 03_h, but it
+is the same light (it was weighed in §10.16), and its 9 : 3 : 1 shape is not
+the excess's 2.5 : 1.3 : 1.
+
+The screenshot is 0.93, 0.92, 0.92 of the page on 03_h interior and 0.99,
+1.00, 0.99 on 01_h interior: an even 7-8% scale on 03_h only, as the brief
+allowed for. No input we read carries it. The draw state does not explain
+the excess. Nothing was changed.
+
+### 10.19 The 7-8% scale is not the alpha test's
+
+State 00, e004 frame 1418, the page at dbfb9f0 (its frame matches §10.17's
+byte for byte), against the same screenshot. Each pixel's material comes from
+§10.18's id pass; the key is the material's texture and its alpha test, so a
+texture drawn both armed and unarmed counts as two rows. Interior: all 8
+neighbours have the same key and page alpha is 255. Unlit rows drop the
+coverage-miss box (x 203-363, y 58-166). Rows under 200 pixels are left out.
+Display space, mean over the set; excess = page - screenshot.
+
+| texture | lit | alpha test | pixels | page | screenshot | excess | screenshot/page |
+|---|---|---|---|---|---|---|---|
+| c01f_a_01_h (control, §10.17 set) | 1 | off | 2534 | 127.4, 58.1, 39.9 | 126.7, 58.0, 39.5 | +0.7, +0.2, +0.4 | 0.99, 1.00, 0.99 |
+| c01f_a_03_h (control, §10.17 set) | 1 | on | 1905 | 148.8, 65.8, 50.5 | 138.8, 60.5, 46.5 | +10.1, +5.3, +4.0 | 0.93, 0.92, 0.92 |
+| c01f_a_01_h (this key) | 1 | off | 2887 | 125.0, 58.3, 40.5 | 125.9, 58.1, 40.2 | -0.9, +0.2, +0.3 | 1.01, 1.00, 0.99 |
+| c01f_a_03_h (this key) | 1 | on | 1911 | 149.8, 66.6, 51.2 | 139.8, 61.3, 47.2 | +10.0, +5.3, +4.0 | 0.93, 0.92, 0.92 |
+| c01f_a_05_h | 1 | off | 298 | 112.8, 41.7, 30.3 | 115.4, 43.6, 30.7 | -2.7, -1.9, -0.5 | 1.02, 1.05, 1.02 |
+| rt01_21 | 0 | on | 14171 | 65.6, 29.4, 22.1 | 63.5, 29.9, 23.5 | +2.1, -0.5, -1.4 | 0.97, 1.02, 1.06 |
+| rt01_11 (blended) | 0 | off | 13759 | 67.8, 33.7, 27.8 | 70.7, 39.7, 34.8 | -3.0, -6.1, -7.0 | 1.04, 1.18, 1.25 |
+| rt01_08 | 0 | off | 4617 | 86.4, 37.9, 28.2 | 81.5, 35.3, 26.0 | +5.0, +2.6, +2.1 | 0.94, 0.93, 0.92 |
+| rt01_09 | 0 | off | 4267 | 66.1, 38.4, 28.1 | 63.0, 36.2, 26.1 | +3.1, +2.2, +1.9 | 0.95, 0.94, 0.93 |
+| rt01_35 | 0 | on | 842 | 78.9, 30.8, 18.9 | 71.1, 26.6, 15.5 | +7.9, +4.3, +3.5 | 0.90, 0.86, 0.82 |
+| rt01_09 | 0 | on | 442 | 102.4, 53.4, 38.5 | 95.8, 49.5, 34.8 | +6.6, +4.0, +3.7 | 0.94, 0.93, 0.90 |
+| rt01_01 | 0 | off | 345 | 87.6, 31.9, 22.9 | 79.6, 27.8, 19.4 | +8.1, +4.1, +3.5 | 0.91, 0.87, 0.85 |
+| rt01_26 | 0 | on | 249 | 90.4, 52.2, 37.4 | 84.3, 47.5, 33.6 | +6.2, +4.7, +3.8 | 0.93, 0.91, 0.90 |
+
+Neither reading holds. Among Allura's lit textures 03_h is the only armed one
+with 200 interior pixels (06_h has 57), so the lit side cannot separate the
+alpha test from 03_h itself; 01_h and 05_h, both off, are within 1-5% and
+05_h leans the other way. On the unlit rt01 room the scale does not follow
+the alpha test: rt01_08 and rt01_09 are off and sit at 0.92-0.95, the 03_h
+range; rt01_21 is on and is within 3% at R with B going the other way; the
+other armed rows (rt01_35, rt01_09, rt01_26) are 0.82-0.94 and not even
+across channels. A 0.92-0.95 scale is not unique to 03_h, and the alpha test
+does not mark which textures carry it. Nothing was changed.
+
+### 10.20 03_h's scale is flat across its light; 01_h's and 05_h's are not
+
+State 00, e004 frame 1418, the page at fe1d6af (its frame matches §10.17's
+byte for byte), against the same screenshot. Sets: the named controls of
+§10.17 (01_h interior 2534, 03_h interior 1905; grey test, so the
+coverage-miss box's vertex-coloured part and 01_h's edge are out) and 05_h's
+§10.19 row (298). Light sum = ambient + rt_inf + joyu + ude, §10.18's scale,
+from the page's own term passes, before the texture. Each set is split at
+the median of the per-pixel R+G+B light sum; the screenshot plays no part
+in the split. Display space, mean over the half; excess = page - screenshot.
+
+| texture | half | pixels | light sum | page | screenshot | excess | screenshot/page |
+|---|---|---|---|---|---|---|---|
+| c01f_a_01_h | low | 1268 | 70.0, 61.3, 58.5 | 114.3, 52.0, 36.0 | 121.1, 56.1, 38.8 | -6.8, -4.1, -2.7 | 1.06, 1.08, 1.08 |
+| c01f_a_01_h | high | 1266 | 108.4, 83.4, 75.3 | 140.4, 64.3, 43.8 | 132.3, 59.9, 40.3 | +8.1, +4.4, +3.5 | 0.94, 0.93, 0.92 |
+| c01f_a_03_h | low | 961 | 96.3, 68.0, 58.5 | 143.4, 60.1, 45.1 | 133.2, 54.9, 41.3 | +10.2, +5.2, +3.8 | 0.93, 0.91, 0.92 |
+| c01f_a_03_h | high | 944 | 124.9, 91.8, 80.8 | 154.4, 71.7, 56.1 | 144.5, 66.2, 51.9 | +9.9, +5.4, +4.2 | 0.94, 0.92, 0.93 |
+| c01f_a_05_h | low | 149 | 95.8, 71.9, 63.9 | 102.4, 38.3, 27.9 | 98.0, 34.2, 23.8 | +4.4, +4.0, +4.1 | 0.96, 0.89, 0.85 |
+| c01f_a_05_h | high | 149 | 140.8, 103.5, 91.1 | 123.1, 45.2, 32.7 | 132.8, 53.1, 37.7 | -9.7, -7.9, -5.0 | 1.08, 1.17, 1.15 |
+
+03_h's halves are a real light difference (R+G+B 223 against 298, 29%
+apart), and its ratio does not move with it: 0.929/0.936, 0.913/0.924,
+0.916/0.925, within 0.7-1.1% per channel, both halves 0.91-0.94. The scale
+is flat across 03_h's light.
+
+Neither of the brief's readings holds whole, because the controls do move.
+01_h's 1.00 is two halves either side of it: the low half is 6-8% too dark
+on the page, the high half 6-8% too bright, at 0.92-0.94, 03_h's scale.
+05_h goes the opposite way: its low half is too bright (0.85-0.96), its
+high half too dark (1.08-1.17). So on 01_h and 05_h the ratio moves with
+the light sum, in opposite directions, while on 03_h it does not. Nothing
+was changed.
+
+### 10.21 The light split was standing in for the texel
+
+Same frame, page and sets as §10.20 (01_h 2534, 03_h 1905, 05_h 298); the
+page's normal pass matches §10.17's byte for byte. One more pass writes the
+sampled texel, `base.rgb` before the light multiply (0-255 per channel).
+Each set is split at the median of the per-pixel texel R+G+B; neither the
+screenshot nor the light sum plays a part in that split. Light sum is
+§10.20's (R+G+B, §10.18's scale). Display space, mean over the half;
+excess = page - screenshot.
+
+How many of §10.20's low-light pixels are also in the low-texel half:
+01_h 47%, 03_h 46%, 05_h 42% -- chance. Texel and light are uncorrelated
+over each set (r = 0.10, -0.03, -0.10), so the two splits are different
+pixels.
+
+| texture | texel half | pixels | texel sum | light sum | page | screenshot | excess | screenshot/page |
+|---|---|---|---|---|---|---|---|---|
+| c01f_a_01_h | low | 1270 | 296 | 226 | 108.0, 46.8, 30.9 | 117.1, 53.9, 36.6 | -9.1, -7.1, -5.7 | 1.08, 1.15, 1.18 |
+| c01f_a_01_h | high | 1264 | 571 | 231 | 146.9, 69.6, 49.0 | 136.4, 62.1, 42.5 | +10.5, +7.5, +6.5 | 0.93, 0.89, 0.87 |
+| c01f_a_03_h | low | 957 | 283 | 261 | 118.4, 44.6, 33.0 | 111.4, 40.3, 29.6 | +7.0, +4.3, +3.4 | 0.94, 0.90, 0.90 |
+| c01f_a_03_h | high | 948 | 722 | 259 | 179.5, 87.3, 68.1 | 166.4, 80.9, 63.5 | +13.2, +6.4, +4.6 | 0.93, 0.93, 0.93 |
+| c01f_a_05_h | low | 149 | 52 | 299 | 94.9, 27.1, 18.5 | 122.1, 47.6, 33.7 | -27.2, -20.5, -15.3 | 1.29, 1.75, 1.83 |
+| c01f_a_05_h | high | 149 | 425 | 268 | 130.6, 56.4, 42.1 | 108.7, 39.7, 27.8 | +21.9, +16.6, +14.3 | 0.83, 0.71, 0.66 |
+
+01_h's texel halves are 16-32% apart per channel (1.08/0.93, 1.15/0.89,
+1.18/0.87), more than its light halves (1.06/0.94, 1.08/0.93, 1.08/0.92),
+with the light sum the same in both (226, 231). Per pixel the ratio follows
+the texel far more than the light (r with texel sum -0.58, -0.71, -0.74;
+with light sum -0.23, -0.18, -0.16). The light split was standing in for
+the texel: since the two are uncorrelated, a light half is a texel mix, and
+the light halves' spread is what is left of the texel's. The low-texel half
+is further from 1 on all three channels (+8, +15, +18% against -7, -11,
+-13%): the page is too dark on dark texels and too bright on bright ones.
+
+05_h does the same, harder: low texel 1.29-1.83, high 0.66-0.83 (r with
+texel -0.56, -0.51, -0.49; with light +0.21, +0.30, +0.29). Its §10.20
+light halves, which ran the other way to 01_h's, are again a texel mix
+(low-light half texel 247, high 231). 03_h is the exception: both texel
+halves sit at 0.90-0.94, 2.6 times apart in texel, with only a channel tilt
+(the low half R 0.94, B 0.90; the high half flat at 0.93), and its ratio
+follows neither (r with texel -0.20, +0.05, +0.13; with light 0.01-0.03).
+
+So on 01_h and 05_h the screenshot has less texel contrast than the page
+over the same light; on 03_h it has the same contrast, scaled by 0.93. A
+split on a page-side quantity will show some of this from noise alone (the
+screenshot shares only part of the page's per-pixel variation), so the size
+of 05_h's spread is an upper bound. Nothing was changed.
+
+### 10.22 01_h's texel halves are neither intermixed nor apart
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). Positions in
+framebuffer pixels. Mixing: of the low-texel pixels with a 4-connected
+neighbour in the interior, the share with one in the high-texel half.
+
+| texture | low-texel mean x, y | high-texel mean x, y | box w x h | mixing | r(ratio, texel) R, G, B |
+|---|---|---|---|---|---|
+| c01f_a_01_h | 293.8, 92.4 | 302.3, 110.7 | 164 x 106 | 34% (431/1270) | -0.58, -0.71, -0.74 |
+| c01f_a_03_h | 246.7, 145.4 | 241.9, 153.2 | 81 x 42 | 24% (231/957) | -0.20, +0.05, +0.13 |
+| c01f_a_05_h | 313.4, 159.5 | 315.7, 160.1 | 62 x 53 | 70% (104/149) | -0.56, -0.51, -0.49 |
+
+01_h's 34% is between the two thresholds (intermixed at 40%, apart under
+20%), so neither reading holds. A position split was run anyway on all
+three, at the median of the axis with the larger mean-position gap (screen
+and texel not used); the low-position side is the one holding more of the
+low-texel pixels.
+
+| texture | axis | overlap | position half | pixels | mean | page | screenshot | screenshot/page |
+|---|---|---|---|---|---|---|---|---|
+| c01f_a_01_h | y | 62% | low | 1297 | 78.2 | 103.2, 51.3, 35.7 | 105.9, 53.2, 36.9 | 1.03, 1.04, 1.03 |
+| c01f_a_01_h | y | | high | 1237 | 126.0 | 152.7, 65.2, 44.3 | 148.5, 63.0, 42.3 | 0.97, 0.97, 0.96 |
+| c01f_a_03_h | y | 72% | low | 994 | 140.8 | 133.8, 56.8, 43.8 | 127.4, 52.7, 40.2 | 0.95, 0.93, 0.92 |
+| c01f_a_03_h | y | | high | 911 | 158.5 | 165.2, 75.6, 57.9 | 151.1, 69.0, 53.4 | 0.92, 0.91, 0.92 |
+| c01f_a_05_h | x | 58% | low | 159 | 309.7 | 118.9, 44.6, 32.5 | 126.6, 50.5, 36.1 | 1.07, 1.13, 1.11 |
+| c01f_a_05_h | x | | high | 139 | 320.0 | 105.8, 38.4, 27.8 | 102.7, 35.8, 24.6 | 0.97, 0.93, 0.89 |
+
+On 01_h the position halves are 6-8% apart against the texel halves' 16-32%,
+and overlap the texel split by 62%: position does not stand in for the
+texel there, though the halves are not intermixed either (the low-texel
+pixels sit 18 rows higher). 05_h is intermixed (70%) and its position halves
+are about half as far apart as its texel halves. Nothing was changed.
+
+### 10.23 The texel alpha is not the term
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). A measurement
+pass wrote the raw `texture2D(map, vUv).a` of the same sample, unblended. In
+gs.js the texel alpha never reaches the colour: it only feeds the alpha test
+(opaque, `aTest`) or the blend (`blendOn`). None of these draws blends; 03_h
+arms the test (which discards nothing, §10.19), and 01_h's and 05_h's main
+draws do not even do that. Alpha is 0-255; excess = screenshot - page.
+
+| texture | alpha test | texel alpha low / high half | excess low half R, G, B | excess high half R, G, B | r(excess, texel alpha) R, G, B |
+|---|---|---|---|---|---|
+| c01f_a_01_h | off (4 px of 2534 on) | 255.0 / 255.0 (two values, 246 and 255) | +9.1, +7.1, +5.7 | -10.5, -7.5, -6.5 | +0.00, -0.00, -0.01 |
+| c01f_a_03_h | on | 255.0 / 255.0 (constant) | -7.0, -4.3, -3.4 | -13.2, -6.4, -4.6 | undefined (alpha constant) |
+| c01f_a_05_h | off | 255.0 / 255.0 (three values, 253-255) | +27.2, +20.5, +15.3 | -21.9, -16.6, -14.3 | -0.02, -0.01, -0.01 |
+
+Page - screenshot is the same with the sign flipped. Whole-set mean excess:
+01_h -0.7, -0.2, -0.4; 03_h -10.1, -5.3, -4.0; 05_h +2.7, +1.9, +0.5. For
+comparison, r(excess, page value) is 01_h -0.34, -0.53, -0.55; 03_h -0.38,
+-0.23, -0.18; 05_h -0.58, -0.64, -0.64.
+
+Every interior texel is alpha 1.0 apart from a handful of filtered edge
+texels, so the excess cannot move with it: on 01_h the correlation is under
+0.25 on all three channels. Alpha is not the term. Nothing was changed.
+
+### 10.24 03_h's page spans more brightness than 01_h's; its ratio stays flat
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). Page is the
+shaded colour the grade compares, in display space; mean over the half.
+§10.21's screenshot/page column is already the ratio of means, so the
+ratio below is the same quantity and agrees with it to rounding.
+
+| texture | texel half | texel sum | page R, G, B | screenshot R, G, B | ratio of means |
+|---|---|---|---|---|---|
+| c01f_a_01_h | low | 296 | 108.0, 46.8, 30.9 | 117.1, 53.9, 36.6 | 1.084, 1.152, 1.184 |
+| c01f_a_01_h | high | 571 | 146.9, 69.6, 49.0 | 136.4, 62.1, 42.5 | 0.928, 0.893, 0.868 |
+| c01f_a_03_h | low | 283 | 118.4, 44.6, 33.0 | 111.4, 40.3, 29.6 | 0.941, 0.904, 0.897 |
+| c01f_a_03_h | high | 722 | 179.5, 87.3, 68.1 | 166.4, 80.9, 63.5 | 0.927, 0.927, 0.932 |
+| c01f_a_05_h | low | 52 | 94.9, 27.1, 18.5 | 122.1, 47.6, 33.7 | 1.286, 1.754, 1.826 |
+| c01f_a_05_h | high | 425 | 130.6, 56.4, 42.1 | 108.7, 39.7, 27.8 | 0.833, 0.705, 0.660 |
+
+Page gap, high half minus low half, R, G, B: 01_h +38.9, +22.8, +18.1;
+03_h +61.1, +42.7, +35.1; 05_h +35.6, +29.2, +23.6. On B, 03_h's gap is
+1.9 times 01_h's (R 1.6, G 1.9 agree), and 03_h's page range on B (33.0 to
+68.1) covers 01_h's (30.9 to 49.0). Over that range 03_h's ratio stays at
+0.90-0.94 on both halves, while 01_h's goes from 1.18 to 0.87. A function of
+page brightness does not mark the ratio. Nothing was changed.

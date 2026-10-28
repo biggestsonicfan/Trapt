@@ -21,6 +21,11 @@
 (function () {
 'use strict';
 
+// Draw order on top of model.js's 0 (opaque) and 1 (blended): effect models,
+// then sprites, after everything in the room.
+const RO_EFFECT = 2, RO_SPRITE = 3;
+// The GS's largest alpha, 0xFF over 0x80.
+const GS_ALPHA_MAX = 255 / 128;
 const req = (typeof require !== 'undefined');
 const arcMod = req ? require('./arc.js') : window.TraptArc;
 const tm2Mod = req ? require('./tm2.js') : window.TraptTm2;
@@ -149,8 +154,10 @@ async function assemble(THREE, disc, name, onProgress) {
         model = smiMod.parse(blob);
         posed = smiMod.bindPose(model);
       } catch (err) { warnings.push(file + ': ' + err.message); continue; }
+      // Each model is lit by the lights bound to it (gs.js `bindLights`)
+      const rig = gsMod.modelRig(THREE, lights);
       const group = modelMod.build(THREE, model, posed, texFor, {
-        lights: lights, fog: scene.fog,
+        lights: rig, fog: scene.fog,
         // `0x80` on a model block is a material multiplier, not a scale.
         // `0x7E` on an effect block is the same kind of thing -- a colour --
         // so whichever the block carried wins, with 0x7E taking precedence
@@ -159,6 +166,12 @@ async function assemble(THREE, disc, name, onProgress) {
       });
       if (e.transform) group.position.set(e.transform[0], e.transform[1],
                                           e.transform[2]);
+      if (e.size) group.scale.set(e.size[0], e.size[1], e.size[2]);
+      // Effects draw after the room, as the game draws them.  three sorts
+      // blended meshes by object origin, and every room mesh's origin is the
+      // world's, so e004's foliage sorted in front of a fire five units from
+      // the lens and painted dark bands of tree line across it.
+      if (e.origin) for (const m of group.children) m.renderOrder = RO_EFFECT;
       // An effect track is spawned at a world point by `0x08`/`0x07` and its
       // blocks are positioned relative to it, so the two add.
       if (e.origin) {
@@ -167,8 +180,17 @@ async function assemble(THREE, disc, name, onProgress) {
         group.position.z += e.origin[2];
       }
       root.add(group);
+      // For `0xB2`: the names of each mesh's base node and its ancestors,
+      // so hiding "buki" takes "buki_obj"'s meshes with it.
+      const partsOf = model.meshes.map(me => {
+        const names = new Set();
+        for (let n = me.base; n >= 0 && n < model.nodes.length; n = model.nodes[n].parent)
+          names.add(model.nodes[n].name);
+        return names;
+      });
       actors.push({ entity: e, model: model, group: group, file: file,
-                    clips: new Map(), bind: posed });
+                    clips: new Map(), bind: posed, partsOf: partsOf, rig: rig,
+                    root: model.nodes.findIndex((n) => n.name === e.rootBone) });
     }
   }
 
@@ -180,9 +202,8 @@ async function assemble(THREE, disc, name, onProgress) {
   // finger, hand, elbow and forearm at once.  A block with a `0x9F` grid is
   // an emitter and becomes a *cloud* of quads -- see `count` below.
   //
-  // This is not the game's particle system -- `0xC8`/`0xC9` clearly steer a
-  // count and a spread that nothing here reads, so a trail of eight sparks
-  // comes out as one sprite at the emitter.  Size and colour over time are
+  // A `0xC8` block bound to two bones or more is not a sprite at all but a
+  // ribbon through them -- see `ribbonAt`.  Size and colour over time are
   // the game's own, straight off the keyframes.
   const sprites = [];
   for (const e of scene.entities) {
@@ -245,6 +266,39 @@ async function assemble(THREE, disc, name, onProgress) {
       ? Math.round(e.emitter.c8[0]) : 0;
     const points = e.binds.length ? e.binds : [null];
 
+    // ...except that a `0xC8` block bound to two bones or more is not
+    // particles at all.  It is a **ribbon**: one strip of `0xC8[0]` segments
+    // threaded through the bones in bind order (`ribbonAt`).  The bones are
+    // its spine, so it gets one mesh and no quad per bone.
+    if (emitted > 0 && e.binds.length >= 2) {
+      const n = Math.min(MAX_PARTICLES, emitted);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array((n + 1) * 6), 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array((n + 1) * 4), 2));
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array((n + 1) * 6), 3));
+      // a triangle strip, two vertices per step along the spine
+      const idx = [];
+      for (let k = 0; k < n; k++) {
+        const a = 2 * k;
+        idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+      }
+      geo.setIndex(idx);
+      const mat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, depthWrite: false, vertexColors: true,
+        blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        color: new THREE.Color(1, 1, 1), opacity: 0,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      mesh.renderOrder = RO_SPRITE;
+      root.add(mesh);
+      sprites.push({ entity: e, mesh: mesh, bind: null, actor: null,
+                     ribbon: { n: n, id: sprites.length, binds: e.binds, bones: [] },
+                     phase: 0 });
+      continue;
+    }
+
     // The emission slots, flattened: which point each particle comes from and
     // how old it is.  A grid block runs a full set at every point; a `0xC8`
     // block has one shared budget dealt round-robin between them.
@@ -287,6 +341,7 @@ async function assemble(THREE, disc, name, onProgress) {
       const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
       mesh.visible = false;
+      mesh.renderOrder = RO_SPRITE;
       root.add(mesh);
       sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null,
                      uvBase: uvBase, cellU: u, cellV: v, cell: -1,
@@ -295,6 +350,18 @@ async function assemble(THREE, disc, name, onProgress) {
   }
   // Resolve each bind to the actor that carries the bone, once.
   for (const s of sprites) {
+    if (s.ribbon) {
+      // every bind rides the same actor; the spine is its bones in order
+      for (const [file, bone] of s.ribbon.binds) {
+        const want = file.toLowerCase();
+        const actor = actors.find((a) => a.file.toLowerCase().replace(/\.smi$/, '') === want)
+                   || actors.find((a) => a.file.toLowerCase().startsWith(want)) || null;
+        const index = actor ? actor.model.nodes.findIndex((n) => n.name === bone) : -1;
+        if (index < 0) { warnings.push('ribbon bound to ' + file + ':' + bone + ', which is not in the scene'); continue; }
+        s.ribbon.bones.push({ actor: actor, index: index });
+      }
+      continue;
+    }
     if (!s.bind) continue;
     const want = s.bind[0].toLowerCase();
     s.actor = actors.find((a) => a.file.toLowerCase().replace(/\.smi$/, '') === want)
@@ -304,6 +371,8 @@ async function assemble(THREE, disc, name, onProgress) {
     if (s.boneIndex < 0)
       warnings.push('effect bound to bone ' + s.bind[1] + ', which ' + s.bind[0] + ' has not');
   }
+
+  boneLights(lights, actors, warnings);
 
   // --- the room, static geometry under the same root
   let room = null;
@@ -359,6 +428,18 @@ function keyLife(e) {
 }
 
 /**
+ * An effect colour as the game stores it.  `0x001D9200` packs the float
+ * RGBA into the drawable's `+0xA8` as `(char)(int)(c * 255)` for RGB and
+ * `* 128` for alpha, with no clamp, so a channel at or past 1 wraps:
+ * e004's glow keys (1.5, 0.2, 0.1) and savestate 05's draw carries
+ * (126, 51, 25)/255 = (0.494, 0.2, 0.098) as its material colour.
+ */
+function packColour(c) {
+  const byte = (v, k) => (Math.trunc(v * k) & 255) / k;
+  return [byte(c[0], 255), byte(c[1], 255), byte(c[2], 255), byte(c[3], 128)];
+}
+
+/**
  * The quad a sprite billboard is drawn on, in a unit square centred on the
  * origin, with UVs `setCell` can rewrite.
  *
@@ -369,7 +450,9 @@ function keyLife(e) {
  * is a radial falloff centred on exactly that corner, and four mirrored
  * copies of it make one round glow twice the tile's width; one flat copy
  * makes a square that is fully opaque along two of its sides, which is what
- * e004's blast looked like before this existed.
+ * e004's blast looked like before this existed.  Each quadrant is a whole
+ * unit, so the glow spans two: savestate 05's quad runs -1..1 in 2x2 tiles,
+ * scaled by its size key (4.46) along the camera's right and down.
  *
  * The UVs written here are the *fractions within a cell* rather than final
  * texture coordinates -- mirroring shows up as a fraction that runs 1 to 0 --
@@ -381,16 +464,18 @@ function spriteGeometry(THREE, mirror) {
                                : new THREE.BufferGeometry();
   }
   const pos = [], uv = [];
-  // Quadrant (qx, qy): qx picks the right half, qy the bottom one.  `u` runs
-  // away from the meeting corner in x and `v` towards it in y, so the tile's
-  // (1, 0) corner -- its bottom-right -- lands at the sprite's middle in all
-  // four.
+  // Quadrant (qx, qy): qx picks the right half, qy the bottom one.  Textures
+  // load with `flipY = false`, so v = 1 is the tile's last row: the (1, 1)
+  // corner -- its bottom-right, texel (63, 63) of ef_s014c -- lands at the
+  // sprite's middle in all four.  The game insets the UVs to 0.01..0.99, as
+  // savestate 05's glow carries them, so no edge bleeds in from the far side.
   for (let qy = 0; qy < 2; qy++) {
     for (let qx = 0; qx < 2; qx++) {
-      const x0 = qx ? 0 : -0.5, x1 = qx ? 0.5 : 0;
-      const y0 = qy ? 0 : 0.5, y1 = qy ? -0.5 : 0;
-      const u0 = qx ? 1 : 0, u1 = qx ? 0 : 1;
-      const v0 = qy ? 0 : 1, v1 = qy ? 1 : 0;
+      const x0 = qx ? 0 : -1, x1 = qx ? 1 : 0;
+      const y0 = qy ? 0 : 1, y1 = qy ? -1 : 0;
+      const lo = 0.01, hi = 0.99;
+      const u0 = qx ? hi : lo, u1 = qx ? lo : hi;
+      const v0 = qy ? hi : lo, v1 = qy ? lo : hi;
       // Two triangles, wound the way three.js winds a plane.
       const c = [[x0, y0, u0, v0], [x1, y0, u1, v0],
                  [x0, y1, u0, v1], [x1, y1, u1, v1]];
@@ -427,15 +512,203 @@ function setCell(s, index) {
 }
 
 /**
- * Turn every live sprite to face `eye`.  A billboard has to be re-aimed
+ * Turn every live sprite, and every billboarded effect model, to face `eye`.  A billboard has to be re-aimed
  * whenever the camera moves, and the viewer's free camera is not the camera
  * `poseAt` knows about, so the page calls this again with the real one.
  */
+/**
+ * A `0xC8` ribbon at `frame`: writes the strip's vertices, UVs and colours
+ * and returns whether there is anything to draw.
+ *
+ * This is the game's trail object, read off the ELF.  `0xCA` appends each
+ * bone to an eight-slot list (`FUN_001C1D50` -> `0x0021EB30`), `0xC8` and
+ * `0xC9` only store, and the object's update (`0x0021ECD0`) rebuilds the
+ * strip every frame with `0x00197840`:
+ *
+ * - the spine is the bones in bind order, one straight piece per pair, and
+ *   the strip's `n + 1` steps are spaced evenly along its whole length;
+ * - at each step the cross-section is a segment `width` long, centred
+ *   `wander` off the spine.  Its direction is fixed per frame; the centre's
+ *   angle random-walks round the spine, its step reset only once it reaches
+ *   a whole radian, so the band corkscrews -- the game's own strips in
+ *   state 00's RAM turn 0.4 rad a step, 330-400 degrees end to end.  That
+ *   is what puts e004's two bands on opposite sides of Allura's forearm.
+ *   `width` is `0xC8[3]` x (0.9..1.1) and `wander`
+ *   `0xC8[2]` x (0.8..1.2), both re-rolled every frame; the walk's seed is
+ *   re-rolled one frame in four.  `0xC8[1]` is passed and never read;
+ * - U runs along the strip, `0xC9[0]` across it, from `0xC9[2]` plus up to
+ *   half of `0xC9[1]` either way, re-rolled every third frame (`0x00197450`
+ *   -- `0xC9[3]`, a scroll rate, is 0 everywhere on the disc).  V is 0 on
+ *   one edge and 1 on the other;
+ * - alpha along it is 1 - (2t - 1)^2 (`0x00197560`, `0x0019B4E0`): nothing
+ *   at either end bone, full halfway.
+ *
+ * The game's own random numbers are not reproducible here, so this draws
+ * from a hash of the frame: the same shape, its own dice.  The game also
+ * turns each piece's frame by the effect object's matrix and flips Y and Z
+ * after; neither moves the band off its spine, and the page's bones are
+ * already in the space it draws in.
+ */
+function ribbonAt(s, frame, local) {
+  const r = s.ribbon, e = s.entity, n = r.n;
+  const spine = [];
+  for (const b of r.bones) {
+    const m = b.actor.lastMats && b.actor.lastMats[b.index];
+    if (!m) return false;
+    const g = b.actor.group.position;
+    spine.push([m[12] + g.x, m[13] + g.y, m[14] + g.z]);
+  }
+  if (spine.length < 2) return false;
+
+  // Each piece's frame: Z along the piece, X and Y any pair square to it.
+  const pieces = [];
+  let total = 0;
+  for (let i = 0; i + 1 < spine.length; i++) {
+    const a = spine[i], b = spine[i + 1];
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const len = Math.hypot(d[0], d[1], d[2]);
+    const z = len > 0 ? [d[0] / len, d[1] / len, d[2] / len] : [0, 0, 1];
+    const up = Math.abs(z[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let x = [up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]];
+    const xl = Math.hypot(x[0], x[1], x[2]);
+    x = [x[0] / xl, x[1] / xl, x[2] / xl];
+    const y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    pieces.push({ origin: a, x: x, y: y, z: z, from: total, to: total + len });
+    total += len;
+  }
+
+  // Dice: an LCG like the game's (1664525, 1013904223), seeded from a hash.
+  const hash = (a, b) => {
+    let h = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul(b + 0x632be5ab, 0xc2b2ae35);
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+    return (h ^ (h >>> 13)) >>> 0;
+  };
+  const lcg = (seed) => {
+    let st = seed >>> 0;
+    return () => { st = (Math.imul(st, 1664525) + 1013904223) >>> 0; return st / 4294967296; };
+  };
+  const frameDice = lcg(hash(r.id, frame));
+  const half = (x) => x * (frameDice() - 0.5);       // FUN_00185EA0
+  // the walk's seed holds until a frame rolls 0 of 4
+  let seedFrame = frame;
+  while (seedFrame > frame - 64 && hash(r.id * 7 + 1, seedFrame) % 4 !== 0) seedFrame--;
+  const c8 = e.emitter.c8, c9 = e.emitter.c9 || [1, 1, 0, 0];
+  const wander = c8[2] * (1 + half(0.4));
+  const width = c8[3] * (1 + half(0.2));
+  const walk = lcg(hash(r.id * 7 + 2, seedFrame));
+
+  const N = n + 1;
+  let phi = (walk() - 0.5) * Math.PI;
+  const ox = width * 0.5 * Math.cos(phi), oy = width * 0.5 * Math.sin(phi);
+  let step = 0;
+  const pos = s.mesh.geometry.attributes.position.array;
+  const put = (v, lx, ly, lz) => {
+    const p = pieces.find((q) => lz <= q.to + 1e-6) || pieces[pieces.length - 1];
+    const zl = lz - p.from;
+    for (let c = 0; c < 3; c++)
+      pos[v * 3 + c] = p.origin[c] + p.x[c] * lx + p.y[c] * ly + p.z[c] * zl;
+  };
+  for (let k = 0; k < N; k++) {
+    // The game truncates the step to an integer before it tests it
+    // (`cvt.w.s`, then `abs` at 0x00132D40), so the limit only bites once
+    // the step reaches a whole radian: the band corkscrews round its spine.
+    step += (walk() - 0.5) * Math.PI / 4;
+    if (Math.abs(Math.trunc(step)) > Math.PI / (N * 2)) step = (Math.PI / N) * (walk() - 0.5);
+    phi += step;
+    const x = wander * Math.cos(phi) + ox, y = wander * Math.sin(phi) + oy;
+    const z = total / n * k;
+    put(2 * k, x, y, z);
+    put(2 * k + 1, x - 2 * ox, y - 2 * oy, z);
+  }
+  s.mesh.geometry.attributes.position.needsUpdate = true;
+
+  // UVs, re-rolled every third frame
+  const uvDice = lcg(hash(r.id * 7 + 3, Math.floor(local / 3)));
+  const u0 = c9[2] + c9[1] * (uvDice() - 0.5);
+  const uv = s.mesh.geometry.attributes.uv.array;
+  const col = s.mesh.geometry.attributes.color.array;
+  for (let k = 0; k < N; k++) {
+    const u = u0 + k * c9[0] / N;
+    uv[k * 4] = u; uv[k * 4 + 1] = 0;
+    uv[k * 4 + 2] = u; uv[k * 4 + 3] = 1;
+    // the blend is additive, so the alpha profile can ride on the colour
+    const t = (2 * k / n) - 1, w = Math.max(0, 1 - t * t);
+    for (let c = 0; c < 6; c++) col[k * 6 + c] = w;
+  }
+  s.mesh.geometry.attributes.uv.needsUpdate = true;
+  s.mesh.geometry.attributes.color.needsUpdate = true;
+  s.mesh.position.set(0, 0, 0);
+  return true;
+}
+
 function faceSprites(built, eye) {
-  if (!built.sprites || !eye) return;
-  for (const s of built.sprites) {
-    if (!s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
+  if (!eye) return;
+  for (const s of built.sprites || []) {
+    if (s.ribbon || !s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
+    // `0xAC`: the game draws the sprite this far toward the eye (scene.js).
+    const pull = s.entity.pull, b = s.base;
+    if (pull && b) {
+      const dx = eye[0] - b[0], dy = eye[1] - b[1], dz = eye[2] - b[2];
+      const k = pull / (Math.hypot(dx, dy, dz) || 1);
+      s.mesh.position.set(b[0] + dx * k, b[1] + dy * k, b[2] + dz * k);
+    }
     s.mesh.lookAt(eye[0], eye[1], eye[2]);
+  }
+  // and the `0xB8` effect cards, which are models but flat ones
+  for (const a of built.actors || []) {
+    if (!a.entity.billboard || !a.group.visible
+        || typeof a.group.lookAt !== 'function') continue;
+    a.group.lookAt(eye[0], eye[1], eye[2]);
+  }
+}
+
+/**
+ * An actor track's material program (scene.js `actorRun`) at `frame`: alpha,
+ * UV, colour, and `0xB0`'s show/hide.  A material faded below 1 goes through
+ * the blend unit for the fade even if it is opaque otherwise.  Returns
+ * whether the mesh is drawn at all.
+ */
+function actorMaterial(mesh, act, frame) {
+  const u = mesh.material && mesh.material.uniforms;
+  const m = u && sceneMod.fxAt(act, mesh.userData.matId, frame);
+  if (!m) return true;
+  const ud = mesh.userData;
+  if (!ud.own) ud.own = { blendOn: u.blendOn.value, transparent: mesh.material.transparent,
+                          depthWrite: mesh.material.depthWrite,
+                          tint: [u.tint.value.x, u.tint.value.y, u.tint.value.z] };
+  const fade = m[0] < 1;
+  u.blendOn.value = fade ? 1 : ud.own.blendOn;
+  mesh.material.transparent = ud.own.transparent || fade;
+  mesh.material.depthWrite = ud.own.depthWrite && !fade;
+  u.fxAlpha.value = m[0];
+  u.uvOff.value.set(m[1], m[2]);
+  if (m[7]) u.tint.value.set(m[3], m[4], m[5]);
+  else u.tint.value.set(...ud.own.tint);
+  return m[6] !== 0 && m[0] > 0;
+}
+
+/**
+ * Drive an effect model from its track's program: its block's position and
+ * scale, and alpha, UV scroll and colour per material id.  The colour replaces the block tint --
+ * `0x7E` is per material, and e004's fire gives its two layers two oranges.
+ */
+function fxApply(group, e, local) {
+  const fx = e.fx;
+  const pl = sceneMod.fxAt(fx, e.block, local, fx.place);
+  if (pl) {
+    group.scale.set(pl[3], pl[4], pl[5]);
+    if (pl[0] !== null) {
+      const o = e.origin || [0, 0, 0];
+      group.position.set(pl[0] + o[0], pl[1] + o[1], pl[2] + o[2]);
+    }
+  }
+  for (const mesh of group.children) {
+    const u = mesh.material && mesh.material.uniforms;
+    const m = u && sceneMod.fxAt(fx, mesh.userData.matId, local);
+    if (!m) continue;
+    u.fxAlpha.value = m[0];
+    u.uvOff.value.set(m[1], m[2]);
+    u.tint.value.set(m[3], m[4], m[5]);
   }
 }
 
@@ -447,9 +720,22 @@ function poseAt(built, frame) {
   let posed = 0, skipped = 0;
   for (const actor of built.actors) {
     const e = actor.entity;
-    const on = frame >= e.start && sceneMod.visibleAt(e, frame);
+    // An effect track's program says when it is over (scene.js `fxRun`).
+    const age = frame - e.start;
+    const on = frame >= e.start && sceneMod.visibleAt(e, frame)
+      && !(e.fx && e.fx.end !== null && age >= e.fx.end);
     actor.group.visible = on;
     if (!on) { skipped++; continue; }
+    if (e.fx) fxApply(actor.group, e, age);
+    if ((e.parts && e.parts.length) || e.act) {
+      const hidden = sceneMod.hiddenPartsAt(e, frame);
+      for (const child of actor.group.children) {
+        const names = actor.partsOf[child.userData.meshIndex];
+        let vis = !names || ![...hidden].some(n => names.has(n));
+        if (e.act) vis = actorMaterial(child, e.act, frame) && vis;
+        child.visible = vis;
+      }
+    }
     const cur = sceneMod.clipAt(e, frame);
     if (!cur) continue;
     const clip = built.clipFor(actor, cur.file);
@@ -518,15 +804,27 @@ function poseAt(built, frame) {
     if (!live) continue;
     // `0x80` on a sprite block is the colour, the same way it is on a light,
     // and it is all an unkeyed sprite has: e004's spark is (0.9, 0.3, 0.1).
-    const [r, g, b, a] = e.colourKeys.length ? sceneMod.colourAt(e, t)
-      : (e.scale ? e.scale : [1, 1, 1, 1]);
+    const [r, g, b, a] = packColour(e.colourKeys.length ? sceneMod.colourAt(e, t)
+      : (e.scale ? e.scale : [1, 1, 1, 1]));
     const [sx, sy] = sceneMod.sizeAt(e, t);
-    // The GS treats 0x80 as 1.0, and these colours run past 1 -- 1.5 and 1.8
-    // both occur -- so the excess is an overbright the additive blend wants
-    // rather than a value to clamp away.  Only alpha is clamped, because
-    // three.js reads opacity as 0..1.
-    s.mesh.material.color.setRGB(r, g, b);
+    // The GS treats 0x80 as 1.0, and alpha runs past 1 -- 1.8 occurs -- so
+    // As is 0..255/128, an overbright the additive blend wants rather than a
+    // value to clamp away.  A WebGL target clamps source alpha to 1 before
+    // it blends, so the excess rides on the colour: the blend is additive,
+    // and colour * alpha is all it ever multiplies out to.
+    const over = Math.min(GS_ALPHA_MAX, Math.max(1, a));
+    // A ribbon's colour reaches its vertices as `0x001D9200` packs it --
+    // RGB x 255, alpha x 128 -- and nothing scales it back before the GS,
+    // where 0x80 is 1.0: (0.9, 0.3, 0.1, 1.5) is (229, 76, 25, 192) in
+    // savestate 00's strips.  So its RGB is 255/128 of a sprite's.
+    const pack = s.ribbon ? 255 / 128 : 1;
+    s.mesh.material.color.setRGB(r * over * pack, g * over * pack, b * over * pack);
     s.mesh.material.opacity = Math.max(0, Math.min(1, a));
+    if (s.ribbon) {
+      s.mesh.visible = ribbonAt(s, frame, local);
+      if (s.mesh.visible) lit++;
+      continue;
+    }
     // Size is in scene units and carries the shape: e001's torch runs from
     // 1 x 2 to 4 x 7, a plume taller than it is wide.
     s.mesh.scale.set(sx || 1, sy || 1, 1);
@@ -547,6 +845,7 @@ function poseAt(built, frame) {
       if (e.origin) { px += e.origin[0]; py += e.origin[1]; pz += e.origin[2]; }
     }
     s.mesh.position.set(px, py, pz);
+    s.base = [px, py, pz];
     lit++;
   }
   // Face them at whatever is looking.  The scene's own camera is the default
@@ -587,7 +886,50 @@ function poseAt(built, frame) {
   return out;
 }
 
-const api = { assemble, poseAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
+/** A light spawned on a bone (`0x0C`) follows it: find whose bone it is. */
+function boneLights(rig, actors, warnings) {
+  for (const l of rig.points) {
+    const b = l.ent && l.ent.bone;
+    if (!b) continue;
+    l.actor = actors.find((a) => a.entity.track === b.owner) || null;
+    l.boneIndex = l.actor ? l.actor.model.nodes.findIndex((n) => n.name === b.name) : -1;
+    if (l.boneIndex < 0) warnings.push('light bound to ' + b.owner + ':' + b.name + ', which is not in the scene');
+  }
+}
+
+/** Where node `i` of a posed actor is in the world, or its group's origin. */
+function nodeAt(actor, i) {
+  const g = actor.group.position, m = i >= 0 && actor.lastMats && actor.lastMats[i];
+  return m ? { x: m[12] + g.x, y: m[13] + g.y, z: m[14] + g.z } : { x: g.x, y: g.y, z: g.z };
+}
+
+/**
+ * Light every model for `frame`, after `poseAt` and after the camera's
+ * lights have moved (gs.js `placeCameraLights`).  An effect light lives its
+ * `0x69` frames, takes its program's colour, and rides its bone; then each
+ * visible model binds the best two point lights at its root bone (ELF
+ * 0x001D6750 passes `koshi` for Allura), or at its origin.
+ */
+function lightsAt(built, frame) {
+  const rig = built.lights;
+  for (const l of rig.points) {
+    const e = l.ent;
+    if (!e || !e.fx) continue;
+    const t = frame - e.start;
+    l.on = t >= 0 && (e.lightLife === null || t < e.lightLife)
+      && !(e.fx.end !== null && t >= e.fx.end);
+    const c = sceneMod.fxAt(e.fx, e.block, t, e.fx.light);
+    if (c) l.c.set(c[0], c[1], c[2]);
+    if (l.actor && l.boneIndex >= 0 && l.actor.lastMats) {
+      const p = nodeAt(l.actor, l.boneIndex);
+      l.p.set(p.x, p.y, p.z);
+    }
+  }
+  for (const a of built.actors)
+    if (a.rig && a.group.visible) gsMod.bindLights(rig, a.rig, nodeAt(a, a.root));
+}
+
+const api = { assemble, poseAt, lightsAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptPlay = api;
 })();

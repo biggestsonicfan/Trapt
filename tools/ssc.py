@@ -25,6 +25,7 @@ tag    payload
  C2    s32, s32       -- rational literal, numerator / denominator
  C3    NUL-terminated Shift-JIS string
  C4    s32 big-endian -- second integer namespace
+ C5    s32 big-endian -- a register of the effect VM, by index
 ===== ================================================
 
 `C2` is how the compiler spells a float: ``5/10`` is 0.5, ``11/100`` is 0.11,
@@ -54,12 +55,20 @@ END = 0xEF
 # handler = *(0x00376660 + op * 4)).  Everything else is still unnamed.
 OPS = {
     0x00: 'end_track',
+    0x01: 'yield',            # this frame of an effect program is done
     0x02: 'set_actor_slot',
-    0x03: 'set_actor_count',
+    0x03: 'skip',             # (n) -> skip the next n calls unless the flag is set
     0x04: 'at_time',          # (start, end, step) -> guard for the calls after it
     0x05: 'cue',              # (0, c4:index)
     0x06: 'spawn_track',      # ("file.ssc", 0)
     0x09: 'preload',          # ("rt/e001/x.sai", -1, -1, -1) -> "data/%s"
+    0x7C: 'uv_offset',        # (u, v, material flags)
+    0x7D: 'alpha',            # (a, material flags)
+    0x8C: 'place',            # (x, y, z, mode) -- 0x84's handler; mode 8 = scale
+    0xAC: 'toward_eye',       # (f) -> drawn f units nearer the camera
+    0xA4: 'if_state',         # (n) -> flag = r16 == n
+    0xA6: 'expr',             # (dst, a, b, float, op) like 0x0D-0x1C
+    0xB8: 'billboard',        # ("none", 3)
     0x0B: 'sync',
     0x50: 'scene_begin',
     0x51: 'scene_end',
@@ -124,6 +133,9 @@ def parse(data):
             elif t == 0xC4:
                 args.append(('c4', struct.unpack_from('>i', data, q)[0]))
                 q += 4
+            elif t == 0xC5:
+                args.append(('c5', struct.unpack_from('>i', data, q)[0]))
+                q += 4
             elif t == 0xC2:
                 args.append(('c2',) + struct.unpack_from('>ii', data, q))
                 q += 8
@@ -181,6 +193,8 @@ def _fmt(a):
         return '%g' % (num / den) if den else '%d/%d' % (num, den)
     if isinstance(a, tuple) and a[0] == 'c4':
         return '#%d' % a[1]
+    if isinstance(a, tuple) and a[0] == 'c5':
+        return 'r%d' % a[1]
     return repr(a)
 
 

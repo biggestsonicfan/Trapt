@@ -14,6 +14,7 @@ enclosing `at_time` selected, so unnamed opcodes are still inspectable rather
 than silently dropped.
 """
 import collections
+import math
 import os
 
 import afs
@@ -25,13 +26,13 @@ import ssc
 
 # opcodes we act on
 OP_END = 0x00
-OP_ACTOR_COUNT = 0x03
 OP_AT_TIME = 0x04
 OP_CUE = 0x05
 OP_SPAWN = 0x06
 OP_PRELOAD = 0x09
 OP_SPAWN_FX_AT = 0x07      # (track, x, y, z, target) -- offset from a target
 OP_SPAWN_FX = 0x08         # (track, x, y, z, flags)  -- world position
+OP_SPAWN_FX_BONE = 0x0C    # (track, bone) -- on one of the spawner's bones
 OP_SCENE_BEGIN = 0x50
 OP_SCENE_END = 0x51
 OP_FADE_IN = 0x53
@@ -57,7 +58,12 @@ OP_VISIBLE = 0xA2
 OP_ROOT_BONE = 0xB3
 OP_LIGHT_TYPE = 0xB4
 OP_LIGHT_RANGE = 0xB5
+OP_LIGHT_LIFE = 0x69       # a light block's life, in frames
 OP_ATTACH = 0xB7
+# `0xB2 (name, show, 0)`, ELF 0x001C20C0 -> 0x001D53F0: hide the model's node
+# `name` and what hangs under it (show 0 adds the name to a four-slot list at
+# model +0x22C, 1 takes it out).  Always "buki", the weapon, on the disc.
+OP_HIDE_PART = 0xB2
 OP_CAMERA = 0xB9
 OP_FOG = 0xC7
 # Sprite effects.  Handlers, from the dispatch table at 0x00376660:
@@ -177,10 +183,13 @@ class Entity:
         self.scale = None         # scale on a model, colour on a light
         self.clips = []           # [(frame, 'x.sai', clip_offset)]
         self.visibility = []      # [(frame, bool)]
+        self.parts = []           # [(frame, node name, shown)] from `0xB2`
         self.light = None         # 'directional' | 'point' | 'ambient'
         self.light_range = None   # (near, far)
         self.light_parent = False # `0xB4` arg1: ride the camera (see below)
         self.light_dir = None     # inherited from the room's `.sli`
+        self.light_life = None    # `0x69` on a light block, frames
+        self.bone = None          # (spawner track, bone) for a `0x0C` spawn
         self.origin = None        # world position a `0x08` spawn placed it at
         self.tint = None          # (r, g, b, w) from `0x7E`; w is not alpha
         self.start = 0            # frame the block ran on
@@ -253,6 +262,14 @@ class Entity:
                 state = on
         return state
 
+    def hidden_parts_at(self, frame):
+        """The node names `0xB2` has hidden at `frame`."""
+        hidden = set()
+        for f, name, shown in self.parts:
+            if f <= frame:
+                (hidden.discard if shown else hidden.add)(name)
+        return hidden
+
     def __repr__(self):
         return '<Entity %s kind=%s models=%s clips=%d>' % (
             self.name, self.kind, self.models, len(self.clips))
@@ -294,7 +311,8 @@ class Scene:
         self.fog = None           # (near, far, r, g, b)
         self.room_model = None    # '<room>.smi' from DATA/ROOM/<ROOM>_ALL.ARC
         self.room_lights = []     # <room>.sli, the room's own light set
-        self.effects = []         # [(frame, track, (x,y,z), target)] from 0x07/0x08
+        self.effects = []         # [(frame, track, (x,y,z), target, bone)]
+                                  # from 0x07/0x08/0x0C
         self.events = []          # (frame, track, opcode, args)
         self.archives = {}        # lower-case member name -> bytes
         self.loose = {}           # lower-case base name -> bytes (streamed .sai)
@@ -420,7 +438,11 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             # places and frames, so these are instances rather than names.
             pos = tuple(_num(a) for a in args[1:4])
             tgt = _int(args[4]) if code == OP_SPAWN_FX_AT and len(args) > 4 else None
-            scene.effects.append((frame, ssc.sj(args[0]), pos, tgt))
+            scene.effects.append((frame, ssc.sj(args[0]), pos, tgt, None))
+        elif code == OP_SPAWN_FX_BONE and len(args) > 1:
+            # Allura's e004 track lights her right elbow with `ef_e004_13`.
+            scene.effects.append((frame, ssc.sj(args[0]), (0.0, 0.0, 0.0), None,
+                                  (track_name, ssc.sj(args[1]))))
         elif code == OP_CAMERA:
             scene.camera_file = ssc.sj(args[1])
         elif code == OP_BGM_START:
@@ -511,8 +533,8 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             entity.grid = {'rate': rate, 'cols': cols, 'rows': rows,
                            'cells': cells, 'life': rate * cells}
         elif code in (OP_FX_EMIT_A, OP_FX_EMIT_B) and entity is not None:
-            # Structure only: a count and three numbers, then four more.  What
-            # they steer is not established, so they are carried and not used.
+            # A ribbon's shape: `0xC8` (segments, -, wander, width) and `0xC9`
+            # (U span, U jitter, U base, U scroll); docs/VIEWER.md 10.7.
             if entity.emitter is None:
                 entity.emitter = {}
             entity.emitter['%02x' % code] = [_num(a) for a in args]
@@ -537,6 +559,13 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
         elif code == OP_VISIBLE:
             track_vis.append((frame, not (_int(args[0]) & VIS_HIDDEN
                                           and _int(args[1]))))
+        elif code == OP_HIDE_PART:
+            # Inside the block, and after it to give the weapon back; the
+            # handler acts on the track's current model either way.
+            owner = entity or next((e for e in reversed(scene.entities)
+                                    if e.track == track_name), None)
+            if owner is not None:
+                owner.parts.append((frame, ssc.sj(args[0]), bool(_int(args[1]))))
         elif entity is not None:
             if code == OP_MODEL:
                 entity.models.append(ssc.sj(args[0]))
@@ -573,11 +602,18 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
                 entity.light_parent = bool(len(args) > 1 and _num(args[1]))
             elif code == OP_LIGHT_RANGE:
                 entity.light_range = tuple(_num(a) for a in args[:2])
+            elif code == OP_LIGHT_LIFE and entity.kind == KIND_LIGHT and args:
+                entity.light_life = _int(args[0])
         if code == OP_END:
             break
+    # Only a spawned effect is a per-frame program; actor tracks use the
+    # same registers but are cue-driven timelines (see `_fx_end`).
+    fx_end = _fx_end(blob) if origin is not None else None
     for e in scene.entities:
         if e.track == track_name:
             e.visibility = list(track_vis)
+            if fx_end is not None and e.start >= frame_base and e.track_len is None:
+                e.track_len = fx_end
             # How long the track ran.  A sprite block with no `0x6E` alpha
             # keys has nothing else that says when it is over -- e004's spark
             # tracks are thirty frames long and carry only `0x80` and the
@@ -589,6 +625,100 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             if e.track_len is None:
                 e.track_len = frame - frame_base
     return counter
+
+
+FX_YIELD, FX_SKIP, FX_STATE = 0x01, 0x03, 0xA4
+FX_UV, FX_ALPHA, FX_CMP = 0x7C, 0x7D, 0xA6
+# The other opcodes the dispatch table at 0x376660 points at the calculator.
+FX_CALC_EXTRA = (0xA0, 0xA1, 0xA5, FX_CMP, 0xA9)
+FX_STATE_REG = 16
+FX_MAX_FRAMES = 3600
+
+
+def _is_reg(a):
+    return isinstance(a, tuple) and a[0] == 'c5'
+
+
+def _fx_end(blob):
+    """The local frame a spawned effect's program ends on, or None.
+
+    An effect track is a per-frame program, not a timeline: every frame the
+    game runs it from the top until `0x01` (this frame is done) or `0x00`
+    (the track is over), with `0x04` setting a condition flag, `0x03 n`
+    skipping n calls when it is clear, `0xA4 n` testing r16 == n and the
+    calculator ops (`0x0D`-`0x1C`, `0xA0`, `0xA1`, `0xA5`, `0xA6`, `0xA9`) doing arithmetic on registers.
+    `web/scene.js`'s `fxRun` is the full VM -- it also records each frame's
+    material alpha, UV scroll and placement for the page to draw; this is
+    the part that says when the track stops.  None for a track that touches
+    no register or material (a plain timeline) or outlives FX_MAX_FRAMES.
+    """
+    calls = [(op[0], args) for _, op, args in ssc.parse(blob) if op is not None]
+    if not any(op in (FX_UV, FX_ALPHA) or any(_is_reg(a) for a in args)
+               for op, args in calls):
+        return None
+    regs = {}
+
+    def val(a):
+        return regs.get(a[1], 0) if _is_reg(a) else _num(a)
+
+    def sint(a):
+        v = _int(a)
+        return v - 0x100000000 if v & 0x80000000 else v
+
+    cond = False
+    for t in range(FX_MAX_FRAMES):
+        pc = 0
+        while pc < len(calls):
+            op, args = calls[pc]
+            pc += 1
+            if op == OP_END:
+                return t
+            if op == FX_YIELD:
+                break
+            if op == FX_SKIP:
+                if not cond:
+                    pc += sint(args[0])
+            elif op == OP_AT_TIME:
+                a, b, c = (sint(x) for x in args[:3])
+                if c > 0:
+                    cond = t >= a and (b < 0 or t <= b) and (t - a) % c == 0
+                elif b >= 0:
+                    cond = a <= t <= b
+                else:
+                    cond = t == a
+            elif op == FX_STATE:
+                cond = regs.get(FX_STATE_REG, 0) == sint(args[0])
+            elif (0x0D <= op <= 0x1C or op in FX_CALC_EXTRA) and len(args) >= 5:
+                fl, kind = sint(args[3]) == 1, sint(args[4])
+                fix = (lambda x: x) if fl else (lambda x: math.trunc(x))
+                if kind == 10:
+                    x, y = fix(val(args[0])), fix(val(args[1]))
+                    tests = [x == y, x > y, x < y, x >= y, x <= y, x != y]
+                    k = sint(args[2])
+                    cond = tests[k] if 0 <= k < len(tests) else False
+                    continue
+                if not _is_reg(args[0]):
+                    continue
+                a, b = fix(val(args[1])), fix(val(args[2]))
+                r = regs.get(args[0][1], 0)
+                if kind == 0:
+                    r = a
+                elif kind == 1:
+                    r = a + b
+                elif kind == 2:
+                    r = a - b
+                elif kind == 3:
+                    r = a * b
+                elif kind == 4:
+                    r = a / b if b else 0
+                elif kind == 8 and b > a:
+                    r = a + (r - a) % (b - a)
+                elif kind == 9:
+                    r = min(b, max(a, r))
+                else:
+                    continue
+                regs[args[0][1]] = fix(r)
+    return None
 
 
 def _family(clip_name):
@@ -641,6 +771,16 @@ def _num(a):
 
 # ------------------------------------------------------------------- loading
 
+def _keep_lights(scene, marks, bone):
+    """A bone-bound (`0x0C`) spawn keeps only its lights, riding `bone`;
+    nothing has measured what its model and sprite blocks should do yet."""
+    new = [e for e in scene.entities[marks[0]:] if e.kind == KIND_LIGHT]
+    del scene.entities[marks[0]:], scene.events[marks[1]:]
+    for e in new:
+        e.bone, e.index = bone, len(scene.entities)
+        scene.entities.append(e)
+
+
 def load(name, disc=None):
     """Build a `Scene` for cutscene `name` (e.g. ``'e001'``)."""
     disc = disc or Disc()
@@ -683,15 +823,18 @@ def load(name, disc=None):
     # Effect tracks last, because the spawns that name them come out of the
     # tracks above.  Each spawn is its own instance: `ef_e001_20` is spawned
     # three times at three positions, and each wants its own entities.
-    for i, (at, tname, pos, _tgt) in enumerate(list(scene.effects)):
+    for i, (at, tname, pos, _tgt, bone) in enumerate(list(scene.effects)):
         key = tname.lower()
         if not key.endswith('.ssc'):
             key += '.ssc'
         blob = scene.archives.get(key)
         if blob is None:
             continue
+        marks = len(scene.entities), len(scene.events)
         counts['%s@%d' % (key, at)] = _run(scene, '%s#%d' % (key, i), blob,
                                           frame_base=at, origin=pos)
+        if bone is not None:
+            _keep_lights(scene, marks, bone)
 
     scene.opcounts = counts
     scene.duration = max([f for f, _, _, _ in scene.events] or [0]) + 1

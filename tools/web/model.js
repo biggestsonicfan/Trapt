@@ -88,7 +88,8 @@ function build(THREE, model, posed, texFor, opts) {
     mesh.name = 'mesh' + i;
     // Meshes with no triangles are skipped, so the child index is not the SMI
     // mesh index -- posing has to write back through this.
-    mesh.userData = { meshIndex: i };
+    // `matId` is what an effect track's 0x7C/0x7D/0x7E address a material by.
+    mesh.userData = { meshIndex: i, matId: mt.flags };
     // The bounding sphere is computed from the bind pose and never updated
     // as the rig moves, so three.js would cull an actor the moment it walked
     // out of the bounds it was authored in -- which is what made half of

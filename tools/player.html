@@ -627,6 +627,7 @@ uniform sampler2D map; uniform float hasMap;
 uniform vec4 diffuse; uniform vec3 tint;
 uniform vec3 ambient, dirColour, dirDir;
 uniform vec3 pt0c, pt0p, pt1c, pt1p; uniform vec2 pt0r, pt1r;
+uniform vec3 lightAt; uniform float bound;   // see bindLights
 uniform vec3 fogColour; uniform vec2 fogRange; uniform float fogOn;
 uniform vec3 eye; uniform float exposure;
 uniform float lit;             // 1 = shade from normals, 0 = baked vertex colour
@@ -634,8 +635,17 @@ uniform float alphaRef;        // AREF / 128
 uniform float aTest;           // material arms TEST ATE=1 (.SMI +0x42 & 0x60)
 uniform float blendOn;         // material goes through the ALPHA blend unit
 uniform float ps2;             // 0 = bypass the GS emulation entirely
+uniform float fxAlpha;         // an effect track's 0x7D/0x7E material alpha
 varying vec2 vUv; varying vec3 vN; varying vec3 vP; varying vec4 vC;
 vec3 point(vec3 c, vec3 pos, vec2 rng, vec3 n) {
+  // A bound model's point lights are directionals from one point on it,
+  // dimmed linearly between near and far (ELF 0x001B79B0), as the VU1 kernel
+  // gets them; an unbound one keeps the per-pixel falloff.
+  if (bound > 0.5) {
+    vec3 d = pos - lightAt;
+    float att = clamp(1.0 - (length(d) - rng.x) / max(rng.y - rng.x, 0.001), 0.0, 1.0);
+    return c * max(dot(n, normalize(d)), 0.0) * att;
+  }
   vec3 d = pos - vP;
   float att = 1.0 - smoothstep(rng.x, max(rng.y, rng.x + 0.001), length(d));
   return c * max(dot(n, normalize(d)), 0.0) * att;
@@ -712,7 +722,7 @@ void main() {
     col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);  // ACES
     col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
   }
-  gl_FragColor = vec4(col, blendOn > 0.5 ? base.a : 1.0);
+  gl_FragColor = vec4(col, blendOn > 0.5 ? base.a * clamp(fxAlpha, 0.0, 1.0) : 1.0);
 }`;
 
 // The rig's own numbers, no correction.  This was 1.35, fitted to compensate
@@ -791,6 +801,7 @@ function makeMaterial(mat, tintArr, isLit) {
       aTest: { value: mat.atest === 0 ? 0 : 1 },
       blendOn: { value: blend ? 1 : 0 },
       ps2: { value: PS2 ? 1 : 0 },
+      fxAlpha: { value: 1 },
     },
   });
 }
@@ -875,6 +886,9 @@ const rt = new THREE.WebGLRenderTarget(RT_W, RT_H, {
   minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter,
   format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
   depthBuffer: true, stencilBuffer: false,
+  // 24-bit Z, as the GS has; three's default renderbuffer is 16-bit and lets
+  // rp03's backing box fight through the facade.
+  depthTexture: new THREE.DepthTexture(RT_W, RT_H, THREE.UnsignedIntType),
 });
 
 const POST_V = `
