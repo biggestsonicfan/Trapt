@@ -1972,3 +1972,40 @@ In state 00, Allura's bias goes from (+9.9, +17.0, +16.9) to (+14.1, +9.2,
 +6.2). The grey excess is mostly gone. What's left is red, and most of it
 is on 03_h, about 10 levels hot. One possible cause is the flicker: the
 page uses r0 = 0.4 where the game drew 0.37.
+
+### 10.16 Allura's 03_h excess, term by term
+
+State 00 (e004 1418), the clean pixels §10.15 graded, with the page as of
+§10.15. Each light term is rendered alone (the part-71 method: the shader's
+`col =` line replaced by one term, effects hidden). "Pixel" is texture x
+term, through the display softening, x255.
+
+| term | 03_h light | 03_h pixel | 01_h pixel |
+|---|---|---|---|
+| ambient `rt_amb` | 38.0 grey | 25.7, 24.4, 23.3 | 25.6, 22.0, 18.3 |
+| `rt_inf` | 3.5 grey | 2.8, 2.7, 2.6 | 3.3, 2.8, 2.4 |
+| `ude` | 44.1, 14.7, 4.9 | 29.5, 9.3, 3.0 | 19.2, 5.4, 1.5 |
+| `joyu` | 22.1 grey | 14.4, 13.7, 13.2 | 14.4, 12.3, 10.3 |
+| **lit model** | 107.7, 78.3, 68.5 | **72.5, 50.2, 42.1** | 62.4, 42.5, 32.5 |
+| effect layer (the e004 glow) | | **73.4, 14.0, 7.0** | 66.6, 16.4, 8.2 |
+| fog | | 0 | 0 |
+| page | | 145.9, 64.4, 49.3 | 129.1, 59.1, 41.0 |
+| screenshot | | 136.3, 59.3, 45.4 | 126.2, 57.6, 39.6 |
+| page - screenshot | | **+9.6, +5.2, +3.9** | +3.0, +1.6, +1.4 |
+
+The four terms add up to the page with effects hidden (72.7, 50.4, 42.3),
+and nothing clips. Half of each 03_h pixel's red is the effect layer, not
+light.
+
+**No light term accounts for the excess.** Its shape is about 2.5 : 1.3 : 1.
+`ude` is 10 : 3 : 1 and the grey terms follow the texture, 1.1 : 1.05 : 1.
+Taking off enough `ude` to fix red leaves blue 3 levels hot. A grey term cut
+to fix blue leaves red 5 levels hot. The random draw (0.40 on the page, 0.37
+in the game) is 7.5% of `ude`, (2.2, 0.7, 0.2). Fitted per pixel, the
+residual barely follows any term: rms 12.4 falls to 10.4 on `ude`, 10.7 on
+the effect layer, and 10.1 on `ude` plus grey. It is flat across the glow's
+strength (+6.6 to +12.2 red by quartile). 01_h's second glow quartile shows
+the same shape, (+8.9, +5.2, +4.1), and its other three quartiles show
+almost none.
+
+So the excess is not in the four light terms. Nothing was tuned.
