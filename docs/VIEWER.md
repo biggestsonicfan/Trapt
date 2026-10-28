@@ -2175,3 +2175,51 @@ on the page, the high half 6-8% too bright, at 0.92-0.94, 03_h's scale.
 high half too dark (1.08-1.17). So on 01_h and 05_h the ratio moves with
 the light sum, in opposite directions, while on 03_h it does not. Nothing
 was changed.
+
+### 10.21 The light split was standing in for the texel
+
+Same frame, page and sets as §10.20 (01_h 2534, 03_h 1905, 05_h 298); the
+page's normal pass matches §10.17's byte for byte. One more pass writes the
+sampled texel, `base.rgb` before the light multiply (0-255 per channel).
+Each set is split at the median of the per-pixel texel R+G+B; neither the
+screenshot nor the light sum plays a part in that split. Light sum is
+§10.20's (R+G+B, §10.18's scale). Display space, mean over the half;
+excess = page - screenshot.
+
+How many of §10.20's low-light pixels are also in the low-texel half:
+01_h 47%, 03_h 46%, 05_h 42% -- chance. Texel and light are uncorrelated
+over each set (r = 0.10, -0.03, -0.10), so the two splits are different
+pixels.
+
+| texture | texel half | pixels | texel sum | light sum | page | screenshot | excess | screenshot/page |
+|---|---|---|---|---|---|---|---|---|
+| c01f_a_01_h | low | 1270 | 296 | 226 | 108.0, 46.8, 30.9 | 117.1, 53.9, 36.6 | -9.1, -7.1, -5.7 | 1.08, 1.15, 1.18 |
+| c01f_a_01_h | high | 1264 | 571 | 231 | 146.9, 69.6, 49.0 | 136.4, 62.1, 42.5 | +10.5, +7.5, +6.5 | 0.93, 0.89, 0.87 |
+| c01f_a_03_h | low | 957 | 283 | 261 | 118.4, 44.6, 33.0 | 111.4, 40.3, 29.6 | +7.0, +4.3, +3.4 | 0.94, 0.90, 0.90 |
+| c01f_a_03_h | high | 948 | 722 | 259 | 179.5, 87.3, 68.1 | 166.4, 80.9, 63.5 | +13.2, +6.4, +4.6 | 0.93, 0.93, 0.93 |
+| c01f_a_05_h | low | 149 | 52 | 299 | 94.9, 27.1, 18.5 | 122.1, 47.6, 33.7 | -27.2, -20.5, -15.3 | 1.29, 1.75, 1.83 |
+| c01f_a_05_h | high | 149 | 425 | 268 | 130.6, 56.4, 42.1 | 108.7, 39.7, 27.8 | +21.9, +16.6, +14.3 | 0.83, 0.71, 0.66 |
+
+01_h's texel halves are 16-32% apart per channel (1.08/0.93, 1.15/0.89,
+1.18/0.87), more than its light halves (1.06/0.94, 1.08/0.93, 1.08/0.92),
+with the light sum the same in both (226, 231). Per pixel the ratio follows
+the texel far more than the light (r with texel sum -0.58, -0.71, -0.74;
+with light sum -0.23, -0.18, -0.16). The light split was standing in for
+the texel: since the two are uncorrelated, a light half is a texel mix, and
+the light halves' spread is what is left of the texel's. The low-texel half
+is further from 1 on all three channels (+8, +15, +18% against -7, -11,
+-13%): the page is too dark on dark texels and too bright on bright ones.
+
+05_h does the same, harder: low texel 1.29-1.83, high 0.66-0.83 (r with
+texel -0.56, -0.51, -0.49; with light +0.21, +0.30, +0.29). Its §10.20
+light halves, which ran the other way to 01_h's, are again a texel mix
+(low-light half texel 247, high 231). 03_h is the exception: both texel
+halves sit at 0.90-0.94, 2.6 times apart in texel, with only a channel tilt
+(the low half R 0.94, B 0.90; the high half flat at 0.93), and its ratio
+follows neither (r with texel -0.20, +0.05, +0.13; with light 0.01-0.03).
+
+So on 01_h and 05_h the screenshot has less texel contrast than the page
+over the same light; on 03_h it has the same contrast, scaled by 0.93. A
+split on a page-side quantity will show some of this from noise alone (the
+screenshot shares only part of the page's per-pixel variation), so the size
+of 05_h's spread is an upper bound. Nothing was changed.
