@@ -1815,3 +1815,54 @@ Page grade (`--browser`, display softening on):
 | 07 | e004 2129 | 3.95 | 3.95 |
 | 08 | e001 7422 | 4.08 | 4.06 |
 | mean | | 4.58 | **4.15** |
+
+### 10.14 Allura's grey light, term by term (state 00, measured only)
+
+The page lights both of Allura's clean materials with grey: 92 on
+`c01f_a_01_h` and 96 on `c01f_a_03_h` (x255). After the glow comes off,
+the screenshot implies a warm light instead. This section takes that grey
+apart. It's measured from the page's own per-term buffers: a copy of
+`frames.mjs` that swaps the shader's final line for one term at a time. The
+pixels are the grader's, softened as it softens them. Nothing in the page
+changed.
+
+| term (x255, R=G=B) | 01_h (3335 px) | 03_h (2455 px) | where it comes from |
+|---|---|---|---|
+| ambient | 38.0 | 38.0 | `rt_amb` 0.15, `rt_e004_map.ssc` |
+| directional | 4.2 | 3.5 | `rt_inf` 0.30, aimed by `rt01.sli`; mean N.L 0.05 |
+| point `joyu` | 24.2 | 23.8 | 0.20, range 0-60, rides the camera (§5.3) |
+| point `rt_poi` | 24.9 | 30.0 | 0.20 at (0, 15, 117), range 0-100 |
+| vertex colour | — | — | the lit path never reads it; cast meshes carry none |
+| material tint, exposure | x1 | x1 | no `0x80`/`0x7E` on Allura's blocks |
+| **sum** | **91.3** | **95.3** | |
+
+Every term the page uses is grey, and each one is exactly the value the
+script holds. The live light list in EE RAM (`0x00813750`-`0x00813A90`,
+records of 0x80 with the data 0x40 ahead of the name) shows the same four
+values. It also holds three lights the page doesn't build:
+
+| live light | colour | kind | source |
+|---|---|---|---|
+| `65/inf_light` | 0.5, 0.5, 0.6 | directional | `rt01.sli` |
+| `65/ambient1` | 0.3 grey | ambient | `rt01.sli` |
+| **`ude`** | **0.45, 0.15, 0.05** (w 0.5) | point, range 0-20 | **`ef_e004_13.ssc`** |
+
+`ude` is the warm one. Allura's own track `rt_e004_c01f_a_h.ssc` fires
+`0x0C (ef_e004_13, hiji_R)` at 1172. That spawns an effect bound to her
+right elbow. The effect is a kind-6 light block with colour
+`(0.9, 0.3, 0.1) x r0`, and r0 is 0.5 in its late phase, the value in RAM.
+Its life (`0x69`) is 300 frames, so it runs to 1472. Neither `scene.py` nor
+`scene.js` reads `0x0C`: they follow only `0x08`/`0x07` spawns. So this
+light never reaches the page.
+
+Placed at its RAM position (0.648, 14.651, 145.033, the 1420 elbow), it
+would add 24/8/3 on 01_h and 56/19/6 on 03_h. The screenshot fits
+`grey + k x ude` exactly in both materials: grey 62 + 1.13 x ude, and
+grey 58 + 0.62 x ude. Left over after the grey is (27, 9, 3) and
+(35, 12, 4), both the light's own 9:3:1. So the warmth has this light's
+hue. But adding it to the page's grey 92/96 makes things worse, because
+the grey part must also drop by about 30-38. That drop is roughly one of
+the two 0.20 point lights; dropping `rt_poi` and taking `ude` at w leaves
+-10/0/+3 and +1/+5/+7. Which lights the game picks for a model is still
+unknown (§5.3: feeding all 12 resident lights is worse), and so is whether
+w scales the colour. None of this is implemented.
