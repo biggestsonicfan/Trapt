@@ -1769,3 +1769,49 @@ What a later step should not do: test another blend model or another pixel
 class against the unsoftened gate. Compare at the display's softness, or
 ask PCSX2 for a sharp capture (its GS dump, or a screenshot with the
 display filter off) and measure the kernel instead of fitting it.
+
+### 10.13 Additive is the game's mode, not bit 0x100
+
+The page drew a blended material additively when its render flags (`f42`,
+SMI material `+0x42`) had bit 0x100. The game doesn't use that bit. It
+picks ALPHA_1 per material at `0x289000` from mode = `f42 & 0x213F & ~0x140`:
+1 or 0x10 is 0x48 (additive), 2 is 0x42, anything else 0x44 (lerp).
+
+Every base material object in the seven capture states' RAM (`+0xE0` the SMI
+material, `+0xCC` -> `+0x20` ALPHA_1) has the ALPHA_1 that rule gives:
+
+| f42 | mode | ALPHA_1 in RAM | old page rule |
+|---|---|---|---|
+| 0x0041 (e004 fire card `ef_m061`) | 1 | 0x48 | lerp |
+| 0x4241 (`rp03e004`) | 1 | 0x48 | lerp |
+| 0x4301 | 1 | 0x48 | additive |
+| 0x0104 (`c21m`) | 4 | 0x44 | additive |
+| 0x4304 (rp03 material 14) | 4 | 0x44 | additive |
+
+The only objects off the rule carry override bit 0x20 at `+0xD8`. Those are
+the extra forced-0x48 passes from `0x28F330` (kind 2), not the base draw. The
+page doesn't draw those passes yet.
+
+Across the disc's 12085 materials the change affects about 550: 400 effect
+and stage materials become additive (mostly `0x41`, `0x4041`, `0x4001`), and
+150 become lerp (`0x144` on Allura's `c01f_a_h` and other cast, `0x4304`,
+`0x4104`, `0x104`).
+
+The visible case is state 00 (e004 1420). The fire card is a disc 6 units in
+front of the camera that covers the whole frame. Lerped, it painted its
+cloud texture over Allura and darkened her green and blue. On hardware it
+only adds red. The rp03 doorway that bit 0x100 was meant to explain no longer
+turns black under the lerp (pin #1720 measured it).
+
+Page grade (`--browser`, display softening on):
+
+| state | cutscene frame | mae before | mae after |
+|---|---|---|---|
+| 00 | e004 1420 | 9.19 | **6.87** |
+| 03 | e001 3705 | 2.98 | 3.00 |
+| 04 | e001 10834 | 2.54 | 2.56 |
+| 05 | e004 1650 | 6.13 | **5.43** |
+| 06 | e001 1341 | 3.19 | 3.18 |
+| 07 | e004 2129 | 3.95 | 3.95 |
+| 08 | e001 7422 | 4.08 | 4.06 |
+| mean | | 4.58 | **4.15** |
