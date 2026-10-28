@@ -1604,3 +1604,52 @@ reason may be the screenshot lag: the page draws 1418 for a savestate of 1420,
 and in two frames the seed has a 44% chance to re-roll and the scales re-roll
 every frame. So the RAM strips need not be the strips in the picture; that is
 not checked. The page cannot reach the game's seeds without the game's RNG.
+
+### 10.10 The extra light is two frames of motion
+
+The savestate holds frame 1420 and the screenshot is 1418, so first: can the
+trail objects be stepped back two frames? They cannot. `0x0021ECD0` re-rolls
+`+0x194` with `0x00185E60(0xFFFF)` on the frames where `0x00185E60(4) == 0`,
+and it draws wander (`+0x19C` x (1 + 0.4(u - 1/2))) and width (`+0x1A0` x
+(1 + 0.2(u - 1/2))) again on every frame. All three come from the shared
+global RNG at `0x0048E070`. The only stores to `+0x194` are the constructor's
+(`0x0021F7B0`) and that re-roll (`0x0021F0D4`). No earlier seed is kept, and
+nothing counts the draws. The GS.bin framebuffers (FBP 0x70000, 0xE0000) are
+a flat fill, so VRAM cannot pin the frame either.
+
+The difference image is the RAM strips with the game's colour, against the
+hardware frame. Lit means L(page - no ribbons) > 30 or L(hw - (no ribbons x
+1.13 + 4)) > 30, the §10.8 mask. That gives 3081 page pixels and 3195
+hardware pixels, 1319 of them in both.
+
+Where both are lit, there is no halo and no overbright core:
+
+| | ribbon light added, RGB | L, page / hw |
+|---|---|---|
+| both lit (1319 px), game colour | (141, 70, 42) vs (129, 78, 45) | 0.98 |
+| both lit (947 px), page colour (before 3d8a521) | (127, 44, 25) vs (132, 80, 46) | 0.73 |
+| hw's brightest quarter (631 px), game colour | (150, 74, 45) vs (160, 117, 62) | 0.76 |
+| 99th percentile L over lit pixels, game colour | 173 vs 174 | |
+
+The page's lit pixels, by how far each is from the nearest hardware ribbon
+pixel:
+
+| distance | 0 px | 1-3 | 4-8 | 9-20 | > 20 |
+|---|---|---|---|---|---|
+| page pixels | 1319 | 785 | 580 | 373 | 3 |
+| excess L (page - hw), thousands | 19.6 | 44.8 | 45.9 | 35.9 | 0.1 |
+
+So the extra light is whole strip pieces lying 1-20 px off the hardware's.
+The biggest are the arc over the head, ribbon 6's twisted wedge by the
+finger end (k = 0-3), and the upright pieces at the left. That is the size of
+one frame's motion. Rebuilding the same seeds on the RAM bones with width x
+0.9-1.1 and wander x 0.8-1.2 (the corners of the game's ranges) moves the
+vertices 5-12 px on average, and up to 15-32 px. It changes 1841-4191 of the
+4006 lit pixels. A seed re-roll, 44% likely over two frames, replaces the
+strip outright. A software GS render of the RAM strips with `spark.tm2`
+(`DATA/EFFECT/EF_COMMON.ARC`) matches the page's ribbons-only render pixel
+for pixel. So the vertices, UVs, texture and envelope are drawn as stored.
+
+**The 255/128 scale is what `0x001D9200` / `0x00197560` store, and no ribbon
+field is misread.** The light the page adds is the right amount, in strips
+the game drew two frames later. Nothing on the page changes for this.
