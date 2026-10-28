@@ -2106,3 +2106,39 @@ The screenshot is 0.93, 0.92, 0.92 of the page on 03_h interior and 0.99,
 1.00, 0.99 on 01_h interior: an even 7-8% scale on 03_h only, as the brief
 allowed for. No input we read carries it. The draw state does not explain
 the excess. Nothing was changed.
+
+### 10.19 The 7-8% scale is not the alpha test's
+
+State 00, e004 frame 1418, the page at dbfb9f0 (its frame matches §10.17's
+byte for byte), against the same screenshot. Each pixel's material comes from
+§10.18's id pass; the key is the material's texture and its alpha test, so a
+texture drawn both armed and unarmed counts as two rows. Interior: all 8
+neighbours have the same key and page alpha is 255. Unlit rows drop the
+coverage-miss box (x 203-363, y 58-166). Rows under 200 pixels are left out.
+Display space, mean over the set; excess = page - screenshot.
+
+| texture | lit | alpha test | pixels | page | screenshot | excess | screenshot/page |
+|---|---|---|---|---|---|---|---|
+| c01f_a_01_h (control, §10.17 set) | 1 | off | 2534 | 127.4, 58.1, 39.9 | 126.7, 58.0, 39.5 | +0.7, +0.2, +0.4 | 0.99, 1.00, 0.99 |
+| c01f_a_03_h (control, §10.17 set) | 1 | on | 1905 | 148.8, 65.8, 50.5 | 138.8, 60.5, 46.5 | +10.1, +5.3, +4.0 | 0.93, 0.92, 0.92 |
+| c01f_a_01_h (this key) | 1 | off | 2887 | 125.0, 58.3, 40.5 | 125.9, 58.1, 40.2 | -0.9, +0.2, +0.3 | 1.01, 1.00, 0.99 |
+| c01f_a_03_h (this key) | 1 | on | 1911 | 149.8, 66.6, 51.2 | 139.8, 61.3, 47.2 | +10.0, +5.3, +4.0 | 0.93, 0.92, 0.92 |
+| c01f_a_05_h | 1 | off | 298 | 112.8, 41.7, 30.3 | 115.4, 43.6, 30.7 | -2.7, -1.9, -0.5 | 1.02, 1.05, 1.02 |
+| rt01_21 | 0 | on | 14171 | 65.6, 29.4, 22.1 | 63.5, 29.9, 23.5 | +2.1, -0.5, -1.4 | 0.97, 1.02, 1.06 |
+| rt01_11 (blended) | 0 | off | 13759 | 67.8, 33.7, 27.8 | 70.7, 39.7, 34.8 | -3.0, -6.1, -7.0 | 1.04, 1.18, 1.25 |
+| rt01_08 | 0 | off | 4617 | 86.4, 37.9, 28.2 | 81.5, 35.3, 26.0 | +5.0, +2.6, +2.1 | 0.94, 0.93, 0.92 |
+| rt01_09 | 0 | off | 4267 | 66.1, 38.4, 28.1 | 63.0, 36.2, 26.1 | +3.1, +2.2, +1.9 | 0.95, 0.94, 0.93 |
+| rt01_35 | 0 | on | 842 | 78.9, 30.8, 18.9 | 71.1, 26.6, 15.5 | +7.9, +4.3, +3.5 | 0.90, 0.86, 0.82 |
+| rt01_09 | 0 | on | 442 | 102.4, 53.4, 38.5 | 95.8, 49.5, 34.8 | +6.6, +4.0, +3.7 | 0.94, 0.93, 0.90 |
+| rt01_01 | 0 | off | 345 | 87.6, 31.9, 22.9 | 79.6, 27.8, 19.4 | +8.1, +4.1, +3.5 | 0.91, 0.87, 0.85 |
+| rt01_26 | 0 | on | 249 | 90.4, 52.2, 37.4 | 84.3, 47.5, 33.6 | +6.2, +4.7, +3.8 | 0.93, 0.91, 0.90 |
+
+Neither reading holds. Among Allura's lit textures 03_h is the only armed one
+with 200 interior pixels (06_h has 57), so the lit side cannot separate the
+alpha test from 03_h itself; 01_h and 05_h, both off, are within 1-5% and
+05_h leans the other way. On the unlit rt01 room the scale does not follow
+the alpha test: rt01_08 and rt01_09 are off and sit at 0.92-0.95, the 03_h
+range; rt01_21 is on and is within 3% at R with B going the other way; the
+other armed rows (rt01_35, rt01_09, rt01_26) are 0.82-0.94 and not even
+across channels. A 0.92-0.95 scale is not unique to 03_h, and the alpha test
+does not mark which textures carry it. Nothing was changed.
