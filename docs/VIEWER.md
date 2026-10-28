@@ -1241,8 +1241,10 @@ about each other -- one taken from the bytecode, one from the texels.
 So flag 3 means the tile is a quadrant and the billboard is it mirrored into
 all four, laid out so the tile's bottom-right corner meets at the middle.
 `play.js` builds those sprites from four quads instead of one
-(`spriteGeometry`); the footprint is unchanged, since the size keys still
-describe the whole sprite.  Everything else keeps the single quad it had.
+(`spriteGeometry`).  Each quad is a whole unit, so the mirrored sprite is
+twice the size keys across: savestate 05's glow is a 2x2 mesh running -1..1,
+scaled by its size key (§10.11).  Everything else keeps the single quad it
+had.
 
 What this does *not* settle is the other five flags.  Only the fourth is read.
 
@@ -1653,3 +1655,54 @@ for pixel. So the vertices, UVs, texture and envelope are drawn as stored.
 **The 255/128 scale is what `0x001D9200` / `0x00197560` store, and no ribbon
 field is misread.** The light the page adds is the right amount, in strips
 the game drew two frames later. Nothing on the page changes for this.
+
+### 10.11 State 05's warm right third is e004's glow
+
+The lead was 66 additive draws in state 05 against 16 in state 07. That count
+came from scanning the whole of RAM, which picks up old frames' packets: the
+packet buffers are never cleared, and freed memory is filled with 0x7C7C7C7C.
+Walking the real DMA chain instead (master lists at 0x4C7100 / 0x4C7500, six
+calls each, ALPHA_1 = 0x48) gives four additive draws in state 05 and two in
+state 07:
+
+| state | additive draws |
+|---|---|
+| 05 | fire cylinder `cyl3` (SMI at 0x843260, `ef_m061a`/`ef_m061b`, colour (0.6, 0.2, 0.1, 0.8)); two `ef_e004_30` glows (`ef_s014c.tm2`) |
+| 07 | the `c30m_d_w` and `c30m_t_w` weapon glints |
+
+The glows are what the right third lacks. Each is a 12-vertex mesh, four
+mirrored quadrants, and the VU1 data says how it is drawn:
+
+- positions run -1..1, and the matrix scales them by 4.46 along the
+  camera's right and down: the size key;
+- the UVs run 0.01..0.99, with 0.99 at the centre, so the centre samples
+  texel (63, 63), the bright corner of the tile;
+- the material colour is (0.494, 0.2, 0.098, 0.156) = (126, 51, 25)/255 and
+  20/128: the key (1.5, 0.2, 0.1) packed by `0x001D9200`, whose R of 382
+  wraps to 126;
+- the position, the origin pulled 2 units toward the eye, is what the page
+  already had.
+
+The page misread three fields of that draw. It drew each quadrant half a
+unit, so the glow was half its width. Its UVs put the centre at uv (1, 0),
+which with `flipY` off is texel (63, 0), alpha 32 rather than 255: the
+glow was dark in the middle and bright at its edges. And it used R = 1.5
+unwrapped. `play.js` now packs effect colours as `0x001D9200` does
+(`packColour`), builds the quadrants a whole unit with the hardware's UVs,
+and nothing else.
+
+Third means (R, G, B), state 05:
+
+| | left | middle | right | mae |
+|---|---|---|---|---|
+| hardware | (77.5, 38.7, 28.1) | (67.4, 43.8, 33.1) | (48.0, 30.2, 23.3) | |
+| before | (80.4, 31.4, 23.6) | (57.6, 37.0, 30.6) | (20.0, 18.7, 17.4) | 14.22 |
+| size only | (60.2, 27.3, 21.6) | (53.4, 36.1, 30.2) | (23.2, 19.3, 17.7) | 13.47 |
+| size + wrap | (47.9, 27.2, 21.5) | (45.1, 36.0, 30.2) | (21.4, 19.3, 17.6) | 14.66 |
+| size + wrap + UVs | (71.4, 36.7, 25.7) | (71.8, 47.1, 35.1) | (43.7, 28.3, 22.1) | 6.52 |
+
+The size and wrap alone made it worse, because the glow was being drawn
+inside out; with the centre on the right texel the right third comes within
+(-4.3, -1.9, -1.2) of the hardware. The VU1 kernel that turns the material
+colour into a GS colour has not been traced; the page still reads material
+1.0 as GS 0x80.

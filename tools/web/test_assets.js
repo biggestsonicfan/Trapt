@@ -662,21 +662,24 @@ async function main() {
     const spark = built.sprites.find(
       (s) => s.mesh.visible && s.entity.sprite.texture === 'spark.tm2');
     // The keyframes: 0x6D grows the flash 0.5 -> 4.5, 0x6E fades its alpha
-    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).  Alpha past 1
-    // cannot reach the blend as alpha, so it rides on the colour: 1.5 * 1.8.
+    // 0 -> 1.8 -> 0 while holding an orange (1.5, 0.2, 0.1).  `0x001D9200`
+    // packs R as (char)(int)(1.5 * 255) = 382, which wraps to 126: savestate
+    // 05's glow carries (126, 51, 25).  Alpha past 1 cannot reach the blend
+    // as alpha, so it rides on the colour: 126/255 * 1.8.
     check('the flash is keyframed, and mid-swell at 1500',
           [+flash.mesh.scale.x.toFixed(2), +flash.mesh.material.opacity.toFixed(2),
            +flash.mesh.material.color.r.toFixed(2)],
-          [3.08, 1, 2.7]);
+          [3.08, 1, 0.89]);
     // A spark has no keys at all -- it takes its colour from 0x80 and its
     // lifetime from the length of its own track.
     // (0.9, 0.3, 0.1) at an alpha of 1.5, folded in the same way.  The
     // sparks are ribbons, whose RGB `0x001D9200` packs x 255 for a GS that
-    // reads 0x80 as 1.0: so x 255/128 on top.
+    // reads 0x80 as 1.0: so x 255/128 on top, after the byte truncates
+    // 0.9 to 229/255.
     check('a spark takes its colour from 0x80',
           [+spark.mesh.material.color.r.toFixed(2),
            +spark.mesh.material.color.g.toFixed(2),
-           +spark.mesh.material.color.b.toFixed(2)], [2.69, 0.9, 0.3]);
+           +spark.mesh.material.color.b.toFixed(2)], [2.68, 0.89, 0.29]);
     // `ef_s014c.tm2` is the one texture on the disc that is a quadrant rather
     // than a whole sprite: measured out of its pixels, its alpha is a clean
     // radial falloff centred on its bottom-right *corner* -- flat 255 out to
@@ -693,20 +696,22 @@ async function main() {
       const pos = s014c.mesh.geometry.attributes.position.array;
       const uv = s014c.mesh.geometry.attributes.uv.array;
       // Mirroring is only right if the tile's bottom-right corner -- the
-      // middle of the glow -- is the corner all four copies meet at.
+      // middle of the glow -- is the corner all four copies meet at.  With
+      // flipY off that is uv (1, 1), inset to 0.99 as savestate 05 has it.
       let meet = 0, wrong = 0;
       for (let i = 0; i < uv.length / 2; i++) {
         const atCentre = pos[i * 3] === 0 && pos[i * 3 + 1] === 0;
-        const isHot = uv[i * 2] === 1 && uv[i * 2 + 1] === 0;
+        const isHot = Math.abs(uv[i * 2] - 0.99) < 1e-6 && Math.abs(uv[i * 2 + 1] - 0.99) < 1e-6;
         if (atCentre && isHot) meet++;
         else if (atCentre !== isHot) wrong++;
       }
       check('every copy puts the glow centre at the middle', [meet > 0, wrong], [true, 0]);
       const xs = [], ys = [];
       for (let i = 0; i < pos.length; i += 3) { xs.push(pos[i]); ys.push(pos[i + 1]); }
-      check('and the four together still fill the unit quad',
+      // Each copy is a whole unit, as the game's 2x2 mesh runs -1..1.
+      check('and each of the four is a whole unit',
             [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)],
-            [-0.5, 0.5, -0.5, 0.5]);
+            [-1, 1, -1, 1]);
     }
     // The quad is always unit -- the shape is the size keys' job, and they
     // disagree with the cell.  e001's torch is a 64x16 cell, four times as

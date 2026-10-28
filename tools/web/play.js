@@ -423,6 +423,18 @@ function keyLife(e) {
 }
 
 /**
+ * An effect colour as the game stores it.  `0x001D9200` packs the float
+ * RGBA into the drawable's `+0xA8` as `(char)(int)(c * 255)` for RGB and
+ * `* 128` for alpha, with no clamp, so a channel at or past 1 wraps:
+ * e004's glow keys (1.5, 0.2, 0.1) and savestate 05's draw carries
+ * (126, 51, 25)/255 = (0.494, 0.2, 0.098) as its material colour.
+ */
+function packColour(c) {
+  const byte = (v, k) => (Math.trunc(v * k) & 255) / k;
+  return [byte(c[0], 255), byte(c[1], 255), byte(c[2], 255), byte(c[3], 128)];
+}
+
+/**
  * The quad a sprite billboard is drawn on, in a unit square centred on the
  * origin, with UVs `setCell` can rewrite.
  *
@@ -433,7 +445,9 @@ function keyLife(e) {
  * is a radial falloff centred on exactly that corner, and four mirrored
  * copies of it make one round glow twice the tile's width; one flat copy
  * makes a square that is fully opaque along two of its sides, which is what
- * e004's blast looked like before this existed.
+ * e004's blast looked like before this existed.  Each quadrant is a whole
+ * unit, so the glow spans two: savestate 05's quad runs -1..1 in 2x2 tiles,
+ * scaled by its size key (4.46) along the camera's right and down.
  *
  * The UVs written here are the *fractions within a cell* rather than final
  * texture coordinates -- mirroring shows up as a fraction that runs 1 to 0 --
@@ -445,16 +459,18 @@ function spriteGeometry(THREE, mirror) {
                                : new THREE.BufferGeometry();
   }
   const pos = [], uv = [];
-  // Quadrant (qx, qy): qx picks the right half, qy the bottom one.  `u` runs
-  // away from the meeting corner in x and `v` towards it in y, so the tile's
-  // (1, 0) corner -- its bottom-right -- lands at the sprite's middle in all
-  // four.
+  // Quadrant (qx, qy): qx picks the right half, qy the bottom one.  Textures
+  // load with `flipY = false`, so v = 1 is the tile's last row: the (1, 1)
+  // corner -- its bottom-right, texel (63, 63) of ef_s014c -- lands at the
+  // sprite's middle in all four.  The game insets the UVs to 0.01..0.99, as
+  // savestate 05's glow carries them, so no edge bleeds in from the far side.
   for (let qy = 0; qy < 2; qy++) {
     for (let qx = 0; qx < 2; qx++) {
-      const x0 = qx ? 0 : -0.5, x1 = qx ? 0.5 : 0;
-      const y0 = qy ? 0 : 0.5, y1 = qy ? -0.5 : 0;
-      const u0 = qx ? 1 : 0, u1 = qx ? 0 : 1;
-      const v0 = qy ? 0 : 1, v1 = qy ? 1 : 0;
+      const x0 = qx ? 0 : -1, x1 = qx ? 1 : 0;
+      const y0 = qy ? 0 : 1, y1 = qy ? -1 : 0;
+      const lo = 0.01, hi = 0.99;
+      const u0 = qx ? hi : lo, u1 = qx ? lo : hi;
+      const v0 = qy ? hi : lo, v1 = qy ? lo : hi;
       // Two triangles, wound the way three.js winds a plane.
       const c = [[x0, y0, u0, v0], [x1, y0, u1, v0],
                  [x0, y1, u0, v1], [x1, y1, u1, v1]];
@@ -783,13 +799,12 @@ function poseAt(built, frame) {
     if (!live) continue;
     // `0x80` on a sprite block is the colour, the same way it is on a light,
     // and it is all an unkeyed sprite has: e004's spark is (0.9, 0.3, 0.1).
-    const [r, g, b, a] = e.colourKeys.length ? sceneMod.colourAt(e, t)
-      : (e.scale ? e.scale : [1, 1, 1, 1]);
+    const [r, g, b, a] = packColour(e.colourKeys.length ? sceneMod.colourAt(e, t)
+      : (e.scale ? e.scale : [1, 1, 1, 1]));
     const [sx, sy] = sceneMod.sizeAt(e, t);
-    // The GS treats 0x80 as 1.0, and these colours run past 1 -- 1.5 and 1.8
-    // both occur -- so the excess is an overbright the additive blend wants
-    // rather than a value to clamp away.  Alpha past 1 is the same thing --
-    // As is 0..255/128 -- but a WebGL target clamps source alpha to 1 before
+    // The GS treats 0x80 as 1.0, and alpha runs past 1 -- 1.8 occurs -- so
+    // As is 0..255/128, an overbright the additive blend wants rather than a
+    // value to clamp away.  A WebGL target clamps source alpha to 1 before
     // it blends, so the excess rides on the colour: the blend is additive,
     // and colour * alpha is all it ever multiplies out to.
     const over = Math.min(GS_ALPHA_MAX, Math.max(1, a));
