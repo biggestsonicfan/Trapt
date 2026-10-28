@@ -2142,3 +2142,36 @@ range; rt01_21 is on and is within 3% at R with B going the other way; the
 other armed rows (rt01_35, rt01_09, rt01_26) are 0.82-0.94 and not even
 across channels. A 0.92-0.95 scale is not unique to 03_h, and the alpha test
 does not mark which textures carry it. Nothing was changed.
+
+### 10.20 03_h's scale is flat across its light; 01_h's and 05_h's are not
+
+State 00, e004 frame 1418, the page at fe1d6af (its frame matches §10.17's
+byte for byte), against the same screenshot. Sets: the named controls of
+§10.17 (01_h interior 2534, 03_h interior 1905; grey test, so the
+coverage-miss box's vertex-coloured part and 01_h's edge are out) and 05_h's
+§10.19 row (298). Light sum = ambient + rt_inf + joyu + ude, §10.18's scale,
+from the page's own term passes, before the texture. Each set is split at
+the median of the per-pixel R+G+B light sum; the screenshot plays no part
+in the split. Display space, mean over the half; excess = page - screenshot.
+
+| texture | half | pixels | light sum | page | screenshot | excess | screenshot/page |
+|---|---|---|---|---|---|---|---|
+| c01f_a_01_h | low | 1268 | 70.0, 61.3, 58.5 | 114.3, 52.0, 36.0 | 121.1, 56.1, 38.8 | -6.8, -4.1, -2.7 | 1.06, 1.08, 1.08 |
+| c01f_a_01_h | high | 1266 | 108.4, 83.4, 75.3 | 140.4, 64.3, 43.8 | 132.3, 59.9, 40.3 | +8.1, +4.4, +3.5 | 0.94, 0.93, 0.92 |
+| c01f_a_03_h | low | 961 | 96.3, 68.0, 58.5 | 143.4, 60.1, 45.1 | 133.2, 54.9, 41.3 | +10.2, +5.2, +3.8 | 0.93, 0.91, 0.92 |
+| c01f_a_03_h | high | 944 | 124.9, 91.8, 80.8 | 154.4, 71.7, 56.1 | 144.5, 66.2, 51.9 | +9.9, +5.4, +4.2 | 0.94, 0.92, 0.93 |
+| c01f_a_05_h | low | 149 | 95.8, 71.9, 63.9 | 102.4, 38.3, 27.9 | 98.0, 34.2, 23.8 | +4.4, +4.0, +4.1 | 0.96, 0.89, 0.85 |
+| c01f_a_05_h | high | 149 | 140.8, 103.5, 91.1 | 123.1, 45.2, 32.7 | 132.8, 53.1, 37.7 | -9.7, -7.9, -5.0 | 1.08, 1.17, 1.15 |
+
+03_h's halves are a real light difference (R+G+B 223 against 298, 29%
+apart), and its ratio does not move with it: 0.929/0.936, 0.913/0.924,
+0.916/0.925, within 0.7-1.1% per channel, both halves 0.91-0.94. The scale
+is flat across 03_h's light.
+
+Neither of the brief's readings holds whole, because the controls do move.
+01_h's 1.00 is two halves either side of it: the low half is 6-8% too dark
+on the page, the high half 6-8% too bright, at 0.92-0.94, 03_h's scale.
+05_h goes the opposite way: its low half is too bright (0.85-0.96), its
+high half too dark (1.08-1.17). So on 01_h and 05_h the ratio moves with
+the light sum, in opposite directions, while on 03_h it does not. Nothing
+was changed.
