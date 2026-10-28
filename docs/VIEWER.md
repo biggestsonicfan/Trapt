@@ -2282,3 +2282,27 @@ comparison, r(excess, page value) is 01_h -0.34, -0.53, -0.55; 03_h -0.38,
 Every interior texel is alpha 1.0 apart from a handful of filtered edge
 texels, so the excess cannot move with it: on 01_h the correlation is under
 0.25 on all three channels. Alpha is not the term. Nothing was changed.
+
+### 10.24 03_h's page spans more brightness than 01_h's; its ratio stays flat
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). Page is the
+shaded colour the grade compares, in display space; mean over the half.
+§10.21's screenshot/page column is already the ratio of means, so the
+ratio below is the same quantity and agrees with it to rounding.
+
+| texture | texel half | texel sum | page R, G, B | screenshot R, G, B | ratio of means |
+|---|---|---|---|---|---|
+| c01f_a_01_h | low | 296 | 108.0, 46.8, 30.9 | 117.1, 53.9, 36.6 | 1.084, 1.152, 1.184 |
+| c01f_a_01_h | high | 571 | 146.9, 69.6, 49.0 | 136.4, 62.1, 42.5 | 0.928, 0.893, 0.868 |
+| c01f_a_03_h | low | 283 | 118.4, 44.6, 33.0 | 111.4, 40.3, 29.6 | 0.941, 0.904, 0.897 |
+| c01f_a_03_h | high | 722 | 179.5, 87.3, 68.1 | 166.4, 80.9, 63.5 | 0.927, 0.927, 0.932 |
+| c01f_a_05_h | low | 52 | 94.9, 27.1, 18.5 | 122.1, 47.6, 33.7 | 1.286, 1.754, 1.826 |
+| c01f_a_05_h | high | 425 | 130.6, 56.4, 42.1 | 108.7, 39.7, 27.8 | 0.833, 0.705, 0.660 |
+
+Page gap, high half minus low half, R, G, B: 01_h +38.9, +22.8, +18.1;
+03_h +61.1, +42.7, +35.1; 05_h +35.6, +29.2, +23.6. On B, 03_h's gap is
+1.9 times 01_h's (R 1.6, G 1.9 agree), and 03_h's page range on B (33.0 to
+68.1) covers 01_h's (30.9 to 49.0). Over that range 03_h's ratio stays at
+0.90-0.94 on both halves, while 01_h's goes from 1.18 to 0.87. A function of
+page brightness does not mark the ratio. Nothing was changed.
