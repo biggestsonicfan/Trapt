@@ -2063,3 +2063,46 @@ their neighbours match them to 0.1 in the page and in the screenshot. So it
 is not an edge. (On 01_h it is the other way round: what excess there is
 sits on its edge pixels, and its interior matches to under a level.)
 Nothing was changed.
+
+### 10.18 Allura's 03_h excess is not in the draw state
+
+State 00, e004 frame 1418, the page at 6e7a6e5 (its frame matches §10.17's
+byte for byte). Same interior sets as §10.17: 01_h 2534 pixels, 03_h 1905.
+Each pixel's material was read from the page itself, by drawing every
+material in a flat id colour, and its uniforms and GL state from the
+material. The light values are the page's own term passes (§10.14), before
+the texture multiplies them. ×255, mean over the set:
+
+| input | 01_h interior | 03_h interior | kind |
+|---|---|---|---|
+| page materials | mesh15-19 (5; 103 pixels draw none in the id pass) | mesh13-14 (2) | same |
+| vertex colour, rgb / a | 128, 128, 128 / 128 | 128, 128, 128 / 128 | same (GS 1.0, neutral) |
+| lit | 1 | 1 | same |
+| ambient | 38.0, 38.0, 38.0 | 38.0, 38.0, 38.0 | same |
+| rt_inf | 2.3, 2.3, 2.3 | 2.5, 2.5, 2.5 | same |
+| ude | 25.1, 8.4, 2.8 | 46.0, 15.3, 5.1 | same light, more of it |
+| joyu | 23.7, 23.7, 23.7 | 24.0, 24.0, 24.0 | same |
+| light sum | 89.2, 72.3, 66.9 | 110.5, 79.8, 69.6 | |
+| bound, lightAt | 1, the same point | 1, the same point | same |
+| blend | off (NoBlending, depth write) | off (NoBlending, depth write) | same |
+| texture function | MODULATE, hasMap 1 | MODULATE, hasMap 1 | same |
+| alpha test | not armed | armed, AREF 120/128 | **differs** |
+| texel alpha, page alpha | 255, 255 | 255, 255 | same |
+| tint, exposure, fxAlpha | 1, 1, 1 | 1, 1, 1 | same |
+| diffuse | 229 (unused: textured) | 229 (unused: textured) | same |
+| fog | on, 500-2500 | on, 500-2500 | same (0 here, §10.16) |
+| uv offset, matId | 0, 0xFFFF | 0, 0xFFFF | same (no effect track) |
+| second pass | none; the texture is only its set's own meshes | none; the same | same |
+| per-material multiply/add | none | none | same |
+| e004 glow on top (normal - nofx) | 66.6, 16.6, 8.3 | 73.2, 13.8, 6.9 | same layer |
+
+One input differs: 03_h arms the alpha test and 01_h does not. Every texel
+under it has alpha 255, so the test passes everywhere and drops nothing. It
+is neither a warm bias nor a scale. The ude light is bigger on 03_h, but it
+is the same light (it was weighed in §10.16), and its 9 : 3 : 1 shape is not
+the excess's 2.5 : 1.3 : 1.
+
+The screenshot is 0.93, 0.92, 0.92 of the page on 03_h interior and 0.99,
+1.00, 0.99 on 01_h interior: an even 7-8% scale on 03_h only, as the brief
+allowed for. No input we read carries it. The draw state does not explain
+the excess. Nothing was changed.
