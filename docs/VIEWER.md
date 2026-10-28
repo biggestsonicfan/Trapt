@@ -1535,6 +1535,72 @@ So the fire region's remaining red splits about evenly. Geometry is about
 closes. Colour is about 17. The game packs the ribbon's colour as
 `(229, 76, 25, 192)`: RGB x 255, alpha x 128, so with the GS's 0x80 = 1.0
 the texture is modulated by 1.79 / 0.59 / 0.20, twice the page's. The packing
-happens upstream of `0x00197560`, which only copies `+0xA8`. The writer is
-not found yet, and the factor is not applied: with geometry this far off,
+happens upstream of `0x00197560`, which only copies `+0xA8`. (§10.9: the
+writer is `0x001D9200`, and the factor is now applied.) At this point it was
+not applied: with geometry this far off,
 twice the light in the wrong places costs as much as it gains (8.69 -> 8.93).
+
+### 10.9 The stored seed, and the colour's writer
+
+The trail objects do store their offsets: a 16-bit seed at `+0x194`
+(28746 and 53977 in savestate 00). `0x0021ECD0` re-rolls it on one frame in
+four (`0x00185E60(4) == 0`) and hands it to `0x00197840`, which seeds its own
+LCG (`0x001B8500`: x 0x19660D + 0x3C6EF35F, `0x001B84C0`) with
+`seed ^ 0x075BD924` (`0x001B84E0`). Every angle in the strip comes from that
+LCG. The two numbers the seed does not hold are the wander and width scales
+drawn from the global RNG, and both can be read straight off the strip: width
+is the distance between a step's two vertices (2.735, 3.210), wander is how
+far the midpoint sits from the spine (0.932, 0.911 median).
+
+Replaying `0x00197840` from those fields, with no fitting, rebuilds the RAM
+strips within 0.06 units on the RAM bones and within 0.007-0.028 units on the
+page's bones (the strip is about 3 units wide). The piece frame is the
+yaw/pitch frame of `0x00145420` (X = (z.z, 0, -z.x) normalised, Y = Z x X):
+the page's up = (0, 1, 0) cross gives the same axes, and the effect matrix is
+identity. **The builder has no local mistake left.**
+
+At 1418, ribbons only, against the RAM vertex buffers on screen:
+
+| strips | vertex error (px, edge vertices) | face / forearm band lit | lit pixels outside both bands |
+|---|---|---|---|
+| (a) page dice, graded draw | 69.0 | 0.45 / 0.02 | 0.79 |
+| (a) page dice, 24 draws | 53.3 +- 10.8 | 0.36 / 0.36 | 0.68 |
+| (b) stored seeds replayed on the page's bones | 0.62 | 0.53 / 0.55 | 0.63 |
+| (c) the RAM vertices | 0 | 0.54 / 0.54 | 0.63 |
+
+The colour's writer is `0x001D9200`, a method of the effect script's object
+(vtable slot at `0x0047860C`). It packs the `0x80` colour into `+0xA8` as
+RGB x 255 and alpha x 128 and sets flag 0x100. On that flag `0x0021ECD0`
+copies `+0xA8` to `+0x1B4`, scales the alpha by the fade at `+0xAC`, and
+passes it to the strip (`0x00197540`). `0x00197560` writes it to every vertex
+with the alpha profile. (0.9, 0.3, 0.1, 1.5) packs to (229, 76, 25, 192),
+which is what savestate 00's vertices hold. `0x001D9090`, the slot next to it,
+packs the same way. The page used 0x80 = 1.0 for RGB too, so its ribbons were
+128/255 too dark. `play.js` now applies 255/128 to ribbons only. Sprites go
+through other classes, which this did not check.
+
+The fire region (x 200-330, y 70-125), with the whole-frame error:
+
+| | whole frame | fire region RGB |
+|---|---|---|
+| page dice, page colour, 24 draws | 8.81 +- 0.12 | (117, 49, 34) |
+| page dice, game colour, 24 draws | 9.10 +- 0.19 | (129, 59, 40) |
+| graded draw, page colour | 9.06 | (112, 47, 33) |
+| graded draw, game colour | 9.44 | (119, 55, 37) |
+| stored seeds replayed, page colour | 8.70 | (130, 52, 36) |
+| RAM vertices, page colour | 8.69 | (130, 53, 36) |
+| RAM vertices, game colour | 8.93 | (147, 66, 44) |
+| hardware | | (148, 68, 46) |
+
+So of the fire region's missing (31, 19, 12) against the page dice, about
+(13, 4, 2) is the offsets the trail objects store, and (17, 13, 8) is the
+colour. Together the RAM strips and the game's colour leave (1, 2, 2).
+
+The colour is right, and it still costs score: 8.81 -> 9.10 on the mean,
+9.06 -> 9.44 on the graded draw. Even with the RAM strips the error goes up
+(8.69 -> 8.93), while the region's average matches. Brighter light in the
+wrong pixels costs more per pixel than it saves in the average. Part of the
+reason may be the screenshot lag: the page draws 1418 for a savestate of 1420,
+and in two frames the seed has a 44% chance to re-roll and the scales re-roll
+every frame. So the RAM strips need not be the strips in the picture; that is
+not checked. The page cannot reach the game's seeds without the game's RNG.

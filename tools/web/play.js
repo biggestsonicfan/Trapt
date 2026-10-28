@@ -793,7 +793,12 @@ function poseAt(built, frame) {
     // it blends, so the excess rides on the colour: the blend is additive,
     // and colour * alpha is all it ever multiplies out to.
     const over = Math.min(GS_ALPHA_MAX, Math.max(1, a));
-    s.mesh.material.color.setRGB(r * over, g * over, b * over);
+    // A ribbon's colour reaches its vertices as `0x001D9200` packs it --
+    // RGB x 255, alpha x 128 -- and nothing scales it back before the GS,
+    // where 0x80 is 1.0: (0.9, 0.3, 0.1, 1.5) is (229, 76, 25, 192) in
+    // savestate 00's strips.  So its RGB is 255/128 of a sprite's.
+    const pack = s.ribbon ? 255 / 128 : 1;
+    s.mesh.material.color.setRGB(r * over * pack, g * over * pack, b * over * pack);
     s.mesh.material.opacity = Math.max(0, Math.min(1, a));
     if (s.ribbon) {
       s.mesh.visible = ribbonAt(s, frame, local);

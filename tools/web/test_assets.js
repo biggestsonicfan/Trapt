@@ -670,11 +670,13 @@ async function main() {
           [3.08, 1, 2.7]);
     // A spark has no keys at all -- it takes its colour from 0x80 and its
     // lifetime from the length of its own track.
-    // (0.9, 0.3, 0.1) at an alpha of 1.5, folded in the same way.
+    // (0.9, 0.3, 0.1) at an alpha of 1.5, folded in the same way.  The
+    // sparks are ribbons, whose RGB `0x001D9200` packs x 255 for a GS that
+    // reads 0x80 as 1.0: so x 255/128 on top.
     check('a spark takes its colour from 0x80',
           [+spark.mesh.material.color.r.toFixed(2),
            +spark.mesh.material.color.g.toFixed(2),
-           +spark.mesh.material.color.b.toFixed(2)], [1.35, 0.45, 0.15]);
+           +spark.mesh.material.color.b.toFixed(2)], [2.69, 0.9, 0.3]);
     // `ef_s014c.tm2` is the one texture on the disc that is a quadrant rather
     // than a whole sprite: measured out of its pixels, its alpha is a clean
     // radial falloff centred on its bottom-right *corner* -- flat 255 out to
