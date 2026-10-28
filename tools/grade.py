@@ -5,6 +5,7 @@
     python grade.py --save grade.json       # write the scores down
     python grade.py --baseline grade.json   # and fail if any got worse
     python grade.py --browser DISC.iso      # grade the page itself
+    python grade.py --sharp                 # without the display softening
 
 `oracle.py` says which frame of which cutscene a savestate is a picture of;
 this renders that frame the way the page does (`pdiag.py`, a port of the
@@ -36,6 +37,14 @@ error is there, which is the list to work down.
 The screenshot is taken at whatever size PCSX2 wrote it and resampled to
 512x224 -- comparisons are made at the GS's own resolution, never above it
 (see docs/VIEWER.md 5 on why point sampling at 640x480 lies).
+
+That screenshot is not the GS framebuffer: it is PCSX2's display output,
+which is softer than the GS's pixels, and the savestate's own framebuffers
+are a flat fill.  So the viewer's frame goes through the same softening
+before it is scored, a Gaussian of sigma `DISPLAY_BLUR` (x, y) pixels,
+measured on the seven capture states (docs/VIEWER.md 10.11).  Without it a
+sharp texture reads as an error the page cannot fix.  ``--sharp`` grades the
+unsoftened frame; a baseline made one way is not compared with the other.
 
 ``--browser DISC.iso`` grades the page instead of the port: `web/frames.mjs`
 opens `pick.html` in headless Chrome (SwiftShader, so no GPU), turns PS2
@@ -77,6 +86,11 @@ SHIFT_X, SHIFT_Y = 8, 4
 # a fast pan, scores 5.42 at 0 and 4.05 at -2 -- so every state is drawn
 # at its oracle frame minus this.
 SHOT_LAG = 2
+# PCSX2's screenshot is softer than the GS's own pixels: blurring the
+# viewer's frame by this Gaussian (sigma x, y, in 512x224 pixels) lowers
+# the mae of every one of the seven capture states, by 10% on average, and
+# no other single (x, y) on a 0..2.3 x 0..1 grid does better on all seven.
+DISPLAY_BLUR = (0.8, 0.6)
 
 
 # ------------------------------------------------------------------ images
@@ -88,6 +102,26 @@ def hardware_frame(png_bytes):
         im = im.resize(GS_SIZE, Image.BOX if im.size[0] >= GS_SIZE[0]
                        else Image.BILINEAR)
     return np.asarray(im, np.float64)
+
+
+def gauss(a, sigma, axis):
+    """`a` blurred along `axis` by a Gaussian of `sigma` px, edges held."""
+    if not sigma:
+        return a
+    r = int(np.ceil(3 * sigma))
+    k = np.exp(-np.arange(-r, r + 1) ** 2 / (2.0 * sigma * sigma))
+    k /= k.sum()
+    pad = [(0, 0)] * a.ndim
+    pad[axis] = (r, r)
+    p = np.pad(a, pad, mode='edge')
+    n = a.shape[axis]
+    return sum(w * np.take(p, np.arange(i, i + n), axis=axis)
+               for i, w in enumerate(k))
+
+
+def display(view, blur=DISPLAY_BLUR):
+    """The viewer's frame as PCSX2's screenshot would show it."""
+    return gauss(gauss(view, blur[1], 0), blur[0], 1)
 
 
 def luma(a):
@@ -254,7 +288,8 @@ def browser_frames(iso, wanted, log=print):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def run(paths, pages, out_dir=None, log=print, browser=None):
+def run(paths, pages, out_dir=None, log=print, browser=None,
+        blur=DISPLAY_BLUR):
     discs = {}
     results = {}
     placed = []
@@ -296,11 +331,13 @@ def run(paths, pages, out_dir=None, log=print, browser=None):
                 continue
             view = shots[(name, frame)]
         hw = hardware_frame(png)
+        view = display(view, blur)
         g = grade(view, hw, region, names)
         g.update({'cutscene': name, 'frame': got['frame'], 'shown': frame,
                   'residual': got['residual'],
                   'counter': bool(got.get('from_counter')),
                   'renderer': 'page' if browser else 'pdiag',
+                  'display': list(blur),
                   'seconds': round(time.time() - t0, 1)})
         results[key] = g
         if out_dir:
@@ -343,6 +380,12 @@ def compare(results, baseline, log=print):
         if b.get('renderer', 'pdiag') != g['renderer']:
             log('%-36s the baseline graded %s, this run %s -- not comparable'
                 % (key, b.get('renderer', 'pdiag'), g['renderer']))
+            worse.append(key)
+            continue
+        if b.get('display', [0, 0]) != g['display']:
+            log('%-36s the baseline softened the frame by %s, this run by %s '
+                '-- not comparable' % (key, b.get('display', [0, 0]),
+                                       g['display']))
             worse.append(key)
             continue
         if (b['cutscene'], b['frame']) != (g['cutscene'], g['frame']):
@@ -388,7 +431,8 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
     pages = Pages(opt('--pages'))
     try:
-        results = run(paths, pages, out_dir, browser=opt('--browser'))
+        results = run(paths, pages, out_dir, browser=opt('--browser'),
+                      blur=(0, 0) if '--sharp' in argv else DISPLAY_BLUR)
     finally:
         pages.close()
     if not results:

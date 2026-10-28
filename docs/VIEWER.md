@@ -1706,3 +1706,66 @@ inside out; with the centre on the right texel the right third comes within
 (-4.3, -1.9, -1.2) of the hardware. The VU1 kernel that turns the material
 colour into a GS colour has not been traced; the page still reads material
 1.0 as GS 0x80.
+
+### 10.12 The screenshot is softer than the GS: grade through that
+
+Parts 24-67 (pins #1738-#1818) tried to write the hardware glow on rt01_21
+as a function of the hidden-page value d and the sampled alpha. Every model
+failed one gate: in band 36-40, pixels sharing round(d) and alpha/4 still
+spread by red sd 4.377 (304 px, 28 cells), over the limit of 4. After that
+the series cut ever-smaller pixel classes, down to two or three pixels each,
+and none of those cuts could lift the fail.
+
+The leftover is not a blend at all. Inside those cells it is:
+
+- **spatial**: the residual of a pixel correlates 0.50 with its right-hand
+  neighbour's, 0.26 two pixels away and 0.08 eight away. A function of each
+  pixel's own (d, alpha) leaves noise, not a smooth field;
+- **the same in R, G and B** (corr 0.95; part 44), while the glow adds
+  R : G : B = 53 : 21 : 11. So it is in the surface under the glow, not the
+  glow;
+- **the page being sharper than the hardware**: it follows blur(page) - page
+  with slope 1.06 (r +0.57), and the flat rt01_11 shows nothing.
+
+The hardware picture is PCSX2's 640x480 `Screenshot.png`, the display
+output. The savestate's own framebuffers (GS.bin pages 56-111 and 112-167,
+PSMCT32 512x224) are a flat 0x80 fill, as in 10.10, because PCSX2's hardware
+renderer doesn't write the frame back. The screenshot is all there is, and it is soft.
+
+Blurring the port's frame (`pdiag`) by a Gaussian of sigma (x, y) before
+scoring, on a grid x 0..2.3, y 0..1, lowers every one of the seven capture
+states' mae. Vertical sigma is 0.5-0.7 on all seven. The best single kernel
+for all seven is x 0.6-1.0, y 0.5-0.7 (-10% mae on average). `grade.py` now
+softens the viewer's frame by `DISPLAY_BLUR = (0.8, 0.6)` before scoring
+(`--sharp` turns it off; a baseline made one way is "not comparable" with
+the other). The page itself (`--browser`), the same seven states:
+
+| state | cutscene frame | mae sharp | mae softened | edges sharp | edges softened |
+|---|---|---|---|---|---|
+| 00 | e004 1420 | 9.44 | 9.19 | 0.665 | 0.674 |
+| 03 | e001 3705 | 3.49 | 2.98 | 0.923 | 0.926 |
+| 04 | e001 10834 | 3.02 | 2.54 | 0.817 | 0.833 |
+| 05 | e004 1650 | 6.52 | 6.13 | 0.786 | 0.834 |
+| 06 | e001 1341 | 4.08 | 3.19 | 0.777 | 0.818 |
+| 07 | e004 2129 | 4.50 | 3.95 | 0.795 | 0.836 |
+| 08 | e001 7422 | 4.73 | 4.08 | 0.823 | 0.839 |
+| mean | | 5.11 | 4.58 | | |
+
+The part-33 gate with the hidden page softened by the same fixed kernel
+(chosen from the seven whole frames, not fitted to the band), rt01_21:
+
+| band | red | green | blue |
+|---|---|---|---|
+| 32-36 | 3.35 -> 3.36 | 2.99 -> 3.02 | 3.37 -> 3.06 |
+| 36-40 | **4.38 -> 3.83** | 4.02 -> 3.63 | 4.09 -> 3.77 |
+| 40-44 | 3.24 -> 3.04 | 2.78 -> 2.83 | 2.47 -> 2.49 |
+| 44-48 | 2.90 -> 2.64 | 2.20 -> 1.98 | 2.10 -> 1.94 |
+
+The fail is gone, and so is the case against "hardware glow = a function of
+d and alpha" built on it. rt01_11 band 44-48 red stays at 4.2 either way;
+it was the other loose end (part 31) and is not the base's softness.
+
+What a later step should not do: test another blend model or another pixel
+class against the unsoftened gate. Compare at the display's softness, or
+ask PCSX2 for a sharp capture (its GS dump, or a screenshot with the
+display filter off) and measure the kernel instead of fitting it.
