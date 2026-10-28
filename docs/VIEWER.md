@@ -2257,3 +2257,28 @@ and overlap the texel split by 62%: position does not stand in for the
 texel there, though the halves are not intermixed either (the low-texel
 pixels sit 18 rows higher). 05_h is intermixed (70%) and its position halves
 are about half as far apart as its texel halves. Nothing was changed.
+
+### 10.23 The texel alpha is not the term
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). A measurement
+pass wrote the raw `texture2D(map, vUv).a` of the same sample, unblended. In
+gs.js the texel alpha never reaches the colour: it only feeds the alpha test
+(opaque, `aTest`) or the blend (`blendOn`). None of these draws blends; 03_h
+arms the test (which discards nothing, §10.19), and 01_h's and 05_h's main
+draws do not even do that. Alpha is 0-255; excess = screenshot - page.
+
+| texture | alpha test | texel alpha low / high half | excess low half R, G, B | excess high half R, G, B | r(excess, texel alpha) R, G, B |
+|---|---|---|---|---|---|
+| c01f_a_01_h | off (4 px of 2534 on) | 255.0 / 255.0 (two values, 246 and 255) | +9.1, +7.1, +5.7 | -10.5, -7.5, -6.5 | +0.00, -0.00, -0.01 |
+| c01f_a_03_h | on | 255.0 / 255.0 (constant) | -7.0, -4.3, -3.4 | -13.2, -6.4, -4.6 | undefined (alpha constant) |
+| c01f_a_05_h | off | 255.0 / 255.0 (three values, 253-255) | +27.2, +20.5, +15.3 | -21.9, -16.6, -14.3 | -0.02, -0.01, -0.01 |
+
+Page - screenshot is the same with the sign flipped. Whole-set mean excess:
+01_h -0.7, -0.2, -0.4; 03_h -10.1, -5.3, -4.0; 05_h +2.7, +1.9, +0.5. For
+comparison, r(excess, page value) is 01_h -0.34, -0.53, -0.55; 03_h -0.38,
+-0.23, -0.18; 05_h -0.58, -0.64, -0.64.
+
+Every interior texel is alpha 1.0 apart from a handful of filtered edge
+texels, so the excess cannot move with it: on 01_h the correlation is under
+0.25 on all three channels. Alpha is not the term. Nothing was changed.
