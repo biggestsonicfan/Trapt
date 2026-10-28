@@ -2009,3 +2009,57 @@ the same shape, (+8.9, +5.2, +4.1), and its other three quartiles show
 almost none.
 
 So the excess is not in the four light terms. Nothing was tuned.
+
+### 10.17 Allura's 03_h excess is interior, not registration or an edge
+
+State 00 (e004 1418), the page at 6e7a6e5, and the pixels of §10.15 and
+§10.16: a material's pixels that its own model owns (grade's region) and
+that were grey under the old per-vertex light (channel spread at most 2).
+No new pixels were picked.
+
+| set | pixels | x | y | centroid |
+|---|---|---|---|---|
+| `c01f_a_01_h` | 3335 | 205-372 | 58-166 | (296.6, 102.9) |
+| `c01f_a_03_h` | 2455 | 204-291 | 115-168 | (246.1, 149.1) |
+
+Both sets lie almost wholly in the box of the known coverage miss (x
+203-363, y 58-166: 3272 and 2350 of them). That box is 01_h's own extent.
+The miss is its vertex-coloured part, which the grey test leaves out. The
+01_h band of §10.16 was not used.
+
+**Registration.** The screenshot was moved against the page: the page's
+(x, y) against the screenshot's (x + dx, y + dy). Mean page - screenshot:
+
+| dx, dy | 01_h | 03_h |
+|---|---|---|
+| 0, 0 | +3.0, +1.6, +1.4 | +9.6, +5.2, +3.9 |
+| -1, -1 | +4.1, +2.0, +1.7 | +8.5, +4.5, +3.5 |
+| -1, -2 | +5.4, +2.8, +2.3 | +7.9, +4.3, +3.4 |
+| -2, -2 | +6.2, +3.1, +2.5 | +7.9, +4.2, +3.4 |
+| +1, 0 | +2.9, +1.7, +1.5 | +10.8, +6.3, +5.0 |
+| +2, +2 | +4.7, +3.5, +2.9 | +17.3, +9.2, +7.4 |
+
+None of the 25 offsets in -2..2 brings 03_h's red below +7.9. Where it gets
+lowest, 01_h's red rises 2.4 to 3.2 levels above its (0, 0) match. So
+registration is not the excess.
+
+**Coverage.** All 03_h parts (2) and 01_h parts (5) are opaque, lit and not
+blended. Page alpha is 255 on 2453 of the 2455 03_h pixels (221 and 226 on
+the other two) and on all 3335 of 01_h. The e004 glow is drawn on top of
+them (§10.16). The fragment under it is full-coverage character.
+
+**Neighbours.** A pixel is interior if all 8 of its neighbours belong to
+the same material and model:
+
+| set | n | page | 8-nb page | screenshot | 8-nb screenshot | excess | 8-nb excess |
+|---|---|---|---|---|---|---|---|
+| 03_h interior | 1905 | 148.8, 65.8, 50.5 | 148.7, 65.8, 50.5 | 138.8, 60.5, 46.5 | 138.7, 60.4, 46.5 | **+10.1, +5.3, +4.0** | +10.0, +5.3, +4.0 |
+| 03_h edge | 550 | 135.9, 59.6, 45.1 | 133.4, 58.2, 43.8 | 127.9, 55.0, 41.6 | 123.9, 52.8, 39.4 | +8.1, +4.5, +3.5 | +9.5, +5.4, +4.4 |
+| 01_h interior | 2534 | 127.4, 58.1, 39.9 | 127.5, 58.3, 40.1 | 126.7, 58.0, 39.5 | 126.3, 57.7, 39.4 | +0.7, +0.2, +0.4 | +1.2, +0.5, +0.7 |
+| 01_h edge | 801 | 134.6, 62.3, 44.4 | 132.2, 60.6, 43.0 | 124.4, 56.3, 39.9 | 123.7, 55.7, 39.3 | +10.1, +6.0, +4.4 | +8.4, +4.9, +3.7 |
+
+On 03_h the excess is interior. The interior pixels carry all of it, and
+their neighbours match them to 0.1 in the page and in the screenshot. So it
+is not an edge. (On 01_h it is the other way round: what excess there is
+sits on its edge pixels, and its interior matches to under a level.)
+Nothing was changed.
