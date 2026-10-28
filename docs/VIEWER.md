@@ -2223,3 +2223,37 @@ over the same light; on 03_h it has the same contrast, scaled by 0.93. A
 split on a page-side quantity will show some of this from noise alone (the
 screenshot shares only part of the page's per-pixel variation), so the size
 of 05_h's spread is an upper bound. Nothing was changed.
+
+### 10.22 01_h's texel halves are neither intermixed nor apart
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). Positions in
+framebuffer pixels. Mixing: of the low-texel pixels with a 4-connected
+neighbour in the interior, the share with one in the high-texel half.
+
+| texture | low-texel mean x, y | high-texel mean x, y | box w x h | mixing | r(ratio, texel) R, G, B |
+|---|---|---|---|---|---|
+| c01f_a_01_h | 293.8, 92.4 | 302.3, 110.7 | 164 x 106 | 34% (431/1270) | -0.58, -0.71, -0.74 |
+| c01f_a_03_h | 246.7, 145.4 | 241.9, 153.2 | 81 x 42 | 24% (231/957) | -0.20, +0.05, +0.13 |
+| c01f_a_05_h | 313.4, 159.5 | 315.7, 160.1 | 62 x 53 | 70% (104/149) | -0.56, -0.51, -0.49 |
+
+01_h's 34% is between the two thresholds (intermixed at 40%, apart under
+20%), so neither reading holds. A position split was run anyway on all
+three, at the median of the axis with the larger mean-position gap (screen
+and texel not used); the low-position side is the one holding more of the
+low-texel pixels.
+
+| texture | axis | overlap | position half | pixels | mean | page | screenshot | screenshot/page |
+|---|---|---|---|---|---|---|---|---|
+| c01f_a_01_h | y | 62% | low | 1297 | 78.2 | 103.2, 51.3, 35.7 | 105.9, 53.2, 36.9 | 1.03, 1.04, 1.03 |
+| c01f_a_01_h | y | | high | 1237 | 126.0 | 152.7, 65.2, 44.3 | 148.5, 63.0, 42.3 | 0.97, 0.97, 0.96 |
+| c01f_a_03_h | y | 72% | low | 994 | 140.8 | 133.8, 56.8, 43.8 | 127.4, 52.7, 40.2 | 0.95, 0.93, 0.92 |
+| c01f_a_03_h | y | | high | 911 | 158.5 | 165.2, 75.6, 57.9 | 151.1, 69.0, 53.4 | 0.92, 0.91, 0.92 |
+| c01f_a_05_h | x | 58% | low | 159 | 309.7 | 118.9, 44.6, 32.5 | 126.6, 50.5, 36.1 | 1.07, 1.13, 1.11 |
+| c01f_a_05_h | x | | high | 139 | 320.0 | 105.8, 38.4, 27.8 | 102.7, 35.8, 24.6 | 0.97, 0.93, 0.89 |
+
+On 01_h the position halves are 6-8% apart against the texel halves' 16-32%,
+and overlap the texel split by 62%: position does not stand in for the
+texel there, though the halves are not intermixed either (the low-texel
+pixels sit 18 rows higher). 05_h is intermixed (70%) and its position halves
+are about half as far apart as its texel halves. Nothing was changed.
