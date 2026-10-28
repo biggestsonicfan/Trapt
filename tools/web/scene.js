@@ -116,7 +116,8 @@ function newEntity(track, index, kind, label) {
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
            emitter: null, grid: null, flags: null, mirror: false,
-           trackLen: null, fx: null, block: 0, size: null, billboard: 0 };
+           trackLen: null, fx: null, block: 0, size: null, billboard: 0,
+           pull: 0 };
 }
 
 // ---------------------------------------------------------------- effect VM
@@ -158,6 +159,16 @@ const PLACE_POS = 0, PLACE_SCALE = 8;
 // face-the-camera.  e004 1646 proves it: the camera sits level with the
 // fire's z there, and a card left in the XY plane vanishes edge-on.
 const OP_BILLBOARD = 0xB8;
+// `0xAC(f)` pulls the block f world units toward the camera, every frame --
+// a depth push, not a blend.  The handler (0x1C4550) hands f to vtable +0xD4.
+// On the effect class (vtable 0x4785D0, block kinds 1/2/3/8) that is
+// 0x1D8EE0 -> 0x21D720: the drawable stores -f at +0x20C and sets bit 0x20,
+// and the draw (0x2202EC, 0x22152C, 0x222C5C) adds
+// +0x20C * normalize(pos - eye) to the position.  The model class
+// (0x1D76F0 -> 0x1D8BEC) does the same to its world matrix.  e004's glow
+// sprites use 2 and 3: pulled through the fire mesh they sit in, they are
+// drawn whole instead of cut by it.
+const OP_TOWARD_EYE = 0xAC;
 const FX_MAX_FRAMES = 3600;
 const isCalc = (op) => (op >= 0x0D && op <= 0x1C) || op === FX_CMP;
 const isReg = (a) => !!(a && typeof a === 'object' && 'reg' in a);
@@ -414,6 +425,7 @@ function run(scene, trackName, blob, frameBase, origin) {
           args.length > 3 && typeof args[3] === 'number' ? args[3] : 0]);
       else if (code === OP_ROOT_BONE) entity.rootBone = args[0];
       else if (code === OP_BILLBOARD) entity.billboard = args.length > 1 ? int(args[1]) : 3;
+      else if (code === OP_TOWARD_EYE && args.length && !isReg(args[0])) entity.pull = num(args[0]);
       else if (code === OP_ATTACH)
         entity.attachments.push([args[0], args[1],
                                  args.length > 2 ? num(args[2]) : 1.0]);

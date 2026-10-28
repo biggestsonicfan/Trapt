@@ -1309,6 +1309,7 @@ below comes from the handlers in the dispatch table at `0x376660`:
 | `0x7E (r, g, b, a, m)` | colour and alpha of material `m` |
 | `0x84` / `0x8C (x, y, z, mode)` | one handler (`0x1C15D0`), model vtable `+0x88 + 4*mode`. The disc uses mode 0 on `0x84` (1818 times, position) and mode 8 on `0x8C` (1049, scale). |
 | `0xB8 ("none", 3)` | billboard. All 45 uses are on flat XY cards. |
+| `0xAC f` | drawn `f` world units toward the camera, every frame (§10.5) |
 | `0x01` | this frame is done |
 | `0x00` | the track is over |
 
@@ -1352,7 +1353,7 @@ foot would fire on frame 0. So only spawned tracks are run as programs.
 | 00 | e004 | 1418 | 16.66 | **9.21** | 17.89 |
 | 03 | e001 | 3703 | 3.53 | 3.49 | 3.56 |
 | 04 | e001 | 10832 | 3.65 | 3.58 | 3.99 |
-| 05 | e004 | 1648 | 15.36 | 14.83 | 19.46 |
+| 05 | e004 | 1648 | 15.36 | 14.22 | 19.46 |
 | 06 | e001 | 1339 | 4.26 | 4.25 | 4.13 |
 | 07 | e004 | 2127 | 8.86 | **5.12** | 5.25 |
 | 08 | e001 | 7420 | 4.73 | 4.73 | 4.86 |
@@ -1362,9 +1363,40 @@ page at the start of this work, already at the corrected frames.
 
 Still wrong:
 
-- **e004 1648.** The hardware has a warm wash over the whole frame and
-  brighter fire on the left. Doubling the mirrored sprites' size gained only
-  about 0.5, so that is not it.
-- **`0xAC f`.** It hands a float to model vtable `+0xD4`. It is not decoded
-  and not applied. It is a guess, not a finding, that it is behind the wash.
+- **e004 1648, the right third.** The hardware's background there is warm
+  brown (mean RGB 48, 30, 23); the page's is grey (20, 19, 17). No sprite
+  reaches it, and `0xAC` (§10.5) did not touch it.
 - **e004 1418.** Allura's arm pose is off.
+
+### 10.5 `0xAC` is a pull toward the camera
+
+`0xAC f` is not a blend. Handler `0x1C4550` reads one float and calls the
+block object's vtable `+0xD4` with it. The vtable bases come from the
+constructors, which store `run − 8`.
+
+- **Effect blocks.** Kinds 1, 2, 3 and 8 build vtable `0x4785D0` (the `0x64`
+  handler, `0x1C4E30`). There `+0xD4` is `0x1D8EE0`, which runs only when byte
+  `+0x42` of the track's context is zero. It fetches the drawable through
+  `+0xD8`, and `0x21D720` stores `−f` at `+0x20C` and sets bit `0x20` of
+  `+0x10`. The sprite draws (`0x2202EC`, `0x22152C`, `0x222C5C`,
+  `0x222D98`) test that bit and add `+0x20C · normalize(pos − eye)` to the
+  position. `0x10E0B0` is `a − b`, so the sprite moves `f` units toward the eye.
+- **Models.** Vtable `0x4781E0` and its kin take `+0xD4` = `0x1D76F0`, which
+  runs when that byte is *non*-zero. It stores `f` at `+0xF0` and sets
+  `0x2000` in `+0x14`. `0x1D8BEC` then pre-multiplies the world matrix by
+  the same translation toward the eye.
+
+On the disc in e004, only `ef_e004_30` (f = 2) and `ef_e004_31` (f = 3) use
+it. Both are the `ef_s014c.tm2` glow, colour (1.5, 0.2, 0.1) at alpha up to
+1.8 and up to 4.5 units across. They sit inside the fire mesh, and the pull
+brings them out through it. The page applies it to sprites in `faceSprites`,
+from each sprite's unpulled position, so a free camera gets it too. Byte
+`+0x42` was not read from RAM. The sprite path is assumed to be the live one,
+since the sprite class is the only one these tracks build.
+
+At e004 1648 (state 05) the mae went from 14.83 to 14.22, and the red bias from
+−15.9 to −11.6. Before, the glow ended at a hard horizontal edge across
+Allura's arm and hand, where the fire mesh's depth cut it. Now it covers
+them, as on hardware. The changed pixels all lie in x 0..406, and every one
+got warmer (mean +13.8, +2.7, +1.3). The middle third's red went from 47 to
+58 (hardware 67). The right third did not move.

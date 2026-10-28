@@ -447,6 +447,13 @@ function faceSprites(built, eye) {
   if (!eye) return;
   for (const s of built.sprites || []) {
     if (!s.mesh.visible || typeof s.mesh.lookAt !== 'function') continue;
+    // `0xAC`: the game draws the sprite this far toward the eye (scene.js).
+    const pull = s.entity.pull, b = s.base;
+    if (pull && b) {
+      const dx = eye[0] - b[0], dy = eye[1] - b[1], dz = eye[2] - b[2];
+      const k = pull / (Math.hypot(dx, dy, dz) || 1);
+      s.mesh.position.set(b[0] + dx * k, b[1] + dy * k, b[2] + dz * k);
+    }
     s.mesh.lookAt(eye[0], eye[1], eye[2]);
   }
   // and the `0xB8` effect cards, which are models but flat ones
@@ -597,6 +604,7 @@ function poseAt(built, frame) {
       if (e.origin) { px += e.origin[0]; py += e.origin[1]; pz += e.origin[2]; }
     }
     s.mesh.position.set(px, py, pz);
+    s.base = [px, py, pz];
     lit++;
   }
   // Face them at whatever is looking.  The scene's own camera is the default
