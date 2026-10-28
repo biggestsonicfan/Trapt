@@ -37,6 +37,11 @@ const OP_TINT = 0x7E;                              // (r, g, b, w); w is not alp
 const OP_SCALE = 0x80, OP_MODEL = 0x82, OP_ANIM = 0x83, OP_TRANSFORM = 0x84;
 const OP_VISIBLE = 0xA2, OP_ROOT_BONE = 0xB3, OP_LIGHT_TYPE = 0xB4;
 const OP_LIGHT_RANGE = 0xB5, OP_ATTACH = 0xB7, OP_CAMERA = 0xB9, OP_FOG = 0xC7;
+// `0xB2 (name, show, 0)` FUN_001C20C0 -> 0x1D53F0: hides the model's node
+// `name` and everything under it, through a list of up to four names at model
+// +0x22C (show 0 adds the name, 1 takes it out).  On the disc it is always
+// "buki", the weapon: e001's guards and courtiers are posed holding nothing.
+const OP_HIDE_PART = 0xB2;
 // Sprite effects.  Handlers, from the dispatch table at 0x00376660:
 //   0x68 FUN_001C4C90  string + 4 ints -> effect vtable +0x80
 //   0x6D FUN_001C47F0  two numbers + a frame -> a keyframe list
@@ -110,14 +115,14 @@ function text(raw) {
 function newEntity(track, index, kind, label) {
   return { track: track, index: index, kind: kind, label: label,
            models: [], attachments: [], rootBone: null, transform: null,
-           scale: null, clips: [], visibility: [], light: null,
+           scale: null, clips: [], visibility: [], parts: [], light: null,
            lightRange: null, lightParent: false, origin: null, tint: null,
            start: 0, end: null,
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
            emitter: null, grid: null, flags: null, mirror: false,
            trackLen: null, fx: null, block: 0, size: null, billboard: 0,
-           pull: 0 };
+           pull: 0, act: null };
 }
 
 // ---------------------------------------------------------------- effect VM
@@ -130,9 +135,11 @@ function newEntity(track, index, kind, label) {
 //   0x04 (a, b, c)    cond = clock == a; with c > 0, every c frames from a
 //   0x03 n            if !cond, skip the next n calls
 //   0xA4 n            cond = r16 == n: r16 is the track's state
-//   0x0D-0x1C, 0xA6   one calculator, 0x001C7240: (dst, a, b, mode, op),
+//   0x0D-0x1C, 0xA0, 0xA1, 0xA5, 0xA6, 0xA9
+//                     one calculator, 0x001C7240: (dst, a, b, mode, op),
 //                     mode 1 float / 0 int; op 0 set 1 add 2 sub 3 mul 4 div
-//                     8 wrap dst into [a, b]; 10 compare (x, y, cmp) -> cond
+//                     8 wrap dst into [a, b]; 9 clamp dst into [a, b];
+//                     10 compare (x, y, cmp) -> cond
 //   0x7C (u, v, m)    material m's UV offset   (model vtable +0x60)
 //   0x7D (a, m)       material m's alpha       (model vtable +0x5C)
 //   0x7E (r,g,b,a, m) material m's colour and alpha
@@ -170,7 +177,10 @@ const OP_BILLBOARD = 0xB8;
 // drawn whole instead of cut by it.
 const OP_TOWARD_EYE = 0xAC;
 const FX_MAX_FRAMES = 3600;
-const isCalc = (op) => (op >= 0x0D && op <= 0x1C) || op === FX_CMP;
+// The dispatch table sends these to the calculator too; Allura's e004 fade
+// clamps with 0xA1.
+const FX_CALC_EXTRA = [0xA0, 0xA1, 0xA5, FX_CMP, 0xA9];
+const isCalc = (op) => (op >= 0x0D && op <= 0x1C) || FX_CALC_EXTRA.includes(op);
 const isReg = (a) => !!(a && typeof a === 'object' && 'reg' in a);
 
 /**
@@ -230,6 +240,7 @@ function fxRun(calls) {
         else if (kind === 3) r = a * b;
         else if (kind === 4) r = b ? a / b : 0;
         else if (kind === 8 && b > a) r = a + ((((r - a) % (b - a)) + (b - a)) % (b - a));
+        else if (kind === 9) r = Math.min(b, Math.max(a, r));
         else continue;
         R.set(args[0].reg, fix(r));
         continue;
@@ -267,6 +278,106 @@ function fxAt(fx, id, t, table) {
   const m = fx && (table || fx.mats).get(id);
   if (!m || !m.frames.length) return null;
   return m.frames[Math.max(0, Math.min(m.frames.length - 1, t))];
+}
+
+// ---------------------------------------------------------------- actor VM
+//
+// An actor track is the same VM, but not restarted every frame: it keeps its
+// place.  `0x04 (t)` then `0x05 (0, #k)` is a wait -- until the clock reaches
+// t, jump back to call k and end the frame -- so a few calls between two
+// waits run once per frame.  Allura's e004 track is the case on screen:
+//
+//   0xB0 (0, 2)                      hide material 2, her gauntlet, at once
+//   at 1430: 0xB0 (1, 2), r0 = 0     show it, then every frame until 1530
+//            r0 += .01, clamp [0,1], 0x7D (r0, 2)        fade it in
+//   at 1750: the same with -= until 1850                 and out again
+//
+// `0xB0 (on, m)` (0x001C2E00) hands (m, on, 1) to model vtable +0x68, which
+// shows or hides every material whose flags word is m.  `0x9D (a, m)` goes
+// to +0x38; it comes right before the fade, so it is taken to switch m to
+// the blend unit, which any alpha below 1 here does anyway.
+const OP_MAT_SHOW = 0xB0;
+const ACT_MAX_FRAMES = 30000;
+
+/**
+ * Run an actor track's material program.  Null when the track never touches
+ * a material, else `{mats}` as `fxRun` returns it, indexed by track clock
+ * (the scene's frame), and two more fields: 1 shown / 0 hidden by `0xB0`,
+ * and 1 once a `0x7E` has set the colour.
+ * The tables stop at the last change; `fxAt` holds the last row after it.
+ */
+function actorRun(calls) {
+  calls = calls.filter((c) => c.op !== null);
+  if (!calls.some((c) => c.op === FX_UV || c.op === FX_ALPHA || c.op === OP_MAT_SHOW
+                         || (c.op === OP_TINT && c.args.length >= 5))) return null;
+  const R = new Map();
+  const val = (a) => (isReg(a) ? (R.get(a.reg) || 0) : num(a));
+  const mats = new Map();
+  const mat = (id) => {
+    if (!mats.has(id)) mats.set(id, { now: [1, 0, 0, 1, 1, 1, 1, 0], frames: [] });
+    return mats.get(id);
+  };
+  let pc = 0, cond = false, last = -1;
+  for (let t = 0; t < ACT_MAX_FRAMES && pc < calls.length; t++) {
+    let touched = false;
+    for (let steps = 0; pc < calls.length && steps < 10000; steps++) {
+      const { op, args } = calls[pc++];
+      if (op === OP_END) { pc = calls.length; break; }
+      if (op === FX_YIELD) break;
+      if (op === OP_AT_TIME) {
+        // A wait has to fire even if it is reached late, so `>=`.
+        const a = int(args[0]), b = int(args[1]), c = int(args[2]);
+        if (c > 0) cond = t >= a && (b < 0 || t <= b) && (t - a) % c === 0;
+        else cond = t >= a && (b < 0 || t <= b);
+        continue;
+      }
+      if (op === OP_CUE) {
+        const k = args.length > 1 && args[1] && typeof args[1] === 'object' ? args[1].c4 : null;
+        if (!cond && k !== null && k !== undefined) { pc = k; break; }
+        continue;
+      }
+      if (op === FX_SKIP) { if (!cond) pc += int(args[0]); continue; }
+      if (op === FX_STATE) { cond = (R.get(FX_STATE_REG) || 0) === int(args[0]); continue; }
+      if (isCalc(op) && args.length >= 5) {
+        const fl = int(args[3]) === 1, kind = int(args[4]);
+        const fix = (x) => (fl ? x : Math.trunc(x));
+        if (kind === 10) {
+          const x = fix(val(args[0])), y = fix(val(args[1]));
+          cond = [x === y, x > y, x < y, x >= y, x <= y, x !== y][int(args[2])] || false;
+          continue;
+        }
+        if (!isReg(args[0])) continue;
+        const a = fix(val(args[1])), b = fix(val(args[2]));
+        let r = R.get(args[0].reg) || 0;
+        if (kind === 0) r = a;
+        else if (kind === 1) r = a + b;
+        else if (kind === 2) r = a - b;
+        else if (kind === 3) r = a * b;
+        else if (kind === 4) r = b ? a / b : 0;
+        else if (kind === 8 && b > a) r = a + ((((r - a) % (b - a)) + (b - a)) % (b - a));
+        else if (kind === 9) r = Math.min(b, Math.max(a, r));
+        else continue;
+        R.set(args[0].reg, fix(r));
+        continue;
+      }
+      if (op === FX_ALPHA && args.length >= 2) {
+        mat(int(args[1])).now[0] = val(args[0]); touched = true;
+      } else if (op === FX_UV && args.length >= 3) {
+        const m = mat(int(args[2])).now;
+        m[1] = val(args[0]); m[2] = val(args[1]); touched = true;
+      } else if (op === OP_TINT && args.length >= 5) {
+        const m = mat(int(args[4])).now;
+        m[3] = val(args[0]); m[4] = val(args[1]); m[5] = val(args[2]);
+        m[0] = val(args[3]); m[7] = 1; touched = true;
+      } else if (op === OP_MAT_SHOW && args.length >= 2) {
+        mat(int(args[1])).now[6] = int(args[0]) ? 1 : 0; touched = true;
+      }
+    }
+    for (const m of mats.values()) m.frames.push(m.now.slice());
+    if (touched) last = t;
+  }
+  for (const m of mats.values()) m.frames.length = Math.min(m.frames.length, last + 1);
+  return { mats: mats };
 }
 
 /**
@@ -413,6 +524,13 @@ function run(scene, trackName, blob, frameBase, origin) {
         }
     } else if (code === OP_VISIBLE) {
       trackVis.push([frame, !((int(args[0]) & VIS_HIDDEN) && int(args[1]))]);
+    } else if (code === OP_HIDE_PART) {
+      // Emitted inside the block and, to bring the weapon back, after it; the
+      // handler acts on the track's current model either way.
+      let owner = entity;
+      for (let i = scene.entities.length - 1; i >= 0 && !owner; i--)
+        if (scene.entities[i].track === trackName) owner = scene.entities[i];
+      if (owner) owner.parts.push([frame, args[0], !!int(args[1])]);
     } else if (entity !== null) {
       if (code === OP_MODEL) entity.models.push(args[0]);
       // arg[3] is a C2 rational (a blend) 588 times on the disc and a C1
@@ -449,9 +567,12 @@ function run(scene, trackName, blob, frameBase, origin) {
   // cue-driven timelines (`0x04` then `0x05` waits), and run frame by frame
   // the end_track at their foot fires on frame 0.
   const fx = origin ? fxRun(calls) : null;
+  const act = origin ? null : actorRun(calls);
   for (const e of scene.entities)
     if (e.track === trackName) {
       e.visibility = trackVis.slice();
+      // Shared by the track's blocks: materials are addressed by flags word.
+      if (act) e.act = act;
       // Shared, not copied: every block of one spawn runs the same program.
       if (fx && e.start >= frameBase) {
         e.fx = fx;
@@ -578,8 +699,16 @@ function visibleAt(entity, frame) {
   return vis;
 }
 
-const api = { compile, run, fxRun, fxAt, mergeMasterClips, family, text, renderModels,
-              clipAt, visibleAt, num, sample, sizeAt, colourAt,
+/** The node names `0xB2` has hidden on `entity` at `frame`. */
+function hiddenPartsAt(entity, frame) {
+  const hidden = new Set();
+  for (const [f, name, show] of entity.parts || [])
+    if (f <= frame) { if (show) hidden.delete(name); else hidden.add(name); }
+  return hidden;
+}
+
+const api = { compile, run, fxRun, actorRun, fxAt, mergeMasterClips, family, text, renderModels,
+              clipAt, visibleAt, hiddenPartsAt, num, sample, sizeAt, colourAt,
               KIND_MODEL, KIND_LIGHT, KIND_CAMERA };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptScene = api;

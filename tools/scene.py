@@ -58,6 +58,10 @@ OP_ROOT_BONE = 0xB3
 OP_LIGHT_TYPE = 0xB4
 OP_LIGHT_RANGE = 0xB5
 OP_ATTACH = 0xB7
+# `0xB2 (name, show, 0)`, ELF 0x001C20C0 -> 0x001D53F0: hide the model's node
+# `name` and what hangs under it (show 0 adds the name to a four-slot list at
+# model +0x22C, 1 takes it out).  Always "buki", the weapon, on the disc.
+OP_HIDE_PART = 0xB2
 OP_CAMERA = 0xB9
 OP_FOG = 0xC7
 # Sprite effects.  Handlers, from the dispatch table at 0x00376660:
@@ -177,6 +181,7 @@ class Entity:
         self.scale = None         # scale on a model, colour on a light
         self.clips = []           # [(frame, 'x.sai', clip_offset)]
         self.visibility = []      # [(frame, bool)]
+        self.parts = []           # [(frame, node name, shown)] from `0xB2`
         self.light = None         # 'directional' | 'point' | 'ambient'
         self.light_range = None   # (near, far)
         self.light_parent = False # `0xB4` arg1: ride the camera (see below)
@@ -252,6 +257,14 @@ class Entity:
             if f <= frame:
                 state = on
         return state
+
+    def hidden_parts_at(self, frame):
+        """The node names `0xB2` has hidden at `frame`."""
+        hidden = set()
+        for f, name, shown in self.parts:
+            if f <= frame:
+                (hidden.discard if shown else hidden.add)(name)
+        return hidden
 
     def __repr__(self):
         return '<Entity %s kind=%s models=%s clips=%d>' % (
@@ -537,6 +550,13 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
         elif code == OP_VISIBLE:
             track_vis.append((frame, not (_int(args[0]) & VIS_HIDDEN
                                           and _int(args[1]))))
+        elif code == OP_HIDE_PART:
+            # Inside the block, and after it to give the weapon back; the
+            # handler acts on the track's current model either way.
+            owner = entity or next((e for e in reversed(scene.entities)
+                                    if e.track == track_name), None)
+            if owner is not None:
+                owner.parts.append((frame, ssc.sj(args[0]), bool(_int(args[1]))))
         elif entity is not None:
             if code == OP_MODEL:
                 entity.models.append(ssc.sj(args[0]))
@@ -598,6 +618,8 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
 
 FX_YIELD, FX_SKIP, FX_STATE = 0x01, 0x03, 0xA4
 FX_UV, FX_ALPHA, FX_CMP = 0x7C, 0x7D, 0xA6
+# The other opcodes the dispatch table at 0x376660 points at the calculator.
+FX_CALC_EXTRA = (0xA0, 0xA1, 0xA5, FX_CMP, 0xA9)
 FX_STATE_REG = 16
 FX_MAX_FRAMES = 3600
 
@@ -613,7 +635,7 @@ def _fx_end(blob):
     game runs it from the top until `0x01` (this frame is done) or `0x00`
     (the track is over), with `0x04` setting a condition flag, `0x03 n`
     skipping n calls when it is clear, `0xA4 n` testing r16 == n and the
-    calculator ops (`0x0D`-`0x1C`, `0xA6`) doing arithmetic on registers.
+    calculator ops (`0x0D`-`0x1C`, `0xA0`, `0xA1`, `0xA5`, `0xA6`, `0xA9`) doing arithmetic on registers.
     `web/scene.js`'s `fxRun` is the full VM -- it also records each frame's
     material alpha, UV scroll and placement for the page to draw; this is
     the part that says when the track stops.  None for a track that touches
@@ -655,7 +677,7 @@ def _fx_end(blob):
                     cond = t == a
             elif op == FX_STATE:
                 cond = regs.get(FX_STATE_REG, 0) == sint(args[0])
-            elif (0x0D <= op <= 0x1C or op == FX_CMP) and len(args) >= 5:
+            elif (0x0D <= op <= 0x1C or op in FX_CALC_EXTRA) and len(args) >= 5:
                 fl, kind = sint(args[3]) == 1, sint(args[4])
                 fix = (lambda x: x) if fl else (lambda x: math.trunc(x))
                 if kind == 10:
@@ -680,6 +702,8 @@ def _fx_end(blob):
                     r = a / b if b else 0
                 elif kind == 8 and b > a:
                     r = a + (r - a) % (b - a)
+                elif kind == 9:
+                    r = min(b, max(a, r))
                 else:
                     continue
                 regs[args[0][1]] = fix(r)

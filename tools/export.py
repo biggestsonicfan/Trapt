@@ -106,6 +106,7 @@ def pack_model(model, buf):
         if me.vcount > 65535:
             continue
         entry = {'material': me.material, 'two': two, 'count': me.vcount,
+                 'base': me.base,
                  'lp0': buf.add('f', lp0), 'n0': buf.add('h', n0),
                  'uv': buf.add('f', uv), 'b': buf.add('H', bidx),
                  'idx': buf.add('H', idx),
@@ -334,6 +335,7 @@ def build(name, outdir, single=False, audio=True, jpeg_quality=88,
         entities.append({
             'name': ent.name, 'models': keys, 'clips': entries,
             'visibility': [[f, 1 if on else 0] for f, on in ent.visibility],
+            'parts': [[f, n, 1 if on else 0] for f, n, on in ent.parts],
             'start': ent.start,
             # `0x67` destroys the track's current object -- e001 swaps the
             # living king for his corpse at 8430 and both share a track.

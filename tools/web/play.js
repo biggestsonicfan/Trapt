@@ -178,8 +178,16 @@ async function assemble(THREE, disc, name, onProgress) {
         group.position.z += e.origin[2];
       }
       root.add(group);
+      // For `0xB2`: the names of each mesh's base node and its ancestors,
+      // so hiding "buki" takes "buki_obj"'s meshes with it.
+      const partsOf = model.meshes.map(me => {
+        const names = new Set();
+        for (let n = me.base; n >= 0 && n < model.nodes.length; n = model.nodes[n].parent)
+          names.add(model.nodes[n].name);
+        return names;
+      });
       actors.push({ entity: e, model: model, group: group, file: file,
-                    clips: new Map(), bind: posed });
+                    clips: new Map(), bind: posed, partsOf: partsOf });
     }
   }
 
@@ -465,6 +473,31 @@ function faceSprites(built, eye) {
 }
 
 /**
+ * An actor track's material program (scene.js `actorRun`) at `frame`: alpha,
+ * UV, colour, and `0xB0`'s show/hide.  A material faded below 1 goes through
+ * the blend unit for the fade even if it is opaque otherwise.  Returns
+ * whether the mesh is drawn at all.
+ */
+function actorMaterial(mesh, act, frame) {
+  const u = mesh.material && mesh.material.uniforms;
+  const m = u && sceneMod.fxAt(act, mesh.userData.matId, frame);
+  if (!m) return true;
+  const ud = mesh.userData;
+  if (!ud.own) ud.own = { blendOn: u.blendOn.value, transparent: mesh.material.transparent,
+                          depthWrite: mesh.material.depthWrite,
+                          tint: [u.tint.value.x, u.tint.value.y, u.tint.value.z] };
+  const fade = m[0] < 1;
+  u.blendOn.value = fade ? 1 : ud.own.blendOn;
+  mesh.material.transparent = ud.own.transparent || fade;
+  mesh.material.depthWrite = ud.own.depthWrite && !fade;
+  u.fxAlpha.value = m[0];
+  u.uvOff.value.set(m[1], m[2]);
+  if (m[7]) u.tint.value.set(m[3], m[4], m[5]);
+  else u.tint.value.set(...ud.own.tint);
+  return m[6] !== 0 && m[0] > 0;
+}
+
+/**
  * Drive an effect model from its track's program: its block's position and
  * scale, and alpha, UV scroll and colour per material id.  The colour replaces the block tint --
  * `0x7E` is per material, and e004's fire gives its two layers two oranges.
@@ -504,6 +537,15 @@ function poseAt(built, frame) {
     actor.group.visible = on;
     if (!on) { skipped++; continue; }
     if (e.fx) fxApply(actor.group, e, age);
+    if ((e.parts && e.parts.length) || e.act) {
+      const hidden = sceneMod.hiddenPartsAt(e, frame);
+      for (const child of actor.group.children) {
+        const names = actor.partsOf[child.userData.meshIndex];
+        let vis = !names || ![...hidden].some(n => names.has(n));
+        if (e.act) vis = actorMaterial(child, e.act, frame) && vis;
+        child.visible = vis;
+      }
+    }
     const cur = sceneMod.clipAt(e, frame);
     if (!cur) continue;
     const clip = built.clipFor(actor, cur.file);

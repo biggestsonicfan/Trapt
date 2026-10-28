@@ -1331,8 +1331,7 @@ register or a material. It records, for each local frame, each material's
 all the Python side needs, and `test_assets` keeps the two in step.
 
 Actor tracks use the same registers (Allura's material 2 fades on `r0`), but
-they are cue-driven timelines: run frame by frame, the `end_track` at their
-foot would fire on frame 0. So only spawned tracks are run as programs.
+they run differently: the VM keeps its pc across frames. That is §10.6.
 
 ### 10.3 Draw order and the GS's alpha
 
@@ -1350,15 +1349,15 @@ foot would fire on frame 0. So only spawned tracks are run as programs.
 
 | state | scene | shown | page before | page now | pdiag |
 |---|---|---|---|---|---|
-| 00 | e004 | 1418 | 16.66 | **9.21** | 17.89 |
+| 00 | e004 | 1418 | 16.66 | **9.01** | 17.89 |
 | 03 | e001 | 3703 | 3.53 | 3.49 | 3.56 |
-| 04 | e001 | 10832 | 3.65 | 3.58 | 3.99 |
+| 04 | e001 | 10832 | 3.65 | 3.02 | 3.99 |
 | 05 | e004 | 1648 | 15.36 | 14.22 | 19.46 |
-| 06 | e001 | 1339 | 4.26 | 4.25 | 4.13 |
-| 07 | e004 | 2127 | 8.86 | **5.12** | 5.25 |
+| 06 | e001 | 1339 | 4.26 | 4.08 | 4.13 |
+| 07 | e004 | 2127 | 8.86 | **4.50** | 5.25 |
 | 08 | e001 | 7420 | 4.73 | 4.73 | 4.86 |
 
-The mean is 6.46 for the page and 8.45 for pdiag. The "before" column is the
+The mean is 6.15 for the page (6.37 before §10.6) and 8.45 for pdiag. The "before" column is the
 page at the start of this work, already at the corrected frames.
 
 Still wrong:
@@ -1366,7 +1365,8 @@ Still wrong:
 - **e004 1648, the right third.** The hardware's background there is warm
   brown (mean RGB 48, 30, 23); the page's is grey (20, 19, 17). No sprite
   reaches it, and `0xAC` (§10.5) did not touch it.
-- **e004 1418.** Allura's arm pose is off.
+- **e004 1418.** What looked like a wrong arm pose was the gauntlet (§10.6).
+  Her bones in EE RAM match the page within 0.05.
 
 ### 10.5 `0xAC` is a pull toward the camera
 
@@ -1400,3 +1400,32 @@ Allura's arm and hand, where the fire mesh's depth cut it. Now it covers
 them, as on hardware. The changed pixels all lie in x 0..406, and every one
 got warmer (mean +13.8, +2.7, +1.3). The middle third's red went from 47 to
 58 (hardware 67). The right third did not move.
+
+### 10.6 Hidden parts, and actor tracks as programs
+
+- **`0xB2 (name, show, 0)`.** Handler `0x1C20C0` → `0x1D53F0`. Show 0 adds
+  the node name to a four-slot hidden list at model `+0x22C`; show 1 removes
+  it. Attached models get the same call. A mesh whose base node (`+0x2a`) is
+  the named node, or sits under it, is not drawn. On the disc the name is
+  always `buki`, the weapon: 58 hides and 2 shows. `scene.js` and `scene.py`
+  record them on the entity (`parts`), `hiddenPartsAt` answers per frame, and
+  `play.js` and `pdiag.py` skip those meshes.
+- **Actor tracks keep their pc.** `0x04 at_time(t)` followed by
+  `0x05 (0, {c4:k})` means: while the condition is false, jump to call `k`
+  and end the frame. So the track waits at that line, and runs on once the
+  time comes. `scene.js` `actorRun` runs it that way, with `at_time` as
+  `t >= a`.
+- **`0xB0 (on, m)`.** Handler `0x1C2E00` calls model vtable `+0x68(m, on, 1)`:
+  it shows or hides the materials with flags word `m`. `0x9D (a, m)` goes to
+  vtable `+0x38`; the page takes it as "blend this material".
+- **The calculator.** Handler `0x1C7240` also serves `0xA0`, `0xA1`, `0xA5`,
+  `0xA6` and `0xA9`, besides `0x0D`–`0x1C`. Every op that points at it was
+  listed from the table. Op 9 clamps into [a, b]. Without `0xA1`, Allura's
+  alpha read 1.01 at 1648.
+
+Allura's e004 track hides material 2 (the gauntlet: materials 0 and 15) at
+frame 0, shows it at 1430 and fades it in on `r0 += 0.01` until 1530, then
+fades it out from 1750 to 1850. In e001 and e024 it stays hidden for the
+whole scene. Before this, the page drew the gauntlet all through e004, and
+that is what made her arm at 1418 look wrong. The material program is in
+`scene.js` only; `scene.py` has `0xB2` but not the material VM.
