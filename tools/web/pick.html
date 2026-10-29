@@ -73,20 +73,42 @@
     letter-spacing: .05em; }
   #subs .txt { font-size: clamp(13px, 1.5vw, 19px); white-space: pre-line;
     line-height: 1.35; }
-  #look { position: absolute; right: 10px; top: 10px; width: 232px; z-index: 5;
+  #look, #camp { position: absolute; right: 10px; top: 10px; width: 232px; z-index: 5;
     background: #16161ae8; border: 1px solid #2e2e36; border-radius: 8px;
     padding: 8px 10px; display: none;
     max-height: calc(100% - 20px); overflow-y: auto; }
-  #look.on { display: block; }
-  #look h4:not(:first-child) { margin-top: 14px; }
-  #look h4 { margin: 2px 0 6px; font-size: 11px; letter-spacing: .08em;
+  #camp { right: auto; left: 10px; }
+  #look.on, #camp.on { display: block; }
+  #look h4:not(:first-child), #camp h4:not(:first-child) { margin-top: 14px; }
+  #look h4, #camp h4 { margin: 2px 0 6px; font-size: 11px; letter-spacing: .08em;
     text-transform: uppercase; opacity: .6; font-weight: 600; }
-  #look label { display: flex; align-items: center; gap: 8px; margin: 4px 0;
+  #look label, #camp label { display: flex; align-items: center; gap: 8px; margin: 4px 0;
     font-size: 11.5px; }
-  #look label span { flex: 0 0 88px; opacity: .75; }
-  #look input[type=range] { flex: 1; accent-color: #d8b06a; }
-  #look label b { flex: 0 0 34px; text-align: right; font-weight: 400;
+  #look label span, #camp label span { flex: 0 0 88px; opacity: .75; }
+  #look input[type=range], #camp input[type=range] { flex: 1; min-width: 0;
+    accent-color: #d8b06a; }
+  #look label b, #camp label b { flex: 0 0 34px; text-align: right; font-weight: 400;
     font-variant-numeric: tabular-nums; opacity: .6; }
+  #camp .row { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+  #camp button { background: #232329; color: inherit; border: 1px solid #34343c;
+    border-radius: 5px; padding: 3px 8px; font: inherit; font-size: 11.5px; cursor: pointer; }
+  #camp button.on { background: #3a5a8a; border-color: #4a72ad; }
+  #camp .slots button { min-width: 22px; padding: 3px 0; }
+  #camp .slots button.on { background: #2e3a2a; border-color: #5a7a4a; }
+  #camp p { font-size: 11px; opacity: .55; margin: 8px 0 0; line-height: 1.4; }
+  /* an on/off switch: a checkbox drawn as a track and a knob */
+  label.sw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+    font-size: 13px; white-space: nowrap; user-select: none; }
+  label.sw input { position: absolute; opacity: 0; width: 0; height: 0; }
+  label.sw i { position: relative; flex: 0 0 30px; height: 16px; border-radius: 8px;
+    background: #34343c; transition: background .15s; }
+  label.sw i::after { content: ''; position: absolute; left: 2px; top: 2px;
+    width: 12px; height: 12px; border-radius: 50%; background: #bbb;
+    transition: transform .15s, background .15s; }
+  label.sw input:checked + i { background: #3a5a8a; }
+  label.sw input:checked + i::after { transform: translateX(14px); background: #fff; }
+  label.sw input:focus-visible + i { outline: 2px solid #4a72ad; outline-offset: 2px; }
+  #camp label.sw { display: flex; margin: 6px 0; font-size: 11.5px; }
   #transport button.on { background: #3a5a8a; border-color: #4a72ad; }
   #cards section { margin: 0 0 22px; }
   #cards h3 { font-size: 12px; font-weight: 600; letter-spacing: .12em;
@@ -151,7 +173,7 @@
   #transport { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
   #transport button { background: #232329; color: inherit; border: 1px solid #34343c;
     border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
-  #transport input { flex: 1; accent-color: #4a72ad; }
+  #transport input[type=range] { flex: 1; accent-color: #4a72ad; }
   #fnum { font: 12px ui-monospace, monospace; opacity: .5; min-width: 92px;
     text-align: right; }
   #clips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -214,7 +236,7 @@
     #detail { overflow: visible; padding: 4px 10px 30px; }
     #stage.on #view { height: 56vw; }
     #transport { flex-wrap: wrap; }
-    #transport input { flex-basis: 100%; }
+    #transport input[type=range] { flex-basis: 100%; }
     body.app #lang { position: absolute; }
   }
 </style>
@@ -304,6 +326,7 @@
 <script src="mapbin.js"></script>
 <script src="trap.js"></script>
 <script src="pad.js"></script>
+<script src="camctl.js"></script>
 <script src="stage.js"></script>
 <script src="stagescript.js"></script>
 <script src="stageview.js"></script>
@@ -455,7 +478,7 @@ async function openCutscene(name, path) {
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
     + '<div id="card"></div>'
-    + '<div id="look"></div></div>'
+    + '<div id="look"></div><div id="camp"></div></div>'
     + '<div id="transport"></div>'
     + '<div id="vinfo"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
@@ -565,7 +588,10 @@ function ensureViewer() {
     V.scene.add(new THREE.AmbientLight(0xffffff, 0.85));
     V.key = new THREE.DirectionalLight(0xffffff, 0.75);
     V.scene.add(V.key);
-    V.orbit = { yaw: 0.6, pitch: 0.25, dist: 10, target: [0, 0, 0] };
+    V.orbit = TraptCamCtl.create();     // the free camera, all three kinds
+    // Near is in front of the eye, so zooming the ortho view in (which moves
+    // the eye closer) cuts away whatever wall stands between it and the room.
+    V.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1e5);
     V.keys = Object.create(null);       // which movement keys are held
     V.locked = false;                   // pointer lock: look without dragging
     V.posterAspect = TraptGs.OUT_ASPECT;   // stills keep the display shape
@@ -610,24 +636,32 @@ function bindOrbit(host) {
   if (host.dataset.bound) return;
   host.dataset.bound = '1';
   let drag = null;
-  // The card, the Look panel and the HUD live *inside* `#view`, so their
+  // The card, the panels and the HUD live *inside* `#view`, so their
   // presses bubble here.  Capturing the pointer for an ancestor retargets
   // everything that follows -- including the click the browser synthesises --
   // at the capturing element, so a card button pressed while the camera was
   // listening never saw its own click and the route card could not be
   // dismissed at all.  Anything that is part of the UI is not a drag.
   const onUI = (e) => !!(e.target && e.target.closest
-                         && e.target.closest('#card, #look, #hud'));
+                         && e.target.closest('#card, #look, #camp, #hud'));
   host.addEventListener('pointerdown', (e) => {
     if (onUI(e)) return;
-    // Right button, or alt, asks for the old orbit.
-    drag = { x: e.clientX, y: e.clientY,
-             orbit: e.button === 2 || e.altKey };
+    if (e.button === 1) e.preventDefault();   // no autoscroll on middle-drag
+    // Right button, or alt, orbits even in the fly camera; middle or shift
+    // pans the target in the two that have one.
+    drag = { x: e.clientX, y: e.clientY, t: performance.now(),
+             orbit: e.button === 2 || e.altKey,
+             pan: V.orbit.mode !== 'noclip' && (e.button === 1 || e.shiftKey) };
+    V.dragging = true;
+    V.orbit.spin = [0, 0];
     host.classList.add('grabbing');
     host.setPointerCapture(e.pointerId);
   });
   host.addEventListener('pointerup', () => {
+    // Let go while still moving and an orbit coasts; stop first and it stays.
+    if (drag && performance.now() - drag.t > 80) V.orbit.spin = [0, 0];
     drag = null;
+    V.dragging = false;
     host.classList.remove('grabbing');
   });
   // Right-dragging must not raise the menu half way through a turn.
@@ -637,22 +671,21 @@ function bindOrbit(host) {
     // difference: the browser reports the movement directly.
     if (V.locked) {
       goFreeCam();
-      lookFrom(V.orbit, -e.movementX * LOOK_X, e.movementY * LOOK_Y);
+      TraptCamCtl.look(V.orbit, -e.movementX * LOOK_X, e.movementY * LOOK_Y, false);
       return;
     }
     if (!drag) return;
     goFreeCam();
+    const now = performance.now();
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (drag.orbit) {
-      // Orbiting swings the eye around the target: the way to look over a
-      // model, and disorienting anywhere else, because the world appears to
-      // rotate rather than the head.
-      V.orbit.yaw -= dx * LOOK_X;
-      V.orbit.pitch = Math.max(-1.4, Math.min(1.4, V.orbit.pitch + dy * LOOK_Y));
+    if (drag.pan) {
+      const h = host.clientHeight || 1;
+      TraptCamCtl.pan(V.orbit, dx / h, dy / h);
     } else {
-      lookFrom(V.orbit, -dx * LOOK_X, dy * LOOK_Y);
+      TraptCamCtl.look(V.orbit, -dx * LOOK_X, dy * LOOK_Y, drag.orbit);
+      TraptCamCtl.fling(V.orbit, -dx * LOOK_X, dy * LOOK_Y, (now - drag.t) / 1000);
     }
-    drag = { x: e.clientX, y: e.clientY, orbit: drag.orbit };
+    drag = Object.assign(drag, { x: e.clientX, y: e.clientY, t: now });
   });
   // Double-click to look around without holding a button; Escape releases it,
   // which the browser handles itself.
@@ -668,112 +701,104 @@ function bindOrbit(host) {
   host.addEventListener('wheel', (e) => {
     if (onUI(e)) return;              // let a panel scroll itself
     e.preventDefault();
-    V.orbit.dist *= 1 + Math.sign(e.deltaY) * 0.12;
+    TraptCamCtl.wheel(V.orbit, Math.sign(e.deltaY));
+    syncCamPanel();
   }, { passive: false });
 }
 
 // --------------------------------------------------------------- free cam
-// The free camera is an orbit -- yaw, pitch and a distance from a target --
-// and it stays one, because fitting a model or a room to the view sets the
-// target and the distance and everything downstream reads them.  Flying is
-// therefore a translation of the *target*: the eye sits at a fixed offset
-// from it, so moving the target moves the eye with it and the shot keeps its
-// framing.
-//
-// The one place that model is wrong is turning.  Orbiting swings the eye
-// through space, so the world appears to rotate rather than the head, and
-// with a room around you that is disorienting rather than useful.  So the
-// mouse turns the *camera*: `lookFrom` rotates and then puts the target back
-// under the eye, leaving the eye exactly where it was.
-//
-// Orbiting is still the right thing for looking over a model, so it keeps
-// right-drag (or alt-drag).  Both use the same sensitivity, since a dragged
-// pixel and a pointer-locked `movementX` are the same unit.
+// The free camera is camctl.js: noclip's fly camera, an orbit camera and an
+// orthographic one, sharing one state (`V.orbit`: yaw, pitch, a distance and
+// a target).  Fitting a model or a room sets the target and the distance;
+// `fitCam` also remembers that as the view B goes back to.
 
-/** Where the eye sits for an orbit state. */
-function orbitEye(o) {
-  const cp = Math.cos(o.pitch);
-  return [o.target[0] + Math.sin(o.yaw) * cp * o.dist,
-          o.target[1] + Math.sin(o.pitch) * o.dist,
-          o.target[2] + Math.cos(o.yaw) * cp * o.dist];
-}
-
-/** Turn by (dyaw, dpitch) about the eye rather than about the target. */
-function lookFrom(o, dyaw, dpitch) {
-  const eye = orbitEye(o);
-  o.yaw += dyaw;
-  o.pitch = Math.max(-1.4, Math.min(1.4, o.pitch + dpitch));
-  const cp = Math.cos(o.pitch);
-  o.target = [eye[0] - Math.sin(o.yaw) * cp * o.dist,
-              eye[1] - Math.sin(o.pitch) * o.dist,
-              eye[2] - Math.cos(o.yaw) * cp * o.dist];
-}
-
-/**
- * The unit axes of the view: where forward, right and up point in world
- * space for an orbit state.  Forward is the way the camera looks, so W flies
- * into the screen rather than along the floor.
- */
-function camAxes(o) {
-  const cp = Math.cos(o.pitch), sp = Math.sin(o.pitch);
-  const sy = Math.sin(o.yaw), cy = Math.cos(o.yaw);
-  return { fwd: [-sy * cp, -sp, -cy * cp],
-           right: [cy, 0, -sy],
-           up: [0, 1, 0] };
-}
-
-/**
- * Move the free camera for one frame.
- *
- * Speed scales with the orbit distance, which is set from the size of
- * whatever was loaded, so the same keys suit a face and a courtyard.  What it
- * is scaled *to* comes from the game: the player's own locomotion, derived
- * from her animation strides in STAGE.md, is 10 units a second walking and 34
- * running.  A camera that crosses a room appreciably faster than the girl
- * being chased through it is not a camera you can aim, which is what a
- * quarter of the orbit distance -- capped at 60, a little under twice a run
- * -- is picked to avoid.  Shift trebles it for getting somewhere.
- */
-function flyMove(dt) {
-  const FLY_SCALE = 0.25, FLY_MAX = 60, FLY_BOOST = 3;
-  const k = V.keys, o = V.orbit;
-  const x = (k.d ? 1 : 0) - (k.a ? 1 : 0);
-  const z = (k.w ? 1 : 0) - (k.s ? 1 : 0);
-  const y = (k.e ? 1 : 0) - (k.q ? 1 : 0);
-  if (!x && !y && !z) return false;
-  const ax = camAxes(o);
-  const speed = Math.min(Math.max(o.dist, 1) * FLY_SCALE, FLY_MAX)
-              * (k.boost ? FLY_BOOST : 1) * dt;
-  for (let i = 0; i < 3; i++) {
-    o.target[i] += (ax.fwd[i] * z + ax.right[i] * x + ax.up[i] * y) * speed;
-  }
-  return true;
+/** Frame a target at a distance, and make that the view Reset returns to. */
+function fitCam(target, dist) {
+  const o = V.orbit;
+  o.target = target.slice();
+  o.dist = dist;
+  o.vel = [0, 0, 0];
+  o.spin = [0, 0];
+  V.home = TraptCamCtl.save(o);
 }
 
 /** Movement and look both mean "stop following the cutscene's own camera". */
 function goFreeCam() {
   if (!S || !S.sceneCam) return;
   S.sceneCam = false;
+  // Start from where the cutscene's camera was, not from the last free view.
+  const c = V.camera, d = new THREE.Vector3();
+  c.getWorldDirection(d);
+  TraptCamCtl.fromPose(V.orbit, [c.position.x, c.position.y, c.position.z],
+                       [d.x, d.y, d.z]);
   const b = document.getElementById('camBtn');
-  if (b) b.textContent = T('Free cam');
+  if (b) b.checked = false;
 }
 
 // A key is only movement when nothing is being typed into and no modifier is
 // down, so Ctrl-S still saves the page and the filter box still takes a "w".
-function movementKey(e) {
+// The arrows and PageUp/PageDown are the same moves as WASD and E/Q.
+const KEY_ALIAS = { arrowup: 'w', arrowdown: 's', arrowleft: 'a',
+                    arrowright: 'd', pageup: 'e', pagedown: 'q' };
+function typing(e) {
   const t = e.target;
-  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
-            || t.tagName === 'SELECT' || t.isContentEditable)) return null;
-  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+                  || t.tagName === 'SELECT' || t.isContentEditable));
+}
+function movementKey(e) {
+  if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return null;
   const c = e.key.toLowerCase();
-  return 'wasdqe'.indexOf(c) >= 0 ? c : null;
+  if (KEY_ALIAS[c]) return KEY_ALIAS[c];
+  return 'wasdqe'.indexOf(c) >= 0 && c.length === 1 ? c : null;
+}
+
+/** Where the saved views of whatever is on screen live. */
+function viewsKey() {
+  return 'trapt.views.' + (S ? 'scene:' + S.name : M ? 'model:' + M.entry.name : '');
+}
+function loadViews() {
+  try { return JSON.parse(localStorage.getItem(viewsKey()) || '{}') || {}; }
+  catch (err) { return {}; }
+}
+
+/** noclip's slots: shift+1..9 stores the view, 1..9 brings it back. */
+function cameraSlot(n, store) {
+  const views = loadViews();
+  if (store) {
+    goFreeCam();
+    views[n] = TraptCamCtl.save(V.orbit);
+    try { localStorage.setItem(viewsKey(), JSON.stringify(views)); } catch (err) {}
+  } else if (views[n]) {
+    goFreeCam();
+    TraptCamCtl.restore(V.orbit, views[n]);
+  }
+  syncCamPanel();
+}
+
+function resetCam() {
+  goFreeCam();
+  if (V.home) TraptCamCtl.restore(V.orbit, V.home);
+  syncCamPanel();
+}
+
+/** R, B and the number row; none of them in a stage, which has its own keys. */
+function cameraKey(e) {
+  if (G || typing(e) || e.ctrlKey || e.metaKey || e.altKey) return false;
+  const m = /^(?:Digit|Numpad)([1-9])$/.exec(e.code);
+  if (m) { cameraSlot(m[1], e.shiftKey); return true; }
+  const c = e.key.toLowerCase();
+  if (c === 'r') { V.orbit.autoRotate = !V.orbit.autoRotate; syncCamPanel(); return true; }
+  if (c === 'b') { resetCam(); return true; }
+  return false;
 }
 
 addEventListener('keydown', (e) => {
   if (!V) return;
   V.keys.boost = e.shiftKey;
+  if (cameraKey(e)) return;
   const c = movementKey(e);
   if (!c) return;
+  if (e.key.length > 1) e.preventDefault();   // the arrows must not scroll
   V.keys[c] = true;
   goFreeCam();
 });
@@ -786,6 +811,147 @@ addEventListener('keyup', (e) => {
 // Holding a key and then leaving the page never delivers the keyup, which
 // would leave the camera flying by itself when you came back.
 addEventListener('blur', () => { if (V) V.keys = Object.create(null); });
+
+/** The camera to draw with: the ortho one only when it is in charge. */
+function viewCam() {
+  return (V.orbit.mode === 'ortho' && !G && !(S && S.sceneCam) && V.group)
+    ? V.ortho : V.camera;
+}
+
+/** Put the three.js cameras where the free camera says. */
+function placeFreeCam(dt) {
+  const o = V.orbit;
+  TraptCamCtl.step(o, V.keys, dt, !!V.dragging);
+  const e = TraptCamCtl.eye(o);
+  V.camera.position.set(e[0], e[1], e[2]);
+  V.camera.lookAt(o.target[0], o.target[1], o.target[2]);
+  if (V.camera.fov !== o.fov) {
+    V.camera.fov = o.fov;
+    V.camera.updateProjectionMatrix();
+  }
+  V.key.position.copy(V.camera.position);
+  if (o.mode !== 'ortho') return;
+  const h = TraptCamCtl.orthoHalf(o), w = h * V.camera.aspect;
+  const q = V.ortho;
+  if (q.top !== h || q.right !== w) {
+    q.left = -w; q.right = w; q.top = h; q.bottom = -h;
+    q.updateProjectionMatrix();
+  }
+  q.position.copy(V.camera.position);
+  q.quaternion.copy(V.camera.quaternion);
+}
+
+// ------------------------------------------------------------ camera panel
+const CAM_MODES = [['noclip', 'Noclip'], ['orbit', 'Orbit'], ['ortho', 'Ortho']];
+const CAM_SNAPS = [['top', 'Top'], ['front', 'Front'], ['side', 'Side'], ['back', 'Back']];
+
+function swHtml(id, label, on) {
+  return '<label class="sw"><input type="checkbox" id="' + id + '"'
+    + (on ? ' checked' : '') + '><i></i>' + T(label) + '</label>';
+}
+
+/** The speed slider is logarithmic: -1..1 is a twentieth to twenty times. */
+const speedToSlider = (v) => (Math.log(v) / Math.log(20)).toFixed(2);
+const sliderToSpeed = (x) => Math.pow(20, +x);
+
+function buildCamPanel() {
+  const panel = document.getElementById('camp');
+  if (!panel) return;
+  const o = V.orbit, views = loadViews();
+  panel.innerHTML = '<h4>' + T('Camera') + '</h4>'
+    + '<div class="row">' + CAM_MODES.map(([k, l]) =>
+        '<button data-mode="' + k + '"' + (o.mode === k ? ' class="on"' : '') + '>'
+        + T(l) + '</button>').join('') + '</div>'
+    + '<label><span>' + T('Speed') + '</span><input id="camSpeed" type="range" min="-1"'
+    + ' max="1" step="0.01" value="' + speedToSlider(o.speed) + '"><b id="camSpeedV">'
+    + o.speed.toFixed(2) + '</b></label>'
+    + '<label><span>' + T('Field of view') + '</span><input id="camFov" type="range"'
+    + ' min="10" max="100" step="1" value="' + o.fov + '"><b id="camFovV">' + o.fov
+    + '</b></label>'
+    + swHtml('camInvY', 'Invert Y', o.invertY)
+    + (o.mode !== 'noclip' ? swHtml('camSpin', 'Auto-rotate (R)', o.autoRotate) : '')
+    + (o.mode === 'ortho' ? '<div class="row">' + CAM_SNAPS.map(([k, l]) =>
+        '<button data-snap="' + k + '">' + T(l) + '</button>').join('') + '</div>' : '')
+    + '<div class="row"><button id="camReset">' + T('Reset view (B)') + '</button></div>'
+    + '<h4>' + T('Saved views') + '</h4>'
+    + '<div class="row slots">' + [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) =>
+        '<button data-slot="' + n + '"' + (views[n] ? ' class="on"' : '') + '>' + n
+        + '</button>').join('') + '</div>'
+    + '<p>' + T(CAM_HELP[o.mode]) + '</p>';
+  if (panel.dataset.wired) return;
+  panel.dataset.wired = '1';
+  panel.addEventListener('click', onCamPanelClick);
+  panel.addEventListener('input', onCamPanelInput);
+}
+
+const CAM_HELP = {
+  noclip: 'WASD or arrows fly, Q/E down and up, shift hurries; drag to look,'
+    + ' right-drag to orbit; the wheel sets the speed. Click a slot to go'
+    + ' there, shift-click (or shift+1..9) to store the view.',
+  orbit: 'Drag to orbit, shift- or middle-drag to pan, the wheel zooms; A/D'
+    + ' and Q/E orbit, W/S zoom. Click a slot to go there, shift-click (or'
+    + ' shift+1..9) to store the view.',
+  ortho: 'A flat projection: drag to orbit, shift- or middle-drag to pan,'
+    + ' the wheel zooms. Click a slot to go there, shift-click (or'
+    + ' shift+1..9) to store the view.',
+};
+
+function onCamPanelClick(e) {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const d = b.dataset;
+  if (d.mode) {
+    goFreeCam();
+    const was = V.orbit.mode;
+    TraptCamCtl.setMode(V.orbit, d.mode);
+    if (was === 'noclip' && d.mode !== 'noclip' && V.home)
+      TraptCamCtl.aimAt(V.orbit, V.home.target);
+    buildCamPanel();
+  } else if (d.snap) {
+    TraptCamCtl.snap(V.orbit, d.snap);
+  } else if (d.slot) {
+    cameraSlot(d.slot, e.shiftKey);
+  } else if (b.id === 'camReset') {
+    resetCam();
+  }
+}
+
+function onCamPanelInput(e) {
+  const t = e.target, o = V.orbit;
+  if (t.id === 'camSpeed') o.speed = sliderToSpeed(t.value);
+  else if (t.id === 'camFov') o.fov = +t.value;
+  else if (t.id === 'camInvY') o.invertY = t.checked;
+  else if (t.id === 'camSpin') o.autoRotate = t.checked;
+  syncCamPanel();
+}
+
+/** Bring the open panel's numbers up to date without rebuilding it. */
+function syncCamPanel() {
+  const panel = document.getElementById('camp');
+  if (!panel || !panel.classList.contains('on')) return;
+  const o = V.orbit, q = (id) => document.getElementById(id);
+  if (q('camSpeedV')) {
+    q('camSpeedV').textContent = o.speed.toFixed(2);
+    q('camSpeed').value = speedToSlider(o.speed);
+    q('camFovV').textContent = o.fov;
+  }
+  if (q('camSpin')) q('camSpin').checked = o.autoRotate;
+  const views = loadViews();
+  for (const s of panel.querySelectorAll('[data-slot]'))
+    s.classList.toggle('on', !!views[s.dataset.slot]);
+}
+
+/** The transport's Camera button. */
+function camButton() {
+  const b = document.getElementById('campBtn');
+  if (!b) return;
+  b.onclick = () => {
+    const panel = document.getElementById('camp');
+    buildCamPanel();
+    panel.classList.toggle('on');
+    b.classList.toggle('on', panel.classList.contains('on'));
+  };
+}
 
 function showModel(entry, chip) {
   S = null;                                   // leave scene mode
@@ -817,8 +983,7 @@ function showModel(entry, chip) {
   if (V.group) V.scene.remove(V.group);
   V.group = group;
   V.scene.add(group);
-  V.orbit.target = b.center;
-  V.orbit.dist = b.radius * 3.2;
+  fitCam(b.center, b.radius * 3.2);
 
   let tris = 0, verts = 0;
   for (const me of model.meshes) { tris += me.tris.length; verts += me.vcount; }
@@ -891,20 +1056,18 @@ async function playClip(label, get, chip) {
 function transport() {
   const t = document.getElementById('transport');
   if (!M || !M.clip) { t.innerHTML = ''; return; }
-  t.innerHTML = '<button id="playBtn"></button>'
+  t.innerHTML = swHtml('playBtn', 'Play', M.playing)
+              + '<button id="campBtn">' + T('Camera') + '</button>'
               + '<input id="seek" type="range" min="0" step="1">'
               + '<span id="fnum"></span>';
   const btn = document.getElementById('playBtn');
   const seek = document.getElementById('seek');
   seek.max = M.clip.duration;
   seek.value = M.frame;
-  btn.textContent = T(M.playing ? 'Pause' : 'Play');
-  btn.onclick = () => {
-    M.playing = !M.playing;
-    btn.textContent = T(M.playing ? 'Pause' : 'Play');
-  };
+  btn.onchange = () => { M.playing = btn.checked; };
   seek.oninput = () => { M.frame = +seek.value; M.playing = false;
-                         btn.textContent = T('Play'); };
+                         btn.checked = false; };
+  camButton();
 }
 
 /** Write skinned positions back into the geometry three.js already has. */
@@ -932,8 +1095,7 @@ function info() {
                 + T('{0} animated nodes, {1} frames, skin {2} ms/frame',
                     M.clip.nodes.length, M.clip.duration, M.ms.toFixed(1))
               : ' · ' + T('bind pose'))
-    + ' · ' + T('WASD to fly, QE up/down, shift to hurry, drag to look,'
-    + ' right-drag to orbit, wheel to zoom');
+    + ' · ' + T('WASD to fly, drag to look; Camera has noclip, orbit and ortho');
 }
 
 // ------------------------------------------------------------ the GS look
@@ -1061,10 +1223,7 @@ function setPs2(on) {
   fitOutput();
   resize();                            // the projection aspect moves with it
   const b = document.getElementById('ps2Btn');
-  if (b) {
-    b.textContent = T(on ? 'PS2' : 'Modern');
-    b.classList.toggle('on', on);
-  }
+  if (b) b.checked = !!on;             // off is Modern
 }
 
 function applyLook() {
@@ -1215,10 +1374,7 @@ function setSubsPs2(on) {
     if (el) el.style.display = (!on && letterboxOn()) ? 'block' : 'none';
   }
   const b = document.getElementById('subsBtn');
-  if (b) {
-    b.textContent = T(on ? 'Subs PS2' : 'Subs DOM');
-    b.classList.toggle('on', on);
-  }
+  if (b) b.checked = !!on;             // off draws them as DOM
 }
 
 // -------------------------------------------------------------- the gallery
@@ -1485,7 +1641,7 @@ function routeViewport() {
     + '<div id="lbTop"></div><div id="lbBot"></div>'
     + '<div id="subs"></div><div id="fade"></div>'
     + '<div id="card"></div>'
-    + '<div id="look"></div></div>'
+    + '<div id="look"></div><div id="camp"></div></div>'
     + '<div id="transport"></div>'
     + '<div id="vinfo"></div>'
     + '<div id="models"></div><div id="clips"></div><div id="tex"></div>';
@@ -1989,8 +2145,7 @@ async function playScene(name) {
   const box = new THREE.Box3().setFromObject(built.root);
   const c = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
-  V.orbit.target = [c.x, c.y, c.z];
-  V.orbit.dist = Math.max(size.x, size.y, size.z) * 1.4 || 10;
+  fitCam([c.x, c.y, c.z], Math.max(size.x, size.y, size.z) * 1.4 || 10);
 
   S = { built: built, frame: 1, playing: false, ms: 0, load: load,
         name: name, sceneCam: true, seeked: true, ctx: null, audio: null };
@@ -2019,7 +2174,7 @@ async function playScene(name) {
   S.seeked = true;
   S.playing = true;
   const pb = document.getElementById('playBtn');
-  if (pb) pb.textContent = T('Pause');
+  if (pb) pb.checked = true;
   resumeAudio();
   sceneInfo();
 }
@@ -2048,30 +2203,32 @@ function resumeAudio() {
 function sceneTransport() {
   const t = document.getElementById('transport');
   if (!S) { t.innerHTML = ''; return; }
-  t.innerHTML = '<button id="playBtn"></button>'
-              + '<button id="camBtn"></button>'
-              + '<button id="ps2Btn"></button>'
-              + '<button id="subsBtn"></button>'
-              + '<button id="muteBtn"></button>'
+  // On/off settings are switches; buttons are for things that open or act.
+  t.innerHTML = swHtml('playBtn', 'Play', S.playing)
+              + swHtml('camBtn', 'Scene cam', S.sceneCam)
+              + swHtml('ps2Btn', 'PS2', true)
+              + swHtml('subsBtn', 'Subs PS2', true)
+              + swHtml('muteBtn', 'Sound', true)
               + '<button id="crtBtn">CRT</button>'
+              + '<button id="campBtn">' + T('Camera') + '</button>'
               + '<button id="lookBtn">' + T('Look') + '</button>'
               + '<button id="fsBtn">' + T('Fullscreen') + '</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
-  document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
+  document.getElementById('ps2Btn').onchange = (e) => setPs2(e.target.checked);
   document.getElementById('crtBtn').onclick = () => setCrt(!V.crtOn);
-  document.getElementById('subsBtn').onclick = () => {
-    V.subsPick = !V.subsPs2;           // an explicit choice stops it following
+  document.getElementById('subsBtn').onchange = (e) => {
+    V.subsPick = e.target.checked;     // an explicit choice stops it following
     setSubsPs2(V.subsPick);
   };
   const mb = document.getElementById('muteBtn');
+  // On until muted: the audio is still decoding when this is built.
   const syncMute = () => {
-    mb.textContent = T(S && S.audio && S.audio.muted ? 'Muted' : 'Sound');
-    mb.classList.toggle('on', !!(S && S.audio && !S.audio.muted));
+    mb.checked = !(S && S.audio && S.audio.muted);
   };
-  mb.onclick = () => {
-    if (!S || !S.audio) return;
-    S.audio.setMuted(!S.audio.muted);
+  mb.onchange = () => {
+    if (!S || !S.audio) { syncMute(); return; }
+    S.audio.setMuted(!mb.checked);
     if (!S.audio.muted && S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
     syncMute();
   };
@@ -2087,24 +2244,24 @@ function sceneTransport() {
   const seek = document.getElementById('seek');
   seek.max = S.built.scene.duration;
   seek.value = S.frame;
-  btn.textContent = T(S.playing ? 'Pause' : 'Play');
-  btn.onclick = () => {
-    S.playing = !S.playing;
-    btn.textContent = T(S.playing ? 'Pause' : 'Play');
+  btn.checked = S.playing;
+  btn.onchange = () => {
+    S.playing = btn.checked;
     // A tab's AudioContext starts suspended until a real click; this is it.
     if (S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
     if (!S.playing && S.audio) S.audio.stopAll();
   };
-  cam.textContent = T(S.sceneCam ? 'Scene cam' : 'Free cam');
-  cam.onclick = () => {
-    S.sceneCam = !S.sceneCam;
-    cam.textContent = T(S.sceneCam ? 'Scene cam' : 'Free cam');
+  cam.checked = S.sceneCam;
+  cam.onchange = () => {
+    if (cam.checked) S.sceneCam = true;
+    else goFreeCam();                  // carries on from the shot
   };
+  camButton();
   seek.oninput = () => {
     S.frame = +seek.value;
     S.playing = false;
     S.seeked = true;
-    document.getElementById('playBtn').textContent = T('Play');
+    document.getElementById('playBtn').checked = false;
   };
   document.getElementById('fsBtn').onclick = toggleFullscreen;
 
@@ -2126,8 +2283,8 @@ function sceneInfo() {
     + (S.audio ? ' · ' + T('{0} voice clips', S.audio.voiceCount)
                  + (S.audio.bgm ? ' + BGM' : '') : '')
     + (S.built.warnings.length ? ' · ' + T('{0} warnings', S.built.warnings.length) : '')
-    + ' · ' + T('WASD to fly, drag to look, right-drag to orbit'
-    + ' (any of them switches to free cam)');
+    + ' · ' + T('WASD to fly, drag to look; Camera has noclip, orbit and ortho'
+    + ' (any of them leaves the scene cam)');
 }
 
 /** Camera, subtitle and letterbox for the current frame. */
@@ -2240,15 +2397,7 @@ function tick() {
 
   if (S && S.sceneCam) { drawFrame(); return; }
   if (!V.group) { drawFrame(); return; }
-  flyMove(dt);
-  const o = V.orbit;
-  const cp = Math.cos(o.pitch);
-  V.camera.position.set(
-    o.target[0] + Math.sin(o.yaw) * cp * o.dist,
-    o.target[1] + Math.sin(o.pitch) * o.dist,
-    o.target[2] + Math.cos(o.yaw) * cp * o.dist);
-  V.camera.lookAt(o.target[0], o.target[1], o.target[2]);
-  V.key.position.copy(V.camera.position);
+  placeFreeCam(dt);
   drawFrame();
 }
 
@@ -2314,7 +2463,7 @@ function drawFrame() {
     });
   V.renderer.setRenderTarget(V.rt);
   V.renderer.clear();
-  V.renderer.render(V.scene, V.camera);
+  V.renderer.render(V.scene, viewCam());
   if (V.subsPass && V.subsPs2) {
     V.renderer.autoClear = false;      // the text goes on top of the frame
     V.renderer.render(V.subScene, V.subCam);
