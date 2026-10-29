@@ -1089,6 +1089,11 @@ Confirmation for the sheet fields came from EE RAM. Scanning a savestate for
 `+0x1c = (64, 16)` and `+0x20 = (256, 256)`: `0x68`'s four numbers, on
 hardware, exactly as read.
 
+§10.25 corrects the count: `0x9F`'s cells are the flipbook, but how many
+particles there are, how long they live and how often they spawn are
+`0x9E`'s. The torch is 20 particles of 96 frames, and the game holds 12 to 14
+of them alight.
+
 ### 9.4 e004's sparks, and what the disassembler settled
 
 e004's sparks use `0xC8`/`0xC9` where the torch uses `0x9F`, and chasing them
@@ -1250,10 +1255,14 @@ What this does *not* settle is the other five flags.  Only the fourth is read.
 
 ### 9.7 What is still not right
 
-**Where the particles go.** `0x9E 20 96 96 0.008 0 1 0`, `0x74 -0.001` and
-`0x77 2 0 0 0 1` carry the spawn spread and the rise, and none of them is
-read, so the thirty-two sit on top of each other. It reads as a bright
-flame that pulses in place rather than a plume climbing off the brazier.
+**Where the particles go** is done: §10.25 reads `0x9E`, `0x74` and
+`0x77`, and the torch climbs off the brazier as a plume.
+
+**The base is dimmer than the hardware's.** In state 04 the brightest
+red-minus-blue in the flame is 90 on the page and 166 in the screenshot; the
+hardware has a yellow-white core where the particles are youngest. Which cell
+a particle draws and how the draw blends (the routines at 0x2CBA20, 0x2CB470
+and 0x2CBFE0) are not decoded, and this was not tuned by eye.
 
 ---
 
@@ -2306,3 +2315,126 @@ Page gap, high half minus low half, R, G, B: 01_h +38.9, +22.8, +18.1;
 68.1) covers 01_h's (30.9 to 49.0). Over that range 03_h's ratio stays at
 0.90-0.94 on both halves, while 01_h's goes from 1.18 to 0.87. A function of
 page brightness does not mark the ratio. Nothing was changed.
+
+### 10.25 `0x9E` is a particle emitter, and the torch is one
+
+`0x9E`, `0x74`, `0x77` and `0xAE` are read now (scene.js `particleOp`,
+scene.py `_particle_op`), and `particles.js` runs what they set up. Every
+address below is in the US ELF.
+
+**The objects.** The opcodes write an emitter *definition* (vtable
+0x478FF0, fields `+0x210..+0x29C`). Each spawn point gets an *instance*
+(vtable 0x479250 at its `+0x1C`, the definition at `+0x3C`). An instance
+holds the particles at `+0x21C`, 0x80 bytes each, and the alive count at
+`+0x220`. A particle record is position `+0x00`, velocity `+0x10`, world
+position `+0x20`, world velocity `+0x30`, size `+0x60/+0x64`, RGBA bytes
+`+0x68` (RGB × 255, A × 128), the fade factor `+0x6C`, timer `+0x70` and
+life `+0x72`.
+
+**The arguments.**
+
+| op | handler | sets |
+|---|---|---|
+| `0x9E` | FUN_001C40C0 | slots; life max `+0x218` and min `+0x216`; `+0x21E` = int(1/rate); `+0x21A` = int(life min × fade fraction); spawns per frame `+0x29C` (0 = no limit); re-roll the shape at every spawn (flag 0x1000); clears `+0x290` |
+| `0x74` | | `+0x290` = −arg, the acceleration on Y |
+| `0x77` | FUN_001C3600 | the sphere (flag 0x40): radius U(p3, p1), speed U(p4, p2), inward if p5 is 0 (flag 0x10) |
+| `0xAE` | FUN_001C3740 | the box (flag 0x200): speed p1 along (0, sin p8°, cos p8°), half extents p2..p4, velocity jitter p5..p7 |
+
+**The update, FUN_00221BF0.** For each slot, every frame:
+
+- timer > 0: alive. Its age (life − timer) times the colour keys and size
+  keys. Within `+0x21A` frames of 0 its alpha loses 1/fade a frame. The timer
+  counts down, the velocity gains `+0x290` on Y, and then the position gains
+  the velocity.
+- timer = 0: it dies and waits: timer = −int(1 + (`+0x21E` − 1) × rnd).
+- timer < −1: the wait counts up.
+- timer = −1: it spawns (FUN_00220B30), at most `+0x29C` a frame, and only
+  while the emitter is not stopping. Its life is int(min + (max − min) × rnd).
+  The shape (FUN_0021F7F0) is rolled again only with flag 0x1000; otherwise
+  the slot keeps the roll FUN_00222260 gave it when the emitter started. The
+  world matrix moves it unless flag 0x2000 is set.
+
+**The shape, FUN_0021F7F0.** The sphere picks a latitude in [−π/2, π/2] and
+a longitude in [−π, π], places the particle a random radius along that
+direction and gives it a random speed along it. The box places it uniformly in
+the extents and gives it the base velocity plus a uniform jitter. −90° is
+straight down: e132's rain. Flags 0x80 and 0x100 are a ring that no `0x9E`
+block on the disc uses; it is not decoded.
+
+**Checked on hardware.** In state 04 the torch's definition (0x15D4950)
+reads flags 0x40, life 96/96, `+0x21E` 124, fade 0, `+0x270`/`+0x274` 0/2,
+`+0x290` 0.001, one spawn a frame. Its particles rise by exactly
+0.001 × u(u+1)/2 after u frames, 4.656 at 96. The sizes follow the (1, 2) →
+(4, 7) key, and the colour bytes go ffffff73 → 1a060600. The three instances
+hold 14, 12 and 12 particles.
+
+**On the page.** The game's random numbers cannot be recovered from the
+script, so each spawn point seeds mulberry32 from its track name. The run is
+stepped frame by frame and remembered, so scrubbing is exact. A particle's
+billboard takes its own age for the keys and the flipbook cell, and its
+colour is packed like a ribbon's (× 255/128).
+
+The grade over states 03, 04, 06 and 08 stays at a mean of 3.13; state 04
+stays at 2.54. The torch is small on screen, so the change is visible in a
+diff of the picture but not in the mean.
+
+Not read yet: `0x75` (a trail table, flag 2, FUN_00220850), `0x7B`
+(`+0x298`, flag 0x800), `0x81` and `0xAD`.
+
+### 10.27 The torch particle's draw: cell, blend and size, ELF against page
+
+Decode only; nothing on the page was changed. Same e001 torch as §10.25,
+savestate 04. Every address is in the US ELF.
+
+**The draw.** The instance's draw is FUN_00221420. For each slot with
+0 ≤ timer ≤ life it asks the definition's behaviour function (`def+0x2C`) for
+a cell rect, takes the record's RGBA word `+0x68` and size `+0x60`, and hands
+them to a sprite renderer at `instance+0xC4` (vtable 0x47C440,
+FUN_002CBB30). The renderer writes the centre, the corners
+**(−sx, −sy, +sx, +sy)**, the UV rect and the RGBA word unchanged into a VU1
+batch. FUN_002226A0 builds it, and FUN_00222260 sets its GS state through
+vtable `+0x28` (FUN_002CC530) with the blend `def+0x10 & 3`.
+
+**Read from the savestate.** The torch definition 0x15D4950 has
+`+0x10` = 0x218, so the blend is 0. Each instance has `+0x30` = 0x6023, with
+no 0x800, so the colour multipliers at `+0x90` are not used, and `+0xAC` = 1.0.
+Each renderer holds ALPHA = 0x48 and TEST = 0x51801. VU1 data memory still
+holds instance 0x12077F0's last batch: 16 sprites, each with its input and
+the GS packet the microcode built (ST, RGBAQ, XYZ2, ST, XYZ2).
+
+| | cell | blend | colour factor | quad |
+|---|---|---|---|---|
+| ELF (FUN_00221420 → FUN_002CBB30, VU1, RAM) | the `0x68` sheet (`def+0x18`; RAM `def+0x1C` reads 64×16 on 256²), 4 columns, rate 4, no wrap (FUN_00188930); index = ⌊(life − timer at draw) / 4⌋, i.e. the key age **+ 1** | 0 → ALPHA 0x48, Cs·As + Cd (additive); no Z write | none: RGBAQ = the `+0x68` bytes (RGB = key × 255, A = key × 128), and the GS reads 0x80 as 1.0, so RGB is key × 255/128 | corners ±size: **2·sx × 2·sy** |
+| particles.js / play.js | same sheet and grid; index = ⌊key age / 4⌋ | AdditiveBlending (src·αs + dst), depthWrite off | `pack` 255/128 on RGB, alpha = key | PlaneGeometry(1, 1) × (sx, sy): **sx × sy** |
+
+**How the two differences were measured.**
+
+- *Cell.* The batch's UV rects were matched to the RAM records by position.
+  All 12 match ⌊(life − timer at draw) / 4⌋. Keying the cell on the key age
+  instead gets 2 of the 12 wrong (p13, p14). FUN_00221BF0 evaluates the keys
+  at life − timer and only then decrements the timer, so the draw's age is
+  one frame later than the keys' age.
+- *Size.* VU1 0x04–0x07 holds the projection (334.2, 194.95, centre 1963,
+  2026). A fit of the sprite centres to the live camera (0x81B6F0) gives a
+  focal length of 533.8 px with 0.01 px residual. Every sprite's half-width
+  is then size × focal / depth, at 1.000 ± 0.003 on both axes for all 14.
+
+**The 255/128 factor is the game's**, not one the page added. The colour
+bytes reach the GS as they are. The 90-against-166 gap is therefore not the
+blend and not the colour factor. Two things differ: the game's quads are
+twice as wide and twice as tall (four times the area), and its flipbook is
+one frame ahead. Neither has been changed, and nothing here measures how
+much of the gap either one accounts for.
+
+**Since then:** the page's particle quad spans ±size. A `0x9E` particle's
+plane is now 2 × 2 under the same (sx, sy) scale, so it runs −sx..+sx and
+−sy..+sy, like FUN_002CBB30's corners. The size passed in is the key itself,
+not a halved one: savestate 04's record at age 1 holds (1.00, 2.00), the
+torch's first key. The cell index, the blend, the colour and 255/128 are as
+they were.
+
+The page's flipbook index for a `0x9E` particle is now the ELF's,
+⌊(key age + 1) / 4⌋ = ⌊(life − timer at draw) / 4⌋ (`cellIndex` in
+play.js), so it is no longer a frame behind. The clamp to the last cell is
+unchanged. Other sprites still use their own age. The quad, the blend, the
+colour and 255/128 are unchanged.

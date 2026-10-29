@@ -36,11 +36,12 @@ const sceneMod = req ? require('./scene.js') : window.TraptScene;
 const modelMod = req ? require('./model.js') : window.TraptModel;
 const sliMod = req ? require('./sli.js') : window.TraptSli;
 const gsMod = req ? require('./gs.js') : window.TraptGs;
+const ptMod = req ? require('./particles.js') : window.TraptParticles;
 
-// A sheet can declare a lot of cells; this caps how many billboards one
-// emitter turns into.  Nothing on the disc exceeds it -- the largest grid is
-// e001's 32 -- so it is a guard, not a policy.
-const MAX_PARTICLES = 64;
+// This caps how many billboards one emitter turns into.  Nothing on the disc
+// exceeds it -- the largest `0x9E` is e132's 120 slots -- so it is a guard,
+// not a policy.
+const MAX_PARTICLES = 128;
 
 const COMMON = 'DATA/RT/COMMON/RT_COMMON.ARC';
 const COSTUME = 'DATA/RT/COSTUME/RT_C01F_A_HL.ARC';
@@ -243,13 +244,14 @@ async function assemble(THREE, disc, name, onProgress) {
     // faded out for most of its cycle, while thirty-two staggered ones sum to
     // something steady.
     //
-    // What is *not* implemented is where they go: `0x9E`, `0x74` and `0x77`
-    // carry the spawn spread and the rise and none is read, so these sit on
-    // top of each other and read as a bright pulsing flame rather than a
-    // plume climbing off the brazier.
-    // Two kinds of emitter, and the disc has one of each.
+    // ...or it would, but the game does not do that.  `0x9F` is only the
+    // flipbook; the particles are `0x9E`'s -- see particles.js.  A block that
+    // has one is simulated: e001's torch is 20 slots, each living 96 frames
+    // from its own point in a sphere of radius 2 and climbing at 0.001 a
+    // frame squared, then waiting up to 123 frames before it goes again.
+    // The grid-staggered cloud below is for a `0x9F` block without one.
     //
-    // A `0x9F` block -- e001's torch -- gets its count from the grid, above.
+    // A `0xC8` block -- e004's sparks -- states its count outright.
     //
     // A `0xC8` block -- e004's sparks -- states it outright.  Read live out
     // of EE RAM, a spark object holds `0xC8`'s first argument at `+0x210`
@@ -303,7 +305,14 @@ async function assemble(THREE, disc, name, onProgress) {
     // how old it is.  A grid block runs a full set at every point; a `0xC8`
     // block has one shared budget dealt round-robin between them.
     const slots = [];
-    if (e.grid && e.grid.cells > 1) {
+    if (e.particles && e.particles.slots > 0) {
+      const n = Math.min(MAX_PARTICLES, e.particles.slots);
+      const stop = e.trackLen ? e.trackLen : Infinity;
+      points.forEach((bind, i) => {
+        const sim = ptMod.create(e.particles, ptMod.seedOf(e.track + '/' + i), stop);
+        for (let k = 0; k < n; k++) slots.push({ bind, phase: 0, sim, particle: k });
+      });
+    } else if (e.grid && e.grid.cells > 1) {
       const n = Math.min(MAX_PARTICLES, e.grid.cells);
       for (const bind of points)
         for (let k = 0; k < n; k++) slots.push({ bind, phase: k * e.grid.rate });
@@ -327,7 +336,7 @@ async function assemble(THREE, disc, name, onProgress) {
 
     for (const slot of slots) {
       const bind = slot.bind;
-      const geo = spriteGeometry(THREE, e.mirror);
+      const geo = spriteGeometry(THREE, e.mirror, !!slot.sim);
       // The UVs are rewritten every frame by `setCell`, so keep the pristine
       // unit-quad corners to build each cell's rect from.
       let uvBase = null;
@@ -345,7 +354,8 @@ async function assemble(THREE, disc, name, onProgress) {
       root.add(mesh);
       sprites.push({ entity: e, mesh: mesh, bind: bind, actor: null,
                      uvBase: uvBase, cellU: u, cellV: v, cell: -1,
-                     phase: slot.phase });
+                     phase: slot.phase, sim: slot.sim || null,
+                     particle: slot.particle || 0 });
     }
   }
   // Resolve each bind to the actor that carries the bone, once.
@@ -457,10 +467,16 @@ function packColour(c) {
  * The UVs written here are the *fractions within a cell* rather than final
  * texture coordinates -- mirroring shows up as a fraction that runs 1 to 0 --
  * because `setCell` maps them onto whichever cell of the sheet is current.
+ *
+ * A `0x9E` particle (`particle` set) is a plane two units across: the game's
+ * sprite renderer (FUN_002CBB30) puts its corners at -size..+size, so a
+ * particle of size (sx, sy) spans 2sx x 2sy (§10.27, savestate 04's VU1
+ * batch).  Other unmirrored sprites keep the unit plane.
  */
-function spriteGeometry(THREE, mirror) {
+function spriteGeometry(THREE, mirror, particle) {
   if (!mirror) {
-    return THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
+    const w = particle ? 2 : 1;
+    return THREE.PlaneGeometry ? new THREE.PlaneGeometry(w, w)
                                : new THREE.BufferGeometry();
   }
   const pos = [], uv = [];
@@ -490,6 +506,16 @@ function spriteGeometry(THREE, mirror) {
                    new THREE.BufferAttribute(new Float32Array(pos), 3));
   geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2));
   return geo;
+}
+
+/**
+ * The flipbook cell of a sprite `age` frames old: one cell per `rate`
+ * frames, held on the last.  For a `0x9E` particle `age` is the draw's,
+ * life - timer at FUN_00221420, which is the key age + 1: FUN_00221BF0
+ * evaluates the keys and only then decrements the timer (§10.27).
+ */
+function cellIndex(grid, age) {
+  return Math.min(grid.cells - 1, Math.floor(age / grid.rate)) % grid.cells;
 }
 
 /**
@@ -795,17 +821,22 @@ function poseAt(built, frame) {
     // Where it exists it is the authority on how long one particle lasts.
     const span = (e.grid && e.grid.life) || keyed;
     const loops = span > 0 && !e.trackLen;
+    // A `0x9E` particle has its own age, place and fade, out of the
+    // simulation; it is alive or not by that alone, and its keys run on its
+    // age rather than the block's.
+    const pt = s.sim ? s.sim.at(s.particle, local) : null;
     // Each particle runs the same curve, offset by when it was emitted.
     const aged = local + (s.phase || 0);
-    const t = loops ? aged % (span + 1) : aged;
-    const live = local >= 0 && (loops || local <= life)
+    const t = pt ? pt.age : (loops ? aged % (span + 1) : aged);
+    const live = local >= 0 && (s.sim ? !!pt : (loops || local <= life))
               && sceneMod.visibleAt(e, frame) && (e.end === null || frame < e.end);
     s.mesh.visible = live;
     if (!live) continue;
     // `0x80` on a sprite block is the colour, the same way it is on a light,
     // and it is all an unkeyed sprite has: e004's spark is (0.9, 0.3, 0.1).
-    const [r, g, b, a] = packColour(e.colourKeys.length ? sceneMod.colourAt(e, t)
+    const [r, g, b, a0] = packColour(e.colourKeys.length ? sceneMod.colourAt(e, t)
       : (e.scale ? e.scale : [1, 1, 1, 1]));
+    const a = pt ? a0 * pt.alpha : a0;
     const [sx, sy] = sceneMod.sizeAt(e, t);
     // The GS treats 0x80 as 1.0, and alpha runs past 1 -- 1.8 occurs -- so
     // As is 0..255/128, an overbright the additive blend wants rather than a
@@ -817,7 +848,7 @@ function poseAt(built, frame) {
     // RGB x 255, alpha x 128 -- and nothing scales it back before the GS,
     // where 0x80 is 1.0: (0.9, 0.3, 0.1, 1.5) is (229, 76, 25, 192) in
     // savestate 00's strips.  So its RGB is 255/128 of a sprite's.
-    const pack = s.ribbon ? 255 / 128 : 1;
+    const pack = (s.ribbon || s.sim) ? 255 / 128 : 1;
     s.mesh.material.color.setRGB(r * over * pack, g * over * pack, b * over * pack);
     s.mesh.material.opacity = Math.max(0, Math.min(1, a));
     if (s.ribbon) {
@@ -829,9 +860,9 @@ function poseAt(built, frame) {
     // 1 x 2 to 4 x 7, a plume taller than it is wide.
     s.mesh.scale.set(sx || 1, sy || 1, 1);
     // Step the flipbook.  Without `0x9F` there is no grid and cell 0 stands.
+    // A `0x9E` particle is drawn one frame older than its keys (§10.27).
     if (e.grid && e.grid.cells > 1 && e.grid.rate > 0)
-      setCell(s, Math.min(e.grid.cells - 1,
-                          Math.floor(t / e.grid.rate)) % e.grid.cells);
+      setCell(s, cellIndex(e.grid, pt ? t + 1 : t));
 
     let px = 0, py = 0, pz = 0;
     if (s.actor && s.boneIndex >= 0 && s.actor.lastMats) {
@@ -844,6 +875,7 @@ function poseAt(built, frame) {
       if (e.transform) { px = e.transform[0]; py = e.transform[1]; pz = e.transform[2]; }
       if (e.origin) { px += e.origin[0]; py += e.origin[1]; pz += e.origin[2]; }
     }
+    if (pt) { px += pt.pos[0]; py += pt.pos[1]; pz += pt.pos[2]; }
     s.mesh.position.set(px, py, pz);
     s.base = [px, py, pz];
     lit++;
@@ -929,7 +961,7 @@ function lightsAt(built, frame) {
     if (a.rig && a.group.visible) gsMod.bindLights(rig, a.rig, nodeAt(a, a.root));
 }
 
-const api = { assemble, poseAt, lightsAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
+const api = { assemble, poseAt, lightsAt, faceSprites, fold, cellIndex, COMMON, COSTUME, EFFECTS };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptPlay = api;
 })();

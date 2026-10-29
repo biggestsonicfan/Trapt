@@ -81,6 +81,16 @@ const OP_FX_GRID = 0x9F;
 // into four, which puts that corner at the middle and makes the glow round.
 // Drawn flat it is a hard-edged square, opaque along two of its sides.
 const OP_FX_QUAD_FLAGS = 0x6C;
+// The particle emitter.  Each handler asks the effect object (vtable +0xD8)
+// for its emitter, vtable 0x00478FF0, and calls one setter on it; particles.js
+// is what the fields do, docs/VIEWER.md 10.25 where each one was found.
+//   0x9E FUN_001C40C0 -> +0x20 (slots, life max, life min, 1/rate, fade
+//        fraction, spawns per frame, re-roll) -- and zeroes the acceleration
+//   0x74 FUN_001C3C10 -> +0x34 (a)        Y acceleration, stored negated
+//   0x77 FUN_001C3600 -> +0x3C (r1, v1, r0, v0, out)   the sphere shape
+//   0xAE FUN_001C3740 -> +0x4C (v, bx, by, bz, jx, jy, jz, deg)   the box
+const OP_PT_EMITTER = 0x9E, OP_PT_ACCEL = 0x74;
+const OP_PT_SPHERE = 0x77, OP_PT_BOX = 0xAE;
 
 const KIND_MODEL = 4, KIND_LIGHT = 6, KIND_CAMERA = 7;
 const LIGHT_KINDS = { 0: 'directional', 1: 'point', 4: 'ambient', 5: 'black' };
@@ -124,6 +134,7 @@ function newEntity(track, index, kind, label) {
            // Sprite effects: a block naming a texture instead of a model.
            sprite: null, sizeKeys: [], colourKeys: [], binds: [],
            emitter: null, grid: null, flags: null, mirror: false,
+           particles: null,
            trackLen: null, fx: null, block: 0, size: null, billboard: 0,
            pull: 0, act: null };
 }
@@ -421,6 +432,46 @@ const sizeAt = (e, local) => sample(e.sizeKeys, local, [1, 1]);
 const colourAt = (e, local) => sample(e.colourKeys, local, [1, 1, 1, 1]);
 
 /**
+ * The emitter setters, as fields of `entity.particles` (particles.js runs
+ * them).  The arithmetic is single precision because the game's is: `0x9E`
+ * stores `(int)(1.0f / x)` frames, and e001's 0.008 comes out 124, not 125.
+ */
+function particleOp(entity, code, args) {
+  const a = args.map(num);
+  const p = entity.particles || (entity.particles = {
+    slots: 0, life: [0, 0], rate: 1, fade: 0, perFrame: 0, reroll: false,
+    accel: 0, shape: null });
+  if (code === OP_PT_EMITTER && a.length >= 6) {
+    // FUN_0021D3C0: +0x214 slots, +0x218 max, +0x216 min, +0x21E the wait,
+    // +0x21A = min * fraction the fade, +0x29C spawns per frame; it zeroes
+    // +0x290, so an acceleration has to come after it
+    p.slots = Math.trunc(a[0]);
+    p.life = [Math.trunc(a[2]), Math.trunc(a[1])];
+    p.rate = Math.max(1, a[3] ? Math.trunc(Math.fround(1 / Math.fround(a[3]))) : 0);
+    p.fade = Math.trunc(Math.fround(p.life[0] * Math.fround(a[4])));
+    p.perFrame = Math.trunc(a[5]) & 0xFF;
+    p.reroll = a.length > 6 && a[6] !== 0;
+    p.accel = 0;
+  } else if (code === OP_PT_ACCEL && a.length >= 1) {
+    // FUN_0021D280 stores the argument negated; the update adds it to the
+    // velocity's Y, so e001's -0.001 is a torch flame that climbs
+    p.accel = -a[0];
+  } else if (code === OP_PT_SPHERE && a.length >= 5) {
+    // FUN_001C3600 -> FUN_0021D160: radius +0x270..+0x274 is (r0, r1) =
+    // (arg 3, arg 1), speed +0x288..+0x28C (arg 4, arg 2) -- nudged apart by
+    // 2e-7 when equal -- and flag 0x10, a flipped speed, when arg 5 is 0
+    const v1 = Math.abs(a[1] - a[3]) < 1e-7 ? a[3] + 2e-7 : a[1];
+    p.shape = { kind: 'sphere', radius: [a[2], a[0]], speed: [a[3], v1],
+                sign: a[4] ? 1 : -1 };
+  } else if (code === OP_PT_BOX && a.length >= 7) {
+    // FUN_001C3740 -> FUN_0021CD50: half extents +0x270, jitter +0x27C,
+    // speed +0x288 along (0, sin, cos) of the angle at +0x264/+0x268
+    p.shape = { kind: 'box', speed: a[0], half: a.slice(1, 4),
+                jitter: a.slice(4, 7), angle: a.length > 7 ? a[7] : 0 };
+  }
+}
+
+/**
  * `frameBase` and `origin` are non-zero only for a track spawned by 0x07/0x08:
  * an effect track times everything from the moment it was spawned, and is
  * placed at the world position the spawn named.
@@ -523,6 +574,9 @@ function run(scene, trackName, blob, frameBase, origin) {
       const cells = (args.length > 3 ? int(args[3]) : 0) || (cols * rows);
       const rate = int(args[0]);
       entity.grid = { rate, cols, rows, cells, life: rate * cells };
+    } else if ((code === OP_PT_EMITTER || code === OP_PT_ACCEL || code === OP_PT_SPHERE
+                || code === OP_PT_BOX) && entity) {
+      particleOp(entity, code, args);
     } else if ((code === OP_FX_EMIT_A || code === OP_FX_EMIT_B) && entity) {
       // A ribbon's shape: `0xC8` (segments, -, wander, width) and `0xC9`
       // (U span, U jitter, U base, U scroll).  play.js `ribbonAt` draws it.
