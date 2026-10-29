@@ -2432,3 +2432,9 @@ plane is now 2 × 2 under the same (sx, sy) scale, so it runs −sx..+sx and
 not a halved one: savestate 04's record at age 1 holds (1.00, 2.00), the
 torch's first key. The cell index, the blend, the colour and 255/128 are as
 they were.
+
+The page's flipbook index for a `0x9E` particle is now the ELF's,
+⌊(key age + 1) / 4⌋ = ⌊(life − timer at draw) / 4⌋ (`cellIndex` in
+play.js), so it is no longer a frame behind. The clamp to the last cell is
+unchanged. Other sprites still use their own age. The quad, the blend, the
+colour and 255/128 are unchanged.

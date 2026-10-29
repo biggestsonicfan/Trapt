@@ -509,6 +509,16 @@ function spriteGeometry(THREE, mirror, particle) {
 }
 
 /**
+ * The flipbook cell of a sprite `age` frames old: one cell per `rate`
+ * frames, held on the last.  For a `0x9E` particle `age` is the draw's,
+ * life - timer at FUN_00221420, which is the key age + 1: FUN_00221BF0
+ * evaluates the keys and only then decrements the timer (§10.27).
+ */
+function cellIndex(grid, age) {
+  return Math.min(grid.cells - 1, Math.floor(age / grid.rate)) % grid.cells;
+}
+
+/**
  * Point a sprite's UVs at cell `index` of its sheet, counting left to right
  * then top to bottom.  A `.TIM2` runs top-down and three.js puts v = 1 at the
  * top of a plane, so row 0 is the v = 1 end and rows grow downwards.
@@ -850,9 +860,9 @@ function poseAt(built, frame) {
     // 1 x 2 to 4 x 7, a plume taller than it is wide.
     s.mesh.scale.set(sx || 1, sy || 1, 1);
     // Step the flipbook.  Without `0x9F` there is no grid and cell 0 stands.
+    // A `0x9E` particle is drawn one frame older than its keys (§10.27).
     if (e.grid && e.grid.cells > 1 && e.grid.rate > 0)
-      setCell(s, Math.min(e.grid.cells - 1,
-                          Math.floor(t / e.grid.rate)) % e.grid.cells);
+      setCell(s, cellIndex(e.grid, pt ? t + 1 : t));
 
     let px = 0, py = 0, pz = 0;
     if (s.actor && s.boneIndex >= 0 && s.actor.lastMats) {
@@ -951,7 +961,7 @@ function lightsAt(built, frame) {
     if (a.rig && a.group.visible) gsMod.bindLights(rig, a.rig, nodeAt(a, a.root));
 }
 
-const api = { assemble, poseAt, lightsAt, faceSprites, fold, COMMON, COSTUME, EFFECTS };
+const api = { assemble, poseAt, lightsAt, faceSprites, fold, cellIndex, COMMON, COSTUME, EFFECTS };
 if (typeof module !== 'undefined') module.exports = api;
 if (typeof window !== 'undefined') window.TraptPlay = api;
 })();

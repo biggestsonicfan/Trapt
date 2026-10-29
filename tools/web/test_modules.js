@@ -149,6 +149,14 @@ check('a clip family drops its act number',
 const ssc = require('./ssc.js');
 check('the subtitle markup is stripped to plain text',
       ssc.plain('Ｍｏｔｈｅｒ') === 'Mother');
-
+// e001's torch grid (0x9F 4 4 8 0).  A 0x9E particle's cell is its draw
+// age, key age + 1, over 4 (§10.27): age 3 is cell 1, ages 0 and 9 are what
+// they were under key age / 4, and the last cell holds.
+const play = require('./play.js');
+const torch = { rate: 4, cols: 4, rows: 8, cells: 32, life: 128 };
+const drawCell = (keyAge) => play.cellIndex(torch, keyAge + 1);
+check('a particle at key age a draws cell floor((a + 1) / 4)',
+      [0, 2, 3, 4, 9, 127, 200].map(drawCell).join() === '0,0,1,1,2,31,31',
+      [0, 2, 3, 4, 9, 127, 200].map(drawCell).join());
 console.log(failures ? '\n%d FAILED' : '\nall checks passed', failures);
 process.exit(failures ? 1 : 0);

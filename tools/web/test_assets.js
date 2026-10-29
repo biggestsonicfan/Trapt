@@ -801,7 +801,7 @@ async function main() {
     check('0x9F gives the grid and the rate',
           s.entity.grid, { rate: 4, cols: 4, rows: 8, cells: 32, life: 128 });
     // 0x9F is the flipbook, and 0x9E is the particles: twenty of them, each
-    // living 96 frames, so a particle's cell is its *own* age over 4.
+    // living 96 frames, so a particle's cell is its *own* draw age over 4.
     check('0x9E 20 96 96 0.008 0 1 0, 0x77 2 0 0 0 1 and 0x74 -0.001',
           s.entity.particles,
           { slots: 20, life: [96, 96], rate: 124, fade: 0, perFrame: 1,
@@ -819,6 +819,12 @@ async function main() {
     };
     check('cell 0 is the top-left quarter-width, sixteenth-height',
           rectAt(whenAged(0)), [0, 0.25, 0.938, 1]);
+    // The game draws a particle at life - timer, its key age + 1 (§10.27),
+    // so the column steps at key age 3, not 4.
+    check('at key age 2 it is still cell 0',
+          rectAt(whenAged(2)), [0, 0.25, 0.938, 1]);
+    check('at key age 3 it is cell 1, floor((3 + 1) / 4)',
+          rectAt(whenAged(3)), [0.25, 0.5, 0.938, 1]);
     check('it steps a column every four frames of its age',
           rectAt(whenAged(9)), [0.5, 0.75, 0.938, 1]);
     check('and wraps to the next row after four of them',
