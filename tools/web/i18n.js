@@ -98,19 +98,34 @@ const JA = {
   '{0} bones, {1} meshes, {2} verts, {3} tris': 'ボーン {0}、メッシュ {1}、頂点 {2}、三角形 {3}',
   '{0} animated nodes, {1} frames, skin {2} ms/frame':
     'アニメーションするノード {0}、{1} フレーム、スキニング {2} ms/フレーム',
-  'WASD to fly, QE up/down, shift to hurry, drag to look, right-drag to orbit, wheel to zoom':
-    'WASD で移動、QE で上下、Shift で加速、ドラッグで視点、右ドラッグで周回、ホイールでズーム',
+  'WASD to fly, drag to look; Camera has noclip, orbit and ortho':
+    'WASD で移動、ドラッグで視点。「カメラ」に noclip・周回・平行投影',
 
   // ------------------------------------------------------------- transport
   'Play': '再生',
-  'Pause': '一時停止',
-  'Free cam': 'フリーカメラ',
   'Scene cam': 'シーンカメラ',
-  'Modern': 'モダン',
   'Subs PS2': '字幕 PS2',
-  'Subs DOM': '字幕 DOM',
-  'Sound': '音声オン',
-  'Muted': 'ミュート',
+  'Sound': '音声',
+  'Camera': 'カメラ',
+  'Noclip': 'Noclip',
+  'Orbit': '周回',
+  'Ortho': '平行投影',
+  'Speed': '速度',
+  'Field of view': '視野角',
+  'Invert Y': '上下反転',
+  'Auto-rotate (R)': '自動回転 (R)',
+  'Top': '上',
+  'Front': '前',
+  'Side': '横',
+  'Back': '後',
+  'Reset view (B)': '視点をリセット (B)',
+  'Saved views': '保存した視点',
+  'WASD or arrows fly, Q/E down and up, shift hurries; drag to look, right-drag to orbit; the wheel sets the speed. Click a slot to go there, shift-click (or shift+1..9) to store the view.':
+    'WASD か矢印キーで移動、Q/E で下降・上昇、Shift で加速。ドラッグで視点、右ドラッグで周回、ホイールで速度。番号をクリックでその視点へ、Shift+クリック（または Shift+1〜9）で保存。',
+  'Drag to orbit, shift- or middle-drag to pan, the wheel zooms; A/D and Q/E orbit, W/S zoom. Click a slot to go there, shift-click (or shift+1..9) to store the view.':
+    'ドラッグで周回、Shift か中ボタンのドラッグで平行移動、ホイールでズーム。A/D と Q/E で周回、W/S でズーム。番号をクリックでその視点へ、Shift+クリック（または Shift+1〜9）で保存。',
+  'A flat projection: drag to orbit, shift- or middle-drag to pan, the wheel zooms. Click a slot to go there, shift-click (or shift+1..9) to store the view.':
+    '平行投影：ドラッグで周回、Shift か中ボタンのドラッグで平行移動、ホイールでズーム。番号をクリックでその視点へ、Shift+クリック（または Shift+1〜9）で保存。',
   'Look': '画質',
   'Fullscreen': '全画面',
   'Exit fullscreen': '全画面を終了',
@@ -138,8 +153,8 @@ const JA = {
     'アクター {0}、エンティティ {1}、字幕 {2}、{3} フレーム · 組み立て {4} ms · ポーズ {5} ms/フレーム',
   '{0} voice clips': 'ボイス {0} 件',
   '{0} warnings': '警告 {0} 件',
-  'WASD to fly, drag to look, right-drag to orbit (any of them switches to free cam)':
-    'WASD で移動、ドラッグで視点、右ドラッグで周回（どれを使ってもフリーカメラに切り替わる）',
+  'WASD to fly, drag to look; Camera has noclip, orbit and ortho (any of them leaves the scene cam)':
+    'WASD で移動、ドラッグで視点。「カメラ」に noclip・周回・平行投影（どれを使ってもシーンカメラを離れます）',
 
   // --------------------------------------------------------------- gallery
   'still': '静止画',

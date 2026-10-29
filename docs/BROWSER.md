@@ -65,6 +65,7 @@ disc data. They work under two loaders — `require` in the tests and a classic
 | `stagescript.js` | `stagescript.py` | what a stage is told to contain |
 | `pad.js` | `pcsx2pad.py` | a PCSX2 `[Pad1]`, and the pad it becomes |
 | `model.js`, `play.js`, `audio.js`, `cards.js`, `catalog.js`, `poster.js` | — | the three.js and playback layer |
+| `camctl.js` | — | the viewer's noclip, orbit and ortho cameras, without three.js |
 | `stageview.js` | — | the same, for a stage: geometry, skinning, camera, input |
 | `i18n.js` | — | the page's own words in Japanese; see §3.2 |
 
@@ -93,26 +94,45 @@ disc data. They work under two loaders — `require` in the tests and a classic
   placed where the stage graph says, walked with real collision, its doors
   crossed, its 48 traps set on the ceilings, walls and floors they belong on.
   The pad comes from your own `PCSX2.ini`. See [`STAGE.md`](STAGE.md).
-* **PS2 / Modern** — the GS fixed function at 512x224 with the letterbox and
-  the game's font, or a modern render filling the element with DOM subtitles
-  and no bars.
-* **Fullscreen**, scrub, and a Look panel of grading knobs.
-* **The camera.** `WASD` flies, `Q`/`E` drop and rise, `shift` hurries by four,
-  the wheel zooms. The mouse turns the camera and not the world: dragging
-  looks around from where you are standing, and **double-click** takes pointer
-  lock to do the same without holding a button (`Esc` releases it). Orbiting a
-  point -- the right thing for looking over a model, disorienting in a room --
-  is on **right-drag** or alt-drag. Any of them takes the shot off the
-  cutscene's own camera, the same way the drag always did.
+* **Switches** — Play, Scene cam, PS2 (off is Modern: a modern render filling
+  the element with DOM subtitles and no bars), Subs PS2 (the game's font
+  drawn into the framebuffer, or DOM text) and Sound are on/off switches under
+  the player. The buttons beside them open something or act: CRT, Camera,
+  Look, Fullscreen.
+* **Scrub**, and a Look panel of grading knobs.
+* **The camera** — after [noclip](https://noclip.website), in `camctl.js`.
+  The Camera button opens a panel with the three kinds, a speed slider (the
+  wheel's setting), the field of view, invert Y, reset (`B`) and nine saved
+  views. Any movement, look or choice there takes the shot off the cutscene's
+  own camera and carries on from where that camera was; switching Scene cam
+  back on returns to it.
+  * **Noclip** (the default): `WASD` or the arrows fly along the view,
+    `Q`/`E` (`PageDown`/`PageUp`) drop and rise, `shift` trebles the speed,
+    and the wheel sets the speed rather than zooming. Movement eases in and
+    out. The mouse turns the camera and not the world: dragging looks around
+    from where you stand, **double-click** takes pointer lock to do it
+    without a button (`Esc` releases it), and **right-drag** or alt-drag
+    orbits.
+  * **Orbit**: drag swings the eye round the scene's centre and coasts a
+    little on release; shift- or middle-drag pans, the wheel zooms, `A`/`D`
+    and `Q`/`E` orbit, `W`/`S` zoom, `R` turns auto-rotate on and off.
+    Coming from noclip it keeps the eye and turns it to the centre the scene
+    was fitted to.
+  * **Ortho**: the orbit controls through a parallel projection, with Top,
+    Front, Side and Back snaps. Its near plane is in front of the eye, so
+    zooming in cuts away the wall between it and the room.
+  * **Saved views**: `shift`+`1`..`9` (or shift-click a slot) stores the
+    camera, `1`..`9` (or a click) brings it back. They are kept in
+    localStorage per cutscene or model.
 
-  Speed follows the orbit distance, so the same keys suit a face and a
+  Fly speed follows the orbit distance, so the same keys suit a face and a
   courtyard, and it is anchored on the game's own locomotion: the player walks
   at 10 units a second and runs at 34 ([`STAGE.md`](STAGE.md), from her
   animation strides), so the camera takes a quarter of the orbit distance,
-  capped at 60 -- a little under twice a run. Floored so a close-up does not
-  crawl. Keys are ignored while
-  something is being typed into and whenever ctrl, meta or alt is down, and a
-  stage keeps its own follow camera: flying is skipped entirely while one is
+  capped at 60 -- a little under twice a run -- times the speed setting.
+  Floored so a close-up does not crawl. Keys are ignored while something is
+  being typed into and whenever ctrl, meta or alt is down, and a stage keeps
+  its own follow camera: the free camera is skipped entirely while one is
   running, so the two never fight for the frame.
 
 Two projection rules are worth restating because both have been got wrong

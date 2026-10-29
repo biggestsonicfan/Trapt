@@ -67,20 +67,22 @@ const asked = new Set([...script.matchAll(/getElementById\('([^']+)'\)/g)]
   .map((m) => m[1]));
 // these are created into innerHTML by the page itself
 const made = new Set([...script.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+// and the switches, whose markup swHtml writes around the id it is given
+for (const m of script.matchAll(/swHtml\('([^']+)'/g)) made.add(m[1]);
 const missing = [...asked].filter((id) => !ids.has(id) && !made.has(id));
 check(asked.size + ' ids asked for, all defined', missing.length === 0,
       'missing: ' + missing.join(', '));
 
 console.log('the transport is wired before anything that can throw');
 const st = fn('sceneTransport');
-const playAt = st.indexOf('btn.onclick');
+const playAt = st.indexOf('btn.onchange');
 // the call that runs while building, not the one inside the button handler
 const ps2At = st.indexOf('setPs2(V.ps2');
 check('playBtn gets its handler', playAt > 0);
 check('and it gets it before setPs2 runs', playAt > 0 && ps2At > playAt,
-      'setPs2 at ' + ps2At + ', btn.onclick at ' + playAt);
+      'setPs2 at ' + ps2At + ', btn.onchange at ' + playAt);
 check('seek and cam are wired too',
-      st.includes('seek.oninput') && st.includes('cam.onclick'));
+      st.includes('seek.oninput') && st.includes('cam.onchange'));
 
 console.log('nothing assumes the post pass has run yet');
 check('ensureViewer creates it', fn('ensureViewer').includes('ensurePost()'));
@@ -142,7 +144,7 @@ console.log('stage mode owns the frame while it is running');
 {
   const tick = fn('tick');
   const gAt = tick.indexOf('if (G) {');
-  const orbitAt = tick.indexOf('const o = V.orbit;');
+  const orbitAt = tick.indexOf('placeFreeCam(');
   const sAt = tick.indexOf('if (S) {');
   check('tick handles the stage', gAt > 0);
   check('and does so before the cutscene and orbit blocks',
@@ -285,114 +287,163 @@ check('and the subtitle overlay is rebuilt at the new size',
       fc.includes('V.subKey = null'));
 
 
-// The free camera's arithmetic is pure, so it can be run rather than pattern
-// matched: pull the four functions out of the page and give them a `V`.
+// The free camera's arithmetic is camctl.js, pure, so it is run rather than
+// pattern matched.
 console.log('the free camera flies where it is pointed');
 {
-  const V = { keys: Object.create(null),
-              orbit: { yaw: 0, pitch: 0, dist: 10, target: [0, 0, 0] } };
-  const src = ['orbitEye', 'lookFrom', 'camAxes', 'flyMove'].map(fn).join('\n');
-  const cam = new Function('V', src
-    + '\nreturn { orbitEye, lookFrom, camAxes, flyMove };')(V);
-  const r3 = (a) => a.map((n) => +n.toFixed(3));
+  const C = require('./camctl.js');
+  const r3 = (a) => a.map((n) => +n.toFixed(3) || 0);
+  const o = C.create();
+  Object.assign(o, { yaw: 0, pitch: 0, dist: 10, target: [0, 0, 0] });
+  // Hold keys long enough for the easing to arrive, then read the velocity.
+  const settle = (k) => {
+    o.vel = [0, 0, 0];
+    for (let i = 0; i < 400; i++) C.step(o, k, 0.05, false);
+    return JSON.stringify(r3(o.vel));
+  };
 
   // Facing down -z from +z: the axes have to agree with the orbit formula, or
   // W and D go somewhere other than where the camera is looking.
   check('the eye sits where the orbit puts it',
-        JSON.stringify(r3(cam.orbitEye(V.orbit))) === '[0,0,10]');
-  const ax = cam.camAxes(V.orbit);
+        JSON.stringify(r3(C.eye(o))) === '[0,0,10]');
+  const ax = C.axes(o);
   check('forward is into the screen and right is to the right',
         JSON.stringify([r3(ax.fwd), r3(ax.right)]) === '[[0,0,-1],[1,0,0]]',
         JSON.stringify([r3(ax.fwd), r3(ax.right)]));
   check('and they stay unit as it turns',
         [0.3, 1.1, -2.0].every((y) => {
-          const a = cam.camAxes({ yaw: y, pitch: 0.4, dist: 1, target: [0, 0, 0] });
+          const a = C.axes({ yaw: y, pitch: 0.4 });
           return Math.abs(Math.hypot.apply(null, a.fwd) - 1) < 1e-9
-              && Math.abs(Math.hypot.apply(null, a.right) - 1) < 1e-9;
+              && Math.abs(Math.hypot.apply(null, a.right) - 1) < 1e-9
+              && Math.abs(Math.hypot.apply(null, a.screenUp) - 1) < 1e-9;
         }));
 
   // Nothing held must not drift the shot -- this runs every frame.
-  check('no key held moves nothing', cam.flyMove(1) === false);
+  check('no key held moves nothing', C.step(o, {}, 1, false) === false
+        && JSON.stringify(r3(o.target)) === '[0,0,0]');
 
-  // W flies along the view, and the eye comes with it: the offset from target
-  // to eye is fixed, which is what keeps the framing while you fly.
-  const before = cam.orbitEye(V.orbit);
-  V.keys.w = true;
-  cam.flyMove(1);
-  const after = cam.orbitEye(V.orbit);
-  check('W flies forward at a quarter of the orbit distance per second',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-2.5]',
-        JSON.stringify(r3(V.orbit.target)));
-  check('and the eye travels exactly with it',
+  check('W flies forward at a quarter of the distance per second',
+        settle({ w: true }) === '[0,0,-2.5]', settle({ w: true }));
+  check('it eases in rather than jumping to speed',
+        (() => { o.vel = [0, 0, 0]; C.step(o, { w: true }, 0.05, false);
+                 return o.vel[2] < 0 && o.vel[2] > -2.5; })());
+  check('and eases out, coming to rest', (() => {
+          for (let i = 0; i < 200; i++) C.step(o, {}, 0.05, false);
+          return C.step(o, {}, 0.05, false) === false; })());
+  const before = C.eye(o), t0 = o.target.slice();
+  o.vel = [0, 0, -2.5]; C.step(o, { w: true }, 1, false);
+  const after = C.eye(o);
+  check('and the eye travels exactly with the target',
         JSON.stringify(r3([after[0] - before[0], after[1] - before[1],
-                           after[2] - before[2]])) === '[0,0,-2.5]');
-  V.keys.w = false;
-
-  // Strafe and lift, on the axes camAxes named.
-  V.orbit.target = [0, 0, 0];
-  V.keys.d = true; cam.flyMove(1); V.keys.d = false;
-  check('D strafes right', JSON.stringify(r3(V.orbit.target)) === '[2.5,0,0]',
-        JSON.stringify(r3(V.orbit.target)));
-  V.orbit.target = [0, 0, 0];
-  V.keys.e = true; cam.flyMove(1); V.keys.e = false;
-  check('E rises', JSON.stringify(r3(V.orbit.target)) === '[0,2.5,0]');
-  V.orbit.target = [0, 0, 0];
-  V.keys.q = true; cam.flyMove(1); V.keys.q = false;
-  check('Q sinks', JSON.stringify(r3(V.orbit.target)) === '[0,-2.5,0]');
-
-  // Opposed keys cancel rather than fighting.
-  V.orbit.target = [0, 0, 0];
-  V.keys.a = V.keys.d = true;
-  cam.flyMove(1);
-  check('A and D together hold still',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,0]');
-  V.keys.a = V.keys.d = false;
-
-  // Shift is a multiplier, not a second speed.
-  V.orbit.target = [0, 0, 0];
-  V.keys.w = true; V.keys.boost = true; cam.flyMove(1);
+                           after[2] - before[2]]))
+        === JSON.stringify(r3([o.target[0] - t0[0], o.target[1] - t0[1],
+                               o.target[2] - t0[2]])));
+  check('D strafes right', settle({ d: true }) === '[2.5,0,0]');
+  check('E rises', settle({ e: true }) === '[0,2.5,0]');
+  check('Q sinks', settle({ q: true }) === '[0,-2.5,0]');
+  check('A and D together hold still', settle({ a: true, d: true }) === '[0,0,0]');
   check('shift hurries by exactly three',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-7.5]',
-        JSON.stringify(r3(V.orbit.target)));
-  V.keys.boost = false; V.keys.w = false;
+        settle({ w: true, boost: true }) === '[0,0,-7.5]');
+  o.speed = 2;
+  check('the wheel speed multiplies it', settle({ w: true }) === '[0,0,-5]');
+  C.wheel(o, 1);
+  check('and a wheel notch down slows it, in the fly camera', o.speed < 2 && o.dist === 10);
+  o.speed = 1;
 
-  // Speed follows the orbit distance so the same keys suit a face and a room,
-  // but it floors at 1 or a close-up would crawl.
-  V.orbit.target = [0, 0, 0]; V.orbit.dist = 0.05;
-  V.keys.w = true; cam.flyMove(1); V.keys.w = false;
-  check('and it never crawls when zoomed right in',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-0.25]',
-        JSON.stringify(r3(V.orbit.target)));
-
-  // A big room must not turn into a slingshot.  The player runs at 34 units
-  // a second (STAGE.md, from the animation strides), and the cap keeps the
-  // camera under twice that however large the room it was fitted to.
-  V.orbit.target = [0, 0, 0]; V.orbit.dist = 4000;
-  V.keys.w = true; cam.flyMove(1); V.keys.w = false;
+  // Speed follows the distance so the same keys suit a face and a room, but
+  // it floors at 1 or a close-up would crawl, and caps at 60: the player runs
+  // at 34 units a second (STAGE.md), and a room must not become a slingshot.
+  o.dist = 0.05;
+  check('it never crawls when zoomed right in', settle({ w: true }) === '[0,0,-0.25]');
+  o.dist = 4000;
   check('and a huge room does not turn it into a slingshot',
-        JSON.stringify(r3(V.orbit.target)) === '[0,0,-60]',
-        JSON.stringify(r3(V.orbit.target)));
+        settle({ w: true }) === '[0,0,-60]');
 
-  // Looking under pointer lock must not shift the eye: that is the whole
-  // difference between it and a drag, which orbits about the target.
-  V.orbit = { yaw: 0.3, pitch: 0.2, dist: 7, target: [1, 2, 3] };
-  const stood = cam.orbitEye(V.orbit);
-  cam.lookFrom(V.orbit, 0.5, -0.3);
-  check('lookFrom turns without moving the eye',
-        JSON.stringify(r3(cam.orbitEye(V.orbit))) === JSON.stringify(r3(stood)),
-        JSON.stringify(r3(cam.orbitEye(V.orbit))) + ' vs ' + JSON.stringify(r3(stood)));
-  check('and it really did turn',
-        +V.orbit.yaw.toFixed(2) === 0.8 && +V.orbit.pitch.toFixed(2) === -0.1);
-  cam.lookFrom(V.orbit, 0, -99);
-  check('pitch stops short of straight down', V.orbit.pitch === -1.4);
+  // Looking in the fly camera must not shift the eye: the head turns.
+  Object.assign(o, { yaw: 0.3, pitch: 0.2, dist: 7, target: [1, 2, 3] });
+  const stood = C.eye(o);
+  C.look(o, 0.5, -0.3, false);
+  check('a look turns without moving the eye',
+        JSON.stringify(r3(C.eye(o))) === JSON.stringify(r3(stood)),
+        JSON.stringify(r3(C.eye(o))) + ' vs ' + JSON.stringify(r3(stood)));
+  check('and it really did turn', +o.yaw.toFixed(2) === 0.8 && +o.pitch.toFixed(2) === -0.1);
+  C.look(o, 0, -99, false);
+  check('pitch stops short of straight down', o.pitch === -1.4);
+  o.invertY = true; C.look(o, 0, -0.2, false); o.invertY = false;
+  check('invert Y turns the other way', +o.pitch.toFixed(2) === -1.2);
+}
+
+console.log('the orbit and ortho cameras keep the target');
+{
+  const C = require('./camctl.js');
+  const r3 = (a) => a.map((n) => +n.toFixed(3) || 0);
+  const o = C.create();
+  C.setMode(o, 'orbit');
+  Object.assign(o, { yaw: 0, pitch: 0, dist: 10, target: [1, 2, 3] });
+  C.look(o, 0.5, 0.2, false);
+  check('a drag swings the eye round the target',
+        JSON.stringify(o.target) === '[1,2,3]' && +o.yaw.toFixed(2) === 0.5
+        && Math.abs(Math.hypot(...C.eye(o).map((v, i) => v - o.target[i])) - 10) < 1e-9);
+  C.fling(o, 0.1, 0, 0.05);
+  const y0 = o.yaw;
+  C.step(o, {}, 0.05, true);
+  check('it does not coast while the button is down', o.yaw === y0);
+  C.step(o, {}, 0.05, false);
+  check('and coasts after release', o.yaw > y0);
+  for (let i = 0; i < 200; i++) C.step(o, {}, 0.05, false);
+  check('then settles', C.step(o, {}, 0.05, false) === false);
+  C.wheel(o, -1);
+  check('the wheel zooms in', o.dist < 10 && o.speed === 1);
+  const d0 = o.dist;
+  C.step(o, { w: true }, 0.1, false);
+  check('W zooms in too', o.dist < d0);
+  Object.assign(o, { yaw: 0, pitch: 0, dist: 10, target: [0, 0, 0] });
+  C.pan(o, 0.1, 0);
+  check('pan drags the target with the cursor', JSON.stringify(r3(o.target)) === '[-1,0,0]',
+        JSON.stringify(r3(o.target)));
+  o.autoRotate = true;
+  check('auto-rotate keeps it moving', C.step(o, {}, 0.1, false) === true && o.yaw > 0);
+  o.autoRotate = false;
+  C.setMode(o, 'ortho');
+  C.snap(o, 'top');
+  check('the top view looks straight down',
+        JSON.stringify(C.axes(o).fwd.map((n) => +n.toFixed(2) || 0)) === '[0,-1,0]');
+  check('the ortho view is as tall as the perspective one at the target',
+        Math.abs(C.orthoHalf({ dist: 10, fov: 90 }) - 10) < 1e-9);
+  // Leaving the cutscene camera picks up its shot instead of jumping.
+  const f = C.create();
+  C.fromPose(f, [5, 6, 7], [0, 0, -2]);
+  check('free cam starts where the scene camera was',
+        JSON.stringify(r3(C.eye(f))) === '[5,6,7]'
+        && JSON.stringify(r3(C.axes(f).fwd)) === '[0,0,-1]');
+  const saved = C.save(f);
+  const g = C.create();
+  check('a saved view restores to the same eye',
+        C.restore(g, JSON.parse(JSON.stringify(saved)))
+        && JSON.stringify(r3(C.eye(g))) === '[5,6,7]');
+  check('and a junk slot is refused', C.restore(g, { yaw: 1 }) === false);
+  const h = C.create();
+  Object.assign(h, { yaw: 0, pitch: 0, dist: 1000, target: [0, 0, -990] });
+  C.aimAt(h, [0, 0, -5]);
+  check('orbit takes the scene centre and keeps the eye',
+        JSON.stringify(r3(C.eye(h))) === '[0,0,10]' && +h.dist.toFixed(3) === 15);
+  C.setMode(h, 'ortho'); C.snap(h, 'top');
+  const top = C.eye(h);
+  C.setMode(h, 'noclip');
+  check('leaving a top view tilts about the eye',
+        JSON.stringify(r3(C.eye(h))) === JSON.stringify(r3(top)) && h.pitch === 1.4);
+  C.setMode(h, 'orbit');
+  C.fling(h, 0.1, 0, 0.0001);
+  check('a bunched flick is capped', h.spin[0] === 3);
 }
 
 console.log('movement keys yield to typing and to the shortcuts');
 {
-  const mk = fn('movementKey');
+  const mk = fn('movementKey'), ty = fn('typing');
   check('an input, textarea, select or contenteditable swallows the key',
-        /INPUT/.test(mk) && /TEXTAREA/.test(mk) && /SELECT/.test(mk)
-        && /isContentEditable/.test(mk));
+        /typing\(e\)/.test(mk) && /INPUT/.test(ty) && /TEXTAREA/.test(ty)
+        && /SELECT/.test(ty) && /isContentEditable/.test(ty)
+        && /typing\(e\)/.test(fn('cameraKey')));
   check('and so does any of ctrl, meta or alt',
         /ctrlKey/.test(mk) && /metaKey/.test(mk) && /altKey/.test(mk));
   check('only wasdqe move', /'wasdqe'/.test(mk));
@@ -405,10 +456,10 @@ console.log('movement keys yield to typing and to the shortcuts');
   const tk = fn('tick');
   check('flying is skipped in stage mode, which drives its own camera',
         tk.indexOf('if (G) {') >= 0
-        && tk.indexOf('if (G) {') < tk.indexOf('flyMove(')
+        && tk.indexOf('if (G) {') < tk.indexOf('placeFreeCam(')
         && /if \(G\) \{[^}]*return;/s.test(tk));
   check('and skipped while the cutscene camera still has the shot',
-        tk.indexOf('S.sceneCam') < tk.indexOf('flyMove('));
+        tk.indexOf('S.sceneCam') < tk.indexOf('placeFreeCam('));
   check('and moving switches off the cutscene camera like a drag does',
         fn('goFreeCam').includes('S.sceneCam = false'));
   // The reported problem: dragging swung the eye around the world, so the
@@ -417,8 +468,7 @@ console.log('movement keys yield to typing and to the shortcuts');
   // so it keeps the right button and alt.
   const bo = fn('bindOrbit');
   check('a plain drag turns the camera, not the world',
-        /if \(drag\.orbit\) \{/.test(bo)
-        && /\} else \{\s*lookFrom\(V\.orbit/.test(bo));
+        /TraptCamCtl\.look\(V\.orbit, -dx \* LOOK_X, dy \* LOOK_Y, drag\.orbit\)/.test(bo));
   check('orbit is still there on right-drag or alt-drag',
         /e\.button === 2 \|\| e\.altKey/.test(bo));
   check('and the right button does not raise a menu mid-turn',
@@ -427,8 +477,8 @@ console.log('movement keys yield to typing and to the shortcuts');
   // presses bubble to the camera.  Capturing the pointer for an ancestor
   // retargets the click the browser synthesises, so a card button never sees
   // its own click -- which left the route card completely undismissable.
-  check('a press on the card, look panel or hud is not a drag',
-        /closest\('#card, #look, #hud'\)/.test(bo));
+  check('a press on the card, a panel or the hud is not a drag',
+        /closest\('#card, #look, #camp, #hud'\)/.test(bo));
   check('and the guard runs before the pointer is captured',
         bo.indexOf('onUI(e)') < bo.indexOf('setPointerCapture'));
   check('double-clicking a button does not grab the pointer either',
@@ -444,7 +494,7 @@ console.log('movement keys yield to typing and to the shortcuts');
           return i >= 0 && j > i && bo.slice(i, j).includes('onUI(e)');
         })());
   check('pointer lock turns the same way, at the same sensitivity',
-        /V\.locked[\s\S]*lookFrom\(V\.orbit, -e\.movementX \* LOOK_X/.test(bo)
+        /V\.locked[\s\S]*TraptCamCtl\.look\(V\.orbit, -e\.movementX \* LOOK_X/.test(bo)
         && bo.includes('requestPointerLock'));
 }
 
