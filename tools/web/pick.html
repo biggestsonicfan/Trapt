@@ -158,6 +158,65 @@
   #models { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .note { font-size: 12.5px; opacity: .5; border-left: 2px solid #2e2e36;
     padding-left: 12px; margin-top: 30px; }
+
+  /* ------------------------------------------- with a disc: sidebar + player */
+  body.app main { max-width: none; padding: 0; }
+  body.app main > h1, body.app main > p, body.app #drop { display: none; }
+  body.app #lang { position: fixed; top: 12px; right: 16px; z-index: 20; }
+  #stage.on { display: grid; grid-template-columns: 380px 1fr; height: 100vh; }
+  #side { display: flex; flex-direction: column; min-height: 0;
+    background: #111114; border-right: 1px solid #22222a; }
+  #sideHead { padding: 14px 16px 8px; font-size: 15px; }
+  #sideHead span { font-size: 12px; opacity: .5; margin-left: 6px; }
+  #find { margin: 0 12px 8px; padding: 7px 10px; background: #0b0b0d; color: inherit;
+    border: 1px solid #2e2e36; border-radius: 6px; font: inherit; }
+  #find:focus { outline: none; border-color: #4a72ad; }
+  #tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid #22222a; }
+  #tabs button { flex: 1; background: none; color: inherit; border: 0; opacity: .5;
+    border-bottom: 2px solid transparent; padding: 7px 0; font: 12.5px inherit;
+    cursor: pointer; }
+  #tabs button.on { opacity: 1; border-bottom-color: #4a72ad; }
+  #panes { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 12px 24px; }
+  .pane { display: none; } .pane.on { display: block; }
+  .pane .status { font-size: 12px; opacity: .5; margin: 8px 0; }
+  .pane .note { margin-top: 18px; }
+  #detail { min-width: 0; overflow-y: auto; padding: 4px 20px 30px; }
+  #detail > h2:first-child { margin-top: 14px; }
+  #stage.on #view { height: calc(100vh - 150px); min-height: 280px; }
+  #detail .empty { display: grid; place-items: center; height: 70vh; opacity: .35;
+    text-align: center; }
+  #cards section { margin: 0 0 6px; }
+  #cards h3 { margin: 12px 0 4px; cursor: pointer; user-select: none; }
+  #cards h3::before { content: '▾ '; } #cards section.shut h3::before { content: '▸ '; }
+  #cards section.shut .grid { display: none; }
+  #cards .grid { display: block; }
+  .gcard { display: flex; gap: 10px; align-items: center; padding: 5px;
+    margin: 0 -5px; border: 1px solid transparent; border-radius: 7px; background: none; }
+  .gcard:hover { transform: none; border-color: #2e2e36; background: #17171c; }
+  .gcard.on { background: #1d2738; border-color: #4a72ad; }
+  .gcard.absent { opacity: .3; cursor: not-allowed; }
+  .gcard.absent:hover { background: none; border-color: transparent; }
+  .gcard .shot { flex: 0 0 104px; border-radius: 4px; }
+  .gcard .body { flex: 1; min-width: 0; padding: 0; }
+  .gcard .nm { font: 600 12.5px ui-monospace, monospace; display: flex; gap: 6px; }
+  .gcard .meta { font-size: 11px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .gcard .line { margin-top: 2px; font-size: 11.5px; min-height: 0; }
+  .gcard .cast { display: none; }
+  .gcard .ext { margin-left: auto; background: none; border: 1px solid #2e2e36;
+    border-radius: 5px; color: inherit; font: 11px inherit; padding: 0 6px;
+    opacity: 0; cursor: pointer; }
+  .gcard:hover .ext, .gcard.on .ext { opacity: .7; }
+  .gcard .ext:hover { opacity: 1; border-color: #4a72ad; }
+  @media (max-width: 820px) {
+    #stage.on { grid-template-columns: 1fr; grid-template-rows: 46vh auto; height: auto; }
+    #side { border-right: 0; border-bottom: 1px solid #22222a; }
+    #detail { overflow: visible; padding: 4px 10px 30px; }
+    #stage.on #view { height: 56vw; }
+    #transport { flex-wrap: wrap; }
+    #transport input { flex-basis: 100%; }
+    body.app #lang { position: absolute; }
+  }
 </style>
 </head>
 <body>
@@ -174,33 +233,51 @@
       (SLPS-25445), 1.76 GB</div>
   </div>
 
+  <!-- noclip's layout: the picker is a sidebar and the player has the rest
+       of the window.  Choosing a cutscene and seeing what it looks like are
+       one list -- each row carries its still -- and the stages, routes and
+       the disc report are tabs of the same sidebar, so nothing is ever a
+       scroll away from the thing it plays. -->
   <div id="stage">
-    <div id="rows"></div>
-    <!-- The player goes first.  Everything below it is a way of choosing what
-         it plays, so having to scroll past all three lists to reach the thing
-         you just picked was backwards.  It is empty until something is
-         opened, and an empty div takes no room. -->
-    <div id="detail"></div>
-    <h2><span data-i18n>Walk a stage</span> <span id="stageStatus"></span></h2>
-    <div id="stages"></div>
-    <div id="padPanel"></div>
-    <h2 data-i18n>Play a route</h2>
-    <div id="routes"></div>
-    <h2 id="listHead" data-i18n>Cutscenes on the disc</h2>
-    <div id="list"></div>
-    <h2><span data-i18n>Gallery</span> <span id="galleryStatus"></span></h2>
-    <div id="cards"></div>
-  </div>
-
-  <div class="note" data-i18n>
-    Reads the ISO 9660 directory, the filename table baked into the
-    executable — <code>SLUS_212.55</code> at <code>0x0036A0F0</code>,
-    <code>SLPS_254.45</code> at <code>0x0036C070</code> — and the AFS index at
-    the front of <code>DATA/GAME.DAT</code> — about 100 KB out of 1.76 GB.
-    A Japanese disc plays in Japanese: its script, its voices and its own copy
-    of the subtitle face.
-    Opening a cutscene reads only that cutscene's archive and decodes its
-    <code>.TM2</code> textures here, in the page.
+    <aside id="side">
+      <div id="sideHead"><b>Trapt</b> <span id="discName"></span></div>
+      <input id="find" type="search" autocomplete="off" spellcheck="false">
+      <nav id="tabs">
+        <button data-tab="scenes" class="on" data-i18n>Cutscenes</button>
+        <button data-tab="stages" data-i18n>Stages</button>
+        <button data-tab="routes" data-i18n>Routes</button>
+        <button data-tab="disc" data-i18n>Disc</button>
+      </nav>
+      <div id="panes">
+        <div class="pane on" data-pane="scenes">
+          <div class="status" id="galleryStatus"></div>
+          <div id="cards"></div>
+        </div>
+        <div class="pane" data-pane="stages">
+          <div class="status"><span data-i18n>Walk a stage</span> <span id="stageStatus"></span></div>
+          <div id="stages"></div>
+          <div id="padPanel"></div>
+        </div>
+        <div class="pane" data-pane="routes">
+          <div class="status" data-i18n>Play a route</div>
+          <div id="routes"></div>
+        </div>
+        <div class="pane" data-pane="disc">
+          <div id="rows"></div>
+          <div class="note" data-i18n>
+            Reads the ISO 9660 directory, the filename table baked into the
+            executable — <code>SLUS_212.55</code> at <code>0x0036A0F0</code>,
+            <code>SLPS_254.45</code> at <code>0x0036C070</code> — and the AFS index at
+            the front of <code>DATA/GAME.DAT</code> — about 100 KB out of 1.76 GB.
+            A Japanese disc plays in Japanese: its script, its voices and its own copy
+            of the subtitle face.
+            Opening a cutscene reads only that cutscene's archive and decodes its
+            <code>.TM2</code> textures here, in the page.
+          </div>
+        </div>
+      </div>
+    </aside>
+    <section id="detail"></section>
   </div>
 </main>
 
@@ -250,7 +327,6 @@ TraptI18n.apply(document);
 const drop = document.getElementById('drop');
 const stage = document.getElementById('stage');
 const rows = document.getElementById('rows');
-const list = document.getElementById('list');
 const detail = document.getElementById('detail');
 let DISC = null;
 let CUR = null;      // the archive currently open
@@ -286,7 +362,10 @@ document.getElementById('file').addEventListener('change', (e) => {
 
 async function load(file) {
   stage.className = 'on';
-  rows.innerHTML = ''; list.innerHTML = ''; detail.innerHTML = '';
+  document.body.classList.add('app');
+  rows.innerHTML = '';
+  detail.innerHTML = '<div class="empty">'
+    + T('Pick a cutscene, a stage or a route on the left.') + '</div>';
   row('page build', BUILD);
   row('file', file.name + '  (' + (file.size / 1e9).toFixed(2) + ' GB)');
   const t0 = performance.now();
@@ -297,6 +376,7 @@ async function load(file) {
     return;
   }
   row('disc', DISC.region.serial + ' — ' + DISC.region.title, 'good');
+  document.getElementById('discName').textContent = DISC.region.serial;
   row('volume', DISC.iso.volume.id + ' / ' + DISC.iso.volume.system, 'good');
   row('files in the AFS', DISC.entries.length.toLocaleString());
   row('opened in', T('{0} ms  (about 100 KB read)',
@@ -358,26 +438,17 @@ async function load(file) {
     row('stages', err.message, 'bad');
   }
 
-  for (const n of names) {
-    const path = 'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC';
-    const el = document.createElement('div');
-    el.className = 'cut' + (DISC.has(path) ? '' : ' absent');
-    el.textContent = n;
-    if (DISC.has(path)) el.onclick = () => openCutscene(n, path, el);
-    else el.title = T('in the registry, but no data on this disc');
-    list.appendChild(el);
-  }
-  document.getElementById('listHead').textContent =
-    T('Cutscenes on the disc — {0} of {1} have data; click one to extract it',
-      list.querySelectorAll('.cut:not(.absent)').length, names.length);
+  row('cutscenes', T('{0} of {1} have data', names.filter((n) => DISC.has(
+    'DATA/RT/' + n.toUpperCase() + '/RT_' + n.toUpperCase() + '.ARC')).length,
+    names.length));
 }
 
-async function openCutscene(name, path, el) {
+async function openCutscene(name, path) {
   // Before the markup under it is replaced: a bundle with no models never
   // reaches showModel, so this cannot be left to that.
   leaveStage();
-  for (const c of list.querySelectorAll('.cut.on')) c.classList.remove('on');
-  el.classList.add('on');
+  leaveRoute();
+  markScene(name);
   detail.innerHTML =
       '<h2>' + name + '</h2><div id="members">' + T('reading…') + '</div>'
     + '<div id="view">'
@@ -1160,28 +1231,34 @@ let CAT = null;                        // name -> catalogue entry
 let PQ = null;                         // the poster queue
 let SEEN = null;                       // IntersectionObserver
 
-async function buildGallery() {
-  const host = document.getElementById('cards');
-  if (!host || !TABLES) return;
-  host.innerHTML = '';
-  CAT = new Map();
-  PQ = PQ || TraptPoster.queue(() => !S && !R);
-
+/** The gallery's sections: a chapter each, then the unreferenced, then the absent. */
+function gallerySections() {
   // Story order, with the chapter each cutscene belongs to for its heading.
-  const beats = TraptStory2.route(TABLES, { have: HAVE });
+  // The main line reaches under half of them; the other two finales and the
+  // ending flows reach the rest, so they follow, each scene listed once,
+  // under the first heading that plays it.
   const ref = TraptStory2.referenced(TABLES);
   const unplayed = TABLES.names.filter((n, i) => !ref.has(i) && HAVE.has(n));
-
   const sections = [];
-  let cur = null;
-  for (const b of beats) {
-    if (b.kind === 'card') {
-      cur = { title: b.title, card: b.card, items: [] };
-      sections.push(cur);
-    } else if (b.kind === 'cutscene' && cur) {
-      cur.items.push(b);
+  const seen = new Set();
+  const take = (opts) => {
+    let cur = null;
+    for (const b of TraptStory2.route(TABLES, Object.assign({ have: HAVE }, opts))) {
+      if (b.kind === 'card') {
+        cur = { title: b.title, note: b.subtitle, card: b.card, items: [] };
+        sections.push(cur);
+      } else if (b.kind === 'cutscene' && cur && !seen.has(b.name)) {
+        seen.add(b.name);
+        cur.items.push(b);
+      }
     }
-  }
+  };
+  take({});
+  for (const [g] of TraptStory2.FINALES) take({ opening: false, finale: g });
+  TABLES.flows.forEach((f, i) => take({ opening: false, chapters: 0, ending: i }));
+  const elsewhere = TABLES.names.filter((n, i) => ref.has(i) && HAVE.has(n) && !seen.has(n));
+  if (elsewhere.length)
+    sections.push({ title: 'Elsewhere in the tables', items: elsewhere.map((n) => ({ name: n })) });
   if (unplayed.length)
     sections.push({
       title: 'In the registry, never played',
@@ -1190,14 +1267,80 @@ async function buildGallery() {
       card: null,
       items: unplayed.map((n) => ({ name: n, note: 'unreferenced' })),
     });
+  // What used to be the plain list of every registry name: the ones with no
+  // bundle on this disc still get a row, greyed, so the count adds up.
+  const absent = TABLES.names.filter((n) => !HAVE.has(n));
+  if (absent.length)
+    sections.push({
+      title: 'In the registry, no data on this disc',
+      shut: true,
+      items: absent.map((n) => ({ name: n, absent: true })),
+    });
 
+  return sections;
+}
+
+/** One cutscene's row: its still, its name, and what it is once read. */
+function galleryRow(it) {
+  const card = document.createElement('div');
+  card.className = 'gcard';
+  card.dataset.name = it.name;
+  card.innerHTML =
+      '<div class="shot"><span>' + T('still') + '</span></div>'
+    + '<div class="body"><div class="nm"><span></span></div>'
+    + '<div class="meta"></div><div class="line"></div>'
+    + '<div class="cast"></div></div>';
+  card.querySelector('.nm span').textContent = it.name;
+  card.querySelector('.meta').textContent = it.note ? T(it.note) : '';
+  if (it.absent) {
+    card.className = 'gcard absent';
+    card.title = T('in the registry, but no data on this disc');
+    card.querySelector('.shot').innerHTML = '';
+    return card;
+  }
+  // The archive view -- every model, clip and texture in the bundle --
+  // is what clicking a name in the old list did; it stays one click away.
+  const ext = document.createElement('button');
+  ext.className = 'ext';
+  ext.textContent = T('assets');
+  ext.title = T('every model, clip and texture in this bundle');
+  ext.onclick = (e) => {
+    e.stopPropagation();
+    const up = it.name.toUpperCase();
+    openCutscene(it.name, 'DATA/RT/' + up + '/RT_' + up + '.ARC');
+  };
+  card.querySelector('.nm').appendChild(ext);
+  card.onclick = () => {
+    leaveRoute();
+    // The first thing clicked can be a card, before any player exists;
+    // a stage's markup has a view but no transport, so that is the test.
+    if (!document.getElementById('transport')) {
+      routeViewport();
+      document.getElementById('routeHead').textContent = it.name;
+    }
+    playScene(it.name);
+  };
+  return card;
+}
+
+async function buildGallery() {
+  const host = document.getElementById('cards');
+  if (!host || !TABLES) return;
+  host.innerHTML = '';
+  CAT = new Map();
+  // A poster borrows the renderer, so not while anything is moving.
+  PQ = PQ || TraptPoster.queue(() => !(S && S.playing) && !R && !G);
+
+  const sections = gallerySections();
   const status = document.getElementById('galleryStatus');
   const cards = [];
   for (const sec of sections) {
     if (!sec.items.length) continue;
     const el = document.createElement('section');
+    if (sec.shut) el.className = 'shut';
     const h = document.createElement('h3');
     h.textContent = T(sec.title);
+    h.onclick = () => el.classList.toggle('shut');
     if (sec.note) {
       const sm = document.createElement('span');
       sm.textContent = T(sec.note);
@@ -1207,28 +1350,9 @@ async function buildGallery() {
     const grid = document.createElement('div');
     grid.className = 'grid';
     for (const it of sec.items) {
-      const card = document.createElement('div');
-      card.className = 'gcard';
-      card.innerHTML =
-          '<div class="shot"><span>' + T('still') + '</span></div>'
-        + '<div class="body"><div class="nm"></div>'
-        + '<div class="meta"></div><div class="line"></div>'
-        + '<div class="cast"></div></div>';
-      card.querySelector('.nm').textContent = it.name;
-      card.querySelector('.meta').textContent = it.note ? T(it.note) : '';
-      card.onclick = () => {
-        R = null;
-        // The first thing clicked can be a card, before any player exists;
-        // a stage's markup has a view but no transport, so that is the test.
-        if (!document.getElementById('transport')) {
-          routeViewport();
-          document.getElementById('routeHead').textContent = it.name;
-        }
-        playScene(it.name);
-      };
-      card.dataset.name = it.name;
+      const card = galleryRow(it);
       grid.appendChild(card);
-      cards.push(card);
+      if (!it.absent) cards.push(card);
     }
     el.appendChild(grid);
     host.appendChild(el);
@@ -1258,11 +1382,56 @@ async function buildGallery() {
     card.querySelector('.line').textContent =
       (entry.openingSpeaker ? entry.openingSpeaker + ': ' : '') + entry.opening;
     card.querySelector('.cast').textContent = entry.speakers.join(', ');
+    if (FIND.value) filterCards(FIND.value);
     card.dataset.frame = entry.openingFrame;
   });
 
   watchCards(cards);
 }
+
+/** Light up the row of the cutscene on screen, wherever it was started from. */
+function markScene(name) {
+  let row = null;
+  for (const c of document.querySelectorAll('#cards .gcard')) {
+    const on = c.dataset.name === name && !row;
+    c.classList.toggle('on', on);
+    if (on) row = c;
+  }
+  if (!row) return;
+  const sec = row.closest('section');
+  if (sec) sec.classList.remove('shut');
+  row.scrollIntoView({ block: 'nearest' });
+}
+
+/** Keep the rows whose name, room, cast or opening line has every word typed. */
+function filterCards(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  for (const sec of document.querySelectorAll('#cards section')) {
+    let any = false;
+    for (const c of sec.querySelectorAll('.gcard')) {
+      const hay = c.textContent.toLowerCase();
+      const ok = words.every((w) => hay.includes(w));
+      c.style.display = ok ? '' : 'none';
+      any = any || ok;
+    }
+    sec.style.display = any ? '' : 'none';
+    if (words.length && any) sec.classList.remove('shut');
+  }
+  if (words.length) showTab('scenes');
+}
+
+function showTab(name) {
+  for (const b of document.querySelectorAll('#tabs button'))
+    b.classList.toggle('on', b.dataset.tab === name);
+  for (const p of document.querySelectorAll('#panes .pane'))
+    p.classList.toggle('on', p.dataset.pane === name);
+}
+
+for (const b of document.querySelectorAll('#tabs button'))
+  b.onclick = () => showTab(b.dataset.tab);
+const FIND = document.getElementById('find');
+FIND.placeholder = T('Search cutscenes: name, room, speaker, line');
+FIND.addEventListener('input', () => filterCards(FIND.value));
 
 /** Render a card's still when it comes into view, one at a time. */
 function watchCards(cards) {
@@ -1288,7 +1457,7 @@ function watchCards(cards) {
         shotEl.querySelector('span').textContent = T(err.message);
       });
     }
-  }, { rootMargin: '200px' });
+  }, { root: document.getElementById('panes'), rootMargin: '200px' });
   for (const c of cards) SEEN.observe(c);
 }
 
@@ -1791,6 +1960,7 @@ function stageTick(dt) {
 // from the disc by play.js and driven here.
 async function playScene(name) {
   M = null;                                   // leave single-model mode
+  markScene(name);
   leaveStage();                               // a stale stage owns the frame
   const vinfo = document.getElementById('vinfo');
   const clips = document.getElementById('clips');
