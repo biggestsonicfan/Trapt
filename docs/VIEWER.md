@@ -2425,3 +2425,10 @@ blend and not the colour factor. Two things differ: the game's quads are
 twice as wide and twice as tall (four times the area), and its flipbook is
 one frame ahead. Neither has been changed, and nothing here measures how
 much of the gap either one accounts for.
+
+**Since then:** the page's particle quad spans ±size. A `0x9E` particle's
+plane is now 2 × 2 under the same (sx, sy) scale, so it runs −sx..+sx and
+−sy..+sy, like FUN_002CBB30's corners. The size passed in is the key itself,
+not a halved one: savestate 04's record at age 1 holds (1.00, 2.00), the
+torch's first key. The cell index, the blend, the colour and 255/128 are as
+they were.

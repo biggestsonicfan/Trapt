@@ -336,7 +336,7 @@ async function assemble(THREE, disc, name, onProgress) {
 
     for (const slot of slots) {
       const bind = slot.bind;
-      const geo = spriteGeometry(THREE, e.mirror);
+      const geo = spriteGeometry(THREE, e.mirror, !!slot.sim);
       // The UVs are rewritten every frame by `setCell`, so keep the pristine
       // unit-quad corners to build each cell's rect from.
       let uvBase = null;
@@ -467,10 +467,16 @@ function packColour(c) {
  * The UVs written here are the *fractions within a cell* rather than final
  * texture coordinates -- mirroring shows up as a fraction that runs 1 to 0 --
  * because `setCell` maps them onto whichever cell of the sheet is current.
+ *
+ * A `0x9E` particle (`particle` set) is a plane two units across: the game's
+ * sprite renderer (FUN_002CBB30) puts its corners at -size..+size, so a
+ * particle of size (sx, sy) spans 2sx x 2sy (§10.27, savestate 04's VU1
+ * batch).  Other unmirrored sprites keep the unit plane.
  */
-function spriteGeometry(THREE, mirror) {
+function spriteGeometry(THREE, mirror, particle) {
   if (!mirror) {
-    return THREE.PlaneGeometry ? new THREE.PlaneGeometry(1, 1)
+    const w = particle ? 2 : 1;
+    return THREE.PlaneGeometry ? new THREE.PlaneGeometry(w, w)
                                : new THREE.BufferGeometry();
   }
   const pos = [], uv = [];

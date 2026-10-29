@@ -823,9 +823,17 @@ async function main() {
           rectAt(whenAged(9)), [0.5, 0.75, 0.938, 1]);
     check('and wraps to the next row after four of them',
           rectAt(whenAged(17)), [0, 0.25, 0.875, 0.938]);
-    check('the quad stays unit -- the size keys carry the shape',
+    // FUN_002CBB30 puts a particle's corners at -size..+size (§10.27), so
+    // the plane is two units across and the size keys scale it.
+    check('the quad is two units across -- the size keys carry the shape',
           [+s.mesh.geometry.width.toFixed(3),
-           +s.mesh.geometry.height.toFixed(3)], [1, 1]);
+           +s.mesh.geometry.height.toFixed(3)], [2, 2]);
+    play.poseAt(built, whenAged(30));
+    const [ksx, ksy] = sceneMod.sizeAt(s.entity, 30);
+    check('a particle of size (sx, sy) spans -sx..+sx and -sy..+sy',
+          [+(s.mesh.geometry.width / 2 * s.mesh.scale.x).toFixed(4),
+           +(s.mesh.geometry.height / 2 * s.mesh.scale.y).toFixed(4)],
+          [+ksx.toFixed(4), +ksy.toFixed(4)]);
     // 0xAA and 0xAB dispatch to the same handlers as 0x6E and 0x6D, so they
     // are aliases.  e001's torch uses only that spelling, and until they were
     // read it had no colour ramp and no growth -- an invisible flame.
