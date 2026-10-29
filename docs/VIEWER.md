@@ -2380,3 +2380,48 @@ diff of the picture but not in the mean.
 
 Not read yet: `0x75` (a trail table, flag 2, FUN_00220850), `0x7B`
 (`+0x298`, flag 0x800), `0x81` and `0xAD`.
+
+### 10.27 The torch particle's draw: cell, blend and size, ELF against page
+
+Decode only; nothing on the page was changed. Same e001 torch as §10.25,
+savestate 04. Every address is in the US ELF.
+
+**The draw.** The instance's draw is FUN_00221420. For each slot with
+0 ≤ timer ≤ life it asks the definition's behaviour function (`def+0x2C`) for
+a cell rect, takes the record's RGBA word `+0x68` and size `+0x60`, and hands
+them to a sprite renderer at `instance+0xC4` (vtable 0x47C440,
+FUN_002CBB30). The renderer writes the centre, the corners
+**(−sx, −sy, +sx, +sy)**, the UV rect and the RGBA word unchanged into a VU1
+batch. FUN_002226A0 builds it, and FUN_00222260 sets its GS state through
+vtable `+0x28` (FUN_002CC530) with the blend `def+0x10 & 3`.
+
+**Read from the savestate.** The torch definition 0x15D4950 has
+`+0x10` = 0x218, so the blend is 0. Each instance has `+0x30` = 0x6023, with
+no 0x800, so the colour multipliers at `+0x90` are not used, and `+0xAC` = 1.0.
+Each renderer holds ALPHA = 0x48 and TEST = 0x51801. VU1 data memory still
+holds instance 0x12077F0's last batch: 16 sprites, each with its input and
+the GS packet the microcode built (ST, RGBAQ, XYZ2, ST, XYZ2).
+
+| | cell | blend | colour factor | quad |
+|---|---|---|---|---|
+| ELF (FUN_00221420 → FUN_002CBB30, VU1, RAM) | the `0x68` sheet (`def+0x18`; RAM `def+0x1C` reads 64×16 on 256²), 4 columns, rate 4, no wrap (FUN_00188930); index = ⌊(life − timer at draw) / 4⌋, i.e. the key age **+ 1** | 0 → ALPHA 0x48, Cs·As + Cd (additive); no Z write | none: RGBAQ = the `+0x68` bytes (RGB = key × 255, A = key × 128), and the GS reads 0x80 as 1.0, so RGB is key × 255/128 | corners ±size: **2·sx × 2·sy** |
+| particles.js / play.js | same sheet and grid; index = ⌊key age / 4⌋ | AdditiveBlending (src·αs + dst), depthWrite off | `pack` 255/128 on RGB, alpha = key | PlaneGeometry(1, 1) × (sx, sy): **sx × sy** |
+
+**How the two differences were measured.**
+
+- *Cell.* The batch's UV rects were matched to the RAM records by position.
+  All 12 match ⌊(life − timer at draw) / 4⌋. Keying the cell on the key age
+  instead gets 2 of the 12 wrong (p13, p14). FUN_00221BF0 evaluates the keys
+  at life − timer and only then decrements the timer, so the draw's age is
+  one frame later than the keys' age.
+- *Size.* VU1 0x04–0x07 holds the projection (334.2, 194.95, centre 1963,
+  2026). A fit of the sprite centres to the live camera (0x81B6F0) gives a
+  focal length of 533.8 px with 0.01 px residual. Every sprite's half-width
+  is then size × focal / depth, at 1.000 ± 0.003 on both axes for all 14.
+
+**The 255/128 factor is the game's**, not one the page added. The colour
+bytes reach the GS as they are. The 90-against-166 gap is therefore not the
+blend and not the colour factor. Two things differ: the game's quads are
+twice as wide and twice as tall (four times the area), and its flipbook is
+one frame ahead. Neither has been changed, and nothing here measures how
+much of the gap either one accounts for.
