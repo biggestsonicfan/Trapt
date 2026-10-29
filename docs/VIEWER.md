@@ -2306,3 +2306,23 @@ Page gap, high half minus low half, R, G, B: 01_h +38.9, +22.8, +18.1;
 68.1) covers 01_h's (30.9 to 49.0). Over that range 03_h's ratio stays at
 0.90-0.94 on both halves, while 01_h's goes from 1.18 to 0.87. A function of
 page brightness does not mark the ratio. Nothing was changed.
+
+### 10.25 03_h's texel B spans more than 01_h's; texel B does not mark the ratio
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). Texel is
+`base.rgb` before the light multiply, 0-255; mean over the half. Gap is
+high half minus low half.
+
+| texture | texel low R, G, B | texel high R, G, B | gap R, G, B |
+|---|---|---|---|
+| c01f_a_01_h | 119.3, 98.8, 78.0 | 217.8, 191.0, 162.3 | +98.5, +92.2, +84.3 |
+| c01f_a_03_h | 101.0, 92.8, 89.4 | 248.7, 241.0, 232.2 | +147.7, +148.2, +142.8 |
+| c01f_a_05_h | 25.0, 12.0, 15.0 | 151.4, 141.0, 133.0 | +126.4, +129.0, +118.0 |
+
+On B, 03_h's texel gap (142.8) is 1.7 times 01_h's (84.3), and 03_h's
+texel-B range (89.4 to 232.2) covers 01_h's (78.0 to 162.3) all but its
+bottom 11 levels. 03_h's ratio stays at 0.90-0.93 over that range, while
+01_h's goes from 1.18 to 0.87. A function of texel B does not mark the
+ratio. R and G agree: 03_h's gap is 1.5 times 01_h's on R and 1.6 times on G.
+05_h is reported only. Nothing was changed.
