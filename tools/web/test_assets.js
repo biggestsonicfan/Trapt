@@ -571,7 +571,8 @@ async function main() {
       '                "binds": [list(b) for b in e.binds],',
       '                "flags": list(e.flags) if e.flags else None,',
       '                "mirror": e.mirror,',
-      '                "emitter": e.emitter, "track_len": e.track_len}',
+      '                "emitter": e.emitter, "particles": e.particles,',
+      '                "track_len": e.track_len}',
       '               for e in s.entities]}))',
     ].join('\n');
     const w = python(PY_SCENE);
@@ -598,7 +599,7 @@ async function main() {
         transform: e.transform, scale: e.scale, vis: e.visibility,
         sprite: e.sprite, size_keys: e.sizeKeys, colour_keys: e.colourKeys,
         binds: e.binds, flags: e.flags, mirror: e.mirror,
-        emitter: e.emitter, track_len: e.trackLen,
+        emitter: e.emitter, particles: e.particles, track_len: e.trackLen,
       };
       if (JSON.stringify(mine) !== JSON.stringify(x))
         diffs.push({ i: i, got: mine, want: x });
@@ -799,15 +800,29 @@ async function main() {
     // is a different effect's bank.
     check('0x9F gives the grid and the rate',
           s.entity.grid, { rate: 4, cols: 4, rows: 8, cells: 32, life: 128 });
+    // 0x9F is the flipbook, and 0x9E is the particles: twenty of them, each
+    // living 96 frames, so a particle's cell is its *own* age over 4.
+    check('0x9E 20 96 96 0.008 0 1 0, 0x77 2 0 0 0 1 and 0x74 -0.001',
+          s.entity.particles,
+          { slots: 20, life: [96, 96], rate: 124, fade: 0, perFrame: 1,
+            reroll: false, accel: 0.001,
+            shape: { kind: 'sphere', radius: [0, 2], speed: [0, 2e-7], sign: 1 } });
+    check('one billboard per slot',
+          built.sprites.filter((x) => x.entity === s.entity).length, 20);
+    // the first frame at which this particle is `age` frames old
+    const whenAged = (age) => {
+      for (let f = s.entity.start; f < s.entity.start + 2000; f++) {
+        const q = s.sim.at(s.particle, f - s.entity.start);
+        if (q && q.age === age) return f;
+      }
+      return null;
+    };
     check('cell 0 is the top-left quarter-width, sixteenth-height',
-          rectAt(s.entity.start), [0, 0.25, 0.938, 1]);
-    check('it steps a column every four frames',
-          rectAt(s.entity.start + 9), [0.5, 0.75, 0.938, 1]);
+          rectAt(whenAged(0)), [0, 0.25, 0.938, 1]);
+    check('it steps a column every four frames of its age',
+          rectAt(whenAged(9)), [0.5, 0.75, 0.938, 1]);
     check('and wraps to the next row after four of them',
-          rectAt(s.entity.start + 17), [0, 0.25, 0.875, 0.938]);
-    check('the last cell is row 7 -- it never leaves the top half',
-          rectAt(s.entity.start + 125), [0.75, 1, 0.5, 0.563]);
-    check('then it loops', rectAt(s.entity.start + 130), [0, 0.25, 0.938, 1]);
+          rectAt(whenAged(17)), [0, 0.25, 0.875, 0.938]);
     check('the quad stays unit -- the size keys carry the shape',
           [+s.mesh.geometry.width.toFixed(3),
            +s.mesh.geometry.height.toFixed(3)], [1, 1]);
@@ -819,23 +834,31 @@ async function main() {
     check('it is taller than it is wide, and grows',
           [s.entity.sizeKeys[0].slice(1), s.entity.sizeKeys[1].slice(1)],
           [[1, 2], [4, 7]]);
-    play.poseAt(built, s.entity.start);
+    const born = whenAged(0);
+    play.poseAt(built, born);
+    const y0 = s.mesh.position.y;
     check('it starts bright', +s.mesh.material.opacity.toFixed(2), 0.9);
-    play.poseAt(built, s.entity.start + 100);
-    check('and has faded by frame 100',
+    play.poseAt(built, born + 90);
+    check('and has faded by the end of its life',
           +s.mesh.material.opacity.toFixed(2) < 0.2, true);
-    // A track that never ends is an emitter that never stops; looping is the
-    // closest a single billboard gets to that.
-    play.poseAt(built, s.entity.start + 129);
-    check('then re-ignites, because the torch burns all scene',
-          [+s.mesh.material.opacity.toFixed(2), +s.mesh.scale.y.toFixed(2)],
-          [0.9, 2]);
+    // the velocity gains 0.001 a frame before the position takes it, so
+    // after 90 updates it has climbed 0.001 * 90 * 91 / 2
+    check('climbing 4.095 units as it goes', +(s.mesh.position.y - y0).toFixed(3), 4.095);
+    play.poseAt(built, born + 96);
+    check('and is gone after 96 frames', s.mesh.visible, false);
     // Its track carries no `at_time` after the block, so its length is 0 --
     // which means "the script never says it stops", not "one frame".
     check('a zero-length track is not a one-frame sprite',
           s.entity.trackLen, 0);
-    play.poseAt(built, s.entity.start + 200);
-    check('so it is still on screen 200 frames later', s.mesh.visible, true);
+    // In the live game the three torches hold 14, 12 and 12 particles
+    // (savestate 04, `+0x220` of each emitter).
+    const alive = (f) => {
+      play.poseAt(built, f);
+      return built.sprites.filter((x) => x.entity === s.entity && x.mesh.visible).length;
+    };
+    const steady = [alive(s.entity.start + 1000), alive(s.entity.start + 3000)];
+    check('so it burns all scene, about a dozen alight at a time',
+          steady.every((n) => n >= 8 && n <= 18), true, steady);
   }
 
   // The oracle: a PCSX2 savestate is ground truth, but only once you know

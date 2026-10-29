@@ -16,6 +16,7 @@ than silently dropped.
 import collections
 import math
 import os
+import struct
 
 import afs
 import arc
@@ -116,6 +117,19 @@ OP_FX_GRID = 0x9F
 OP_FX_EMIT_A = 0xC8
 OP_FX_EMIT_B = 0xC9
 OP_FX_BIND_BONE = 0xCA
+# The particle emitter.  Each handler asks the effect object (vtable +0xD8)
+# for its emitter, vtable 0x00478FF0, and calls one setter on it;
+# tools/web/particles.js runs the fields, docs/VIEWER.md 10.25 has where each
+# one was found.
+#   0x9E FUN_001C40C0 -> +0x20 (slots, life max, life min, 1/rate, fade
+#        fraction, spawns per frame, re-roll) -- and zeroes the acceleration
+#   0x74 FUN_001C3C10 -> +0x34 (a)        Y acceleration, stored negated
+#   0x77 FUN_001C3600 -> +0x3C (r1, v1, r0, v0, out)   the sphere shape
+#   0xAE FUN_001C3740 -> +0x4C (v, bx, by, bz, jx, jy, jz, deg)   the box
+OP_PT_EMITTER = 0x9E
+OP_PT_ACCEL = 0x74
+OP_PT_SPHERE = 0x77
+OP_PT_BOX = 0xAE
 
 # `0x57 letterbox(mode, frames)` -- ELF 0x001C6570 -> 0x001E4600/0x001E4650,
 # tweened by 0x001E43F0.  The bars are two black 640-wide sprites in the same
@@ -201,6 +215,7 @@ class Entity:
         self.binds = []           # [(actor, bone)]       from `0xCA`
         self.emitter = None       # raw `0xC8` / `0xC9` parameters
         self.grid = None          # {'rate', 'cols', 'rows', 'cells'} from `0x9F`
+        self.particles = None     # the emitter: `0x9E`, `0x74`, `0x77`, `0xAE`
         self.flags = None         # the six booleans from `0x6C`
         self.track_len = None     # how long its track ran, in frames
 
@@ -393,6 +408,48 @@ def _int(a):
     return int(_num(a)) & 0xFFFFFFFF
 
 
+def _f32(x):
+    """`x` rounded to single precision, as the game's FPU holds it."""
+    return struct.unpack('<f', struct.pack('<f', x))[0]
+
+
+def _particle_emitter(p, a):
+    """`0x9E`, FUN_0021D3C0.  It zeroes +0x290, so an acceleration comes after it."""
+    p['slots'] = int(a[0])
+    p['life'] = [int(a[2]), int(a[1])]
+    rate = int(_f32(1 / _f32(a[3]))) if a[3] else 0
+    p['rate'] = max(1, rate)
+    p['fade'] = int(_f32(p['life'][0] * _f32(a[4])))
+    p['perFrame'] = int(a[5]) & 0xFF
+    p['reroll'] = len(a) > 6 and a[6] != 0
+    p['accel'] = 0
+
+
+def _particle_op(entity, code, args):
+    """The emitter setters, as fields of `entity.particles`.
+
+    Mirrors scene.js `particleOp`.  Single precision because the game's is:
+    `0x9E` stores `(int)(1.0f / x)` frames, and e001's 0.008 comes out 124.
+    """
+    a = [_num(x) for x in args]
+    p = entity.particles
+    if p is None:
+        p = entity.particles = {
+            'slots': 0, 'life': [0, 0], 'rate': 1, 'fade': 0, 'perFrame': 0,
+            'reroll': False, 'accel': 0, 'shape': None}
+    if code == OP_PT_EMITTER and len(a) >= 6:
+        _particle_emitter(p, a)
+    elif code == OP_PT_ACCEL and len(a) >= 1:
+        p['accel'] = -a[0]          # stored negated: -0.001 climbs
+    elif code == OP_PT_SPHERE and len(a) >= 5:
+        v1 = a[3] + 2e-7 if abs(a[1] - a[3]) < 1e-7 else a[1]
+        p['shape'] = {'kind': 'sphere', 'radius': [a[2], a[0]],
+                      'speed': [a[3], v1], 'sign': 1 if a[4] else -1}
+    elif code == OP_PT_BOX and len(a) >= 7:
+        p['shape'] = {'kind': 'box', 'speed': a[0], 'half': a[1:4],
+                      'jitter': a[4:7], 'angle': a[7] if len(a) > 7 else 0}
+
+
 def _run(scene, track_name, blob, frame_base=0, origin=None):
     """Execute one `.ssc` track into `scene`.
 
@@ -532,6 +589,9 @@ def _run(scene, track_name, blob, frame_base=0, origin=None):
             rate = _int(args[0])
             entity.grid = {'rate': rate, 'cols': cols, 'rows': rows,
                            'cells': cells, 'life': rate * cells}
+        elif code in (OP_PT_EMITTER, OP_PT_ACCEL, OP_PT_SPHERE,
+                      OP_PT_BOX) and entity is not None:
+            _particle_op(entity, code, args)
         elif code in (OP_FX_EMIT_A, OP_FX_EMIT_B) and entity is not None:
             # A ribbon's shape: `0xC8` (segments, -, wander, width) and `0xC9`
             # (U span, U jitter, U base, U scroll); docs/VIEWER.md 10.7.
@@ -892,7 +952,8 @@ HANDLED = frozenset((
     OP_ROOT_BONE, OP_ATTACH, OP_TRANSFORM, OP_SCALE, OP_LIGHT_TYPE,
     OP_LIGHT_RANGE, OP_FX_TEXTURE, OP_FX_SIZE_KEY, OP_FX_COLOUR_KEY,
     OP_FX_EMIT_A, OP_FX_EMIT_B, OP_FX_BIND_BONE, OP_FX_COLOUR_KEY2,
-    OP_FX_SIZE_KEY2, OP_FX_GRID, OP_FX_QUAD_FLAGS))
+    OP_FX_SIZE_KEY2, OP_FX_GRID, OP_FX_QUAD_FLAGS, OP_PT_EMITTER,
+    OP_PT_ACCEL, OP_PT_SPHERE, OP_PT_BOX))
 
 
 def effect_report(names=None):

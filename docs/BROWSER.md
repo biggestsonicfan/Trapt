@@ -66,6 +66,7 @@ disc data. They work under two loaders — `require` in the tests and a classic
 | `pad.js` | `pcsx2pad.py` | a PCSX2 `[Pad1]`, and the pad it becomes |
 | `model.js`, `play.js`, `audio.js`, `cards.js`, `catalog.js`, `poster.js` | — | the three.js and playback layer |
 | `camctl.js` | — | the viewer's noclip, orbit and ortho cameras, without three.js |
+| `particles.js` | — | `0x9E`'s particle emitter, stepped as the game steps it; VIEWER.md §10.25 |
 | `stageview.js` | — | the same, for a stage: geometry, skinning, camera, input |
 | `i18n.js` | — | the page's own words in Japanese; see §3.2 |
 
