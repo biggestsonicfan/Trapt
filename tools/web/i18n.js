@@ -103,9 +103,14 @@ const JA = {
 
   // ------------------------------------------------------------- transport
   'Play': '再生',
+  'Pause': '一時停止',
+  'Free cam': 'フリーカメラ',
   'Scene cam': 'シーンカメラ',
+  'Modern': 'モダン',
   'Subs PS2': '字幕 PS2',
-  'Sound': '音声',
+  'Subs DOM': '字幕 DOM',
+  'Sound': '音声オン',
+  'Muted': 'ミュート',
   'Camera': 'カメラ',
   'Noclip': 'Noclip',
   'Orbit': '周回',

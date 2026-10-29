@@ -96,19 +96,6 @@
   #camp .slots button { min-width: 22px; padding: 3px 0; }
   #camp .slots button.on { background: #2e3a2a; border-color: #5a7a4a; }
   #camp p { font-size: 11px; opacity: .55; margin: 8px 0 0; line-height: 1.4; }
-  /* an on/off switch: a checkbox drawn as a track and a knob */
-  label.sw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
-    font-size: 13px; white-space: nowrap; user-select: none; }
-  label.sw input { position: absolute; opacity: 0; width: 0; height: 0; }
-  label.sw i { position: relative; flex: 0 0 30px; height: 16px; border-radius: 8px;
-    background: #34343c; transition: background .15s; }
-  label.sw i::after { content: ''; position: absolute; left: 2px; top: 2px;
-    width: 12px; height: 12px; border-radius: 50%; background: #bbb;
-    transition: transform .15s, background .15s; }
-  label.sw input:checked + i { background: #3a5a8a; }
-  label.sw input:checked + i::after { transform: translateX(14px); background: #fff; }
-  label.sw input:focus-visible + i { outline: 2px solid #4a72ad; outline-offset: 2px; }
-  #camp label.sw { display: flex; margin: 6px 0; font-size: 11.5px; }
   #transport button.on { background: #3a5a8a; border-color: #4a72ad; }
   #cards section { margin: 0 0 22px; }
   #cards h3 { font-size: 12px; font-weight: 600; letter-spacing: .12em;
@@ -173,7 +160,7 @@
   #transport { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
   #transport button { background: #232329; color: inherit; border: 1px solid #34343c;
     border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
-  #transport input[type=range] { flex: 1; accent-color: #4a72ad; }
+  #transport input { flex: 1; accent-color: #4a72ad; }
   #fnum { font: 12px ui-monospace, monospace; opacity: .5; min-width: 92px;
     text-align: right; }
   #clips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -236,7 +223,7 @@
     #detail { overflow: visible; padding: 4px 10px 30px; }
     #stage.on #view { height: 56vw; }
     #transport { flex-wrap: wrap; }
-    #transport input[type=range] { flex-basis: 100%; }
+    #transport input { flex-basis: 100%; }
     body.app #lang { position: absolute; }
   }
 </style>
@@ -732,7 +719,7 @@ function goFreeCam() {
   TraptCamCtl.fromPose(V.orbit, [c.position.x, c.position.y, c.position.z],
                        [d.x, d.y, d.z]);
   const b = document.getElementById('camBtn');
-  if (b) b.checked = false;
+  if (b) b.textContent = T('Free cam');
 }
 
 // A key is only movement when nothing is being typed into and no modifier is
@@ -845,11 +832,6 @@ function placeFreeCam(dt) {
 const CAM_MODES = [['noclip', 'Noclip'], ['orbit', 'Orbit'], ['ortho', 'Ortho']];
 const CAM_SNAPS = [['top', 'Top'], ['front', 'Front'], ['side', 'Side'], ['back', 'Back']];
 
-function swHtml(id, label, on) {
-  return '<label class="sw"><input type="checkbox" id="' + id + '"'
-    + (on ? ' checked' : '') + '><i></i>' + T(label) + '</label>';
-}
-
 /** The speed slider is logarithmic: -1..1 is a twentieth to twenty times. */
 const speedToSlider = (v) => (Math.log(v) / Math.log(20)).toFixed(2);
 const sliderToSpeed = (x) => Math.pow(20, +x);
@@ -868,8 +850,10 @@ function buildCamPanel() {
     + '<label><span>' + T('Field of view') + '</span><input id="camFov" type="range"'
     + ' min="10" max="100" step="1" value="' + o.fov + '"><b id="camFovV">' + o.fov
     + '</b></label>'
-    + swHtml('camInvY', 'Invert Y', o.invertY)
-    + (o.mode !== 'noclip' ? swHtml('camSpin', 'Auto-rotate (R)', o.autoRotate) : '')
+    + '<div class="row"><button id="camInvY"' + (o.invertY ? ' class="on"' : '') + '>'
+    + T('Invert Y') + '</button>'
+    + (o.mode !== 'noclip' ? '<button id="camSpin"' + (o.autoRotate ? ' class="on"' : '')
+       + '>' + T('Auto-rotate (R)') + '</button>' : '') + '</div>'
     + (o.mode === 'ortho' ? '<div class="row">' + CAM_SNAPS.map(([k, l]) =>
         '<button data-snap="' + k + '">' + T(l) + '</button>').join('') + '</div>' : '')
     + '<div class="row"><button id="camReset">' + T('Reset view (B)') + '</button></div>'
@@ -913,6 +897,12 @@ function onCamPanelClick(e) {
     cameraSlot(d.slot, e.shiftKey);
   } else if (b.id === 'camReset') {
     resetCam();
+  } else if (b.id === 'camInvY') {
+    V.orbit.invertY = !V.orbit.invertY;
+    b.classList.toggle('on', V.orbit.invertY);
+  } else if (b.id === 'camSpin') {
+    V.orbit.autoRotate = !V.orbit.autoRotate;
+    syncCamPanel();
   }
 }
 
@@ -920,8 +910,6 @@ function onCamPanelInput(e) {
   const t = e.target, o = V.orbit;
   if (t.id === 'camSpeed') o.speed = sliderToSpeed(t.value);
   else if (t.id === 'camFov') o.fov = +t.value;
-  else if (t.id === 'camInvY') o.invertY = t.checked;
-  else if (t.id === 'camSpin') o.autoRotate = t.checked;
   syncCamPanel();
 }
 
@@ -935,7 +923,7 @@ function syncCamPanel() {
     q('camSpeed').value = speedToSlider(o.speed);
     q('camFovV').textContent = o.fov;
   }
-  if (q('camSpin')) q('camSpin').checked = o.autoRotate;
+  if (q('camSpin')) q('camSpin').classList.toggle('on', o.autoRotate);
   const views = loadViews();
   for (const s of panel.querySelectorAll('[data-slot]'))
     s.classList.toggle('on', !!views[s.dataset.slot]);
@@ -1056,7 +1044,7 @@ async function playClip(label, get, chip) {
 function transport() {
   const t = document.getElementById('transport');
   if (!M || !M.clip) { t.innerHTML = ''; return; }
-  t.innerHTML = swHtml('playBtn', 'Play', M.playing)
+  t.innerHTML = '<button id="playBtn"></button>'
               + '<button id="campBtn">' + T('Camera') + '</button>'
               + '<input id="seek" type="range" min="0" step="1">'
               + '<span id="fnum"></span>';
@@ -1064,9 +1052,13 @@ function transport() {
   const seek = document.getElementById('seek');
   seek.max = M.clip.duration;
   seek.value = M.frame;
-  btn.onchange = () => { M.playing = btn.checked; };
+  btn.textContent = T(M.playing ? 'Pause' : 'Play');
+  btn.onclick = () => {
+    M.playing = !M.playing;
+    btn.textContent = T(M.playing ? 'Pause' : 'Play');
+  };
   seek.oninput = () => { M.frame = +seek.value; M.playing = false;
-                         btn.checked = false; };
+                         btn.textContent = T('Play'); };
   camButton();
 }
 
@@ -1223,7 +1215,10 @@ function setPs2(on) {
   fitOutput();
   resize();                            // the projection aspect moves with it
   const b = document.getElementById('ps2Btn');
-  if (b) b.checked = !!on;             // off is Modern
+  if (b) {
+    b.textContent = T(on ? 'PS2' : 'Modern');
+    b.classList.toggle('on', on);
+  }
 }
 
 function applyLook() {
@@ -1374,7 +1369,10 @@ function setSubsPs2(on) {
     if (el) el.style.display = (!on && letterboxOn()) ? 'block' : 'none';
   }
   const b = document.getElementById('subsBtn');
-  if (b) b.checked = !!on;             // off draws them as DOM
+  if (b) {
+    b.textContent = T(on ? 'Subs PS2' : 'Subs DOM');
+    b.classList.toggle('on', on);
+  }
 }
 
 // -------------------------------------------------------------- the gallery
@@ -2174,7 +2172,7 @@ async function playScene(name) {
   S.seeked = true;
   S.playing = true;
   const pb = document.getElementById('playBtn');
-  if (pb) pb.checked = true;
+  if (pb) pb.textContent = T('Pause');
   resumeAudio();
   sceneInfo();
 }
@@ -2203,32 +2201,31 @@ function resumeAudio() {
 function sceneTransport() {
   const t = document.getElementById('transport');
   if (!S) { t.innerHTML = ''; return; }
-  // On/off settings are switches; buttons are for things that open or act.
-  t.innerHTML = swHtml('playBtn', 'Play', S.playing)
-              + swHtml('camBtn', 'Scene cam', S.sceneCam)
-              + swHtml('ps2Btn', 'PS2', true)
-              + swHtml('subsBtn', 'Subs PS2', true)
-              + swHtml('muteBtn', 'Sound', true)
+  t.innerHTML = '<button id="playBtn"></button>'
+              + '<button id="camBtn"></button>'
+              + '<button id="ps2Btn"></button>'
+              + '<button id="subsBtn"></button>'
+              + '<button id="muteBtn"></button>'
               + '<button id="crtBtn">CRT</button>'
               + '<button id="campBtn">' + T('Camera') + '</button>'
               + '<button id="lookBtn">' + T('Look') + '</button>'
               + '<button id="fsBtn">' + T('Fullscreen') + '</button>'
               + '<input id="seek" type="range" min="1" step="1">'
               + '<span id="fnum"></span>';
-  document.getElementById('ps2Btn').onchange = (e) => setPs2(e.target.checked);
+  document.getElementById('ps2Btn').onclick = () => setPs2(!V.ps2);
   document.getElementById('crtBtn').onclick = () => setCrt(!V.crtOn);
-  document.getElementById('subsBtn').onchange = (e) => {
-    V.subsPick = e.target.checked;     // an explicit choice stops it following
+  document.getElementById('subsBtn').onclick = () => {
+    V.subsPick = !V.subsPs2;           // an explicit choice stops it following
     setSubsPs2(V.subsPick);
   };
   const mb = document.getElementById('muteBtn');
-  // On until muted: the audio is still decoding when this is built.
   const syncMute = () => {
-    mb.checked = !(S && S.audio && S.audio.muted);
+    mb.textContent = T(S && S.audio && S.audio.muted ? 'Muted' : 'Sound');
+    mb.classList.toggle('on', !!(S && S.audio && !S.audio.muted));
   };
-  mb.onchange = () => {
-    if (!S || !S.audio) { syncMute(); return; }
-    S.audio.setMuted(!mb.checked);
+  mb.onclick = () => {
+    if (!S || !S.audio) return;
+    S.audio.setMuted(!S.audio.muted);
     if (!S.audio.muted && S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
     syncMute();
   };
@@ -2244,24 +2241,26 @@ function sceneTransport() {
   const seek = document.getElementById('seek');
   seek.max = S.built.scene.duration;
   seek.value = S.frame;
-  btn.checked = S.playing;
-  btn.onchange = () => {
-    S.playing = btn.checked;
+  btn.textContent = T(S.playing ? 'Pause' : 'Play');
+  btn.onclick = () => {
+    S.playing = !S.playing;
+    btn.textContent = T(S.playing ? 'Pause' : 'Play');
     // A tab's AudioContext starts suspended until a real click; this is it.
     if (S.ctx && S.ctx.state === 'suspended') S.ctx.resume();
     if (!S.playing && S.audio) S.audio.stopAll();
   };
-  cam.checked = S.sceneCam;
-  cam.onchange = () => {
-    if (cam.checked) S.sceneCam = true;
-    else goFreeCam();                  // carries on from the shot
+  cam.textContent = T(S.sceneCam ? 'Scene cam' : 'Free cam');
+  cam.onclick = () => {
+    if (S.sceneCam) { goFreeCam(); return; }   // carries on from the shot
+    S.sceneCam = true;
+    cam.textContent = T('Scene cam');
   };
   camButton();
   seek.oninput = () => {
     S.frame = +seek.value;
     S.playing = false;
     S.seeked = true;
-    document.getElementById('playBtn').checked = false;
+    document.getElementById('playBtn').textContent = T('Play');
   };
   document.getElementById('fsBtn').onclick = toggleFullscreen;
 

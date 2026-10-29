@@ -94,12 +94,10 @@ disc data. They work under two loaders — `require` in the tests and a classic
   placed where the stage graph says, walked with real collision, its doors
   crossed, its 48 traps set on the ceilings, walls and floors they belong on.
   The pad comes from your own `PCSX2.ini`. See [`STAGE.md`](STAGE.md).
-* **Switches** — Play, Scene cam, PS2 (off is Modern: a modern render filling
-  the element with DOM subtitles and no bars), Subs PS2 (the game's font
-  drawn into the framebuffer, or DOM text) and Sound are on/off switches under
-  the player. The buttons beside them open something or act: CRT, Camera,
-  Look, Fullscreen.
-* **Scrub**, and a Look panel of grading knobs.
+* **PS2 / Modern** — the GS fixed function at 512x224 with the letterbox and
+  the game's font, or a modern render filling the element with DOM subtitles
+  and no bars.
+* **Fullscreen**, scrub, and a Look panel of grading knobs.
 * **The camera** — after [noclip](https://noclip.website), in `camctl.js`.
   The Camera button opens a panel with the three kinds, a speed slider (the
   wheel's setting), the field of view, invert Y, reset (`B`) and nine saved

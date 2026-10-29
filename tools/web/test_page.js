@@ -67,22 +67,20 @@ const asked = new Set([...script.matchAll(/getElementById\('([^']+)'\)/g)]
   .map((m) => m[1]));
 // these are created into innerHTML by the page itself
 const made = new Set([...script.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
-// and the switches, whose markup swHtml writes around the id it is given
-for (const m of script.matchAll(/swHtml\('([^']+)'/g)) made.add(m[1]);
 const missing = [...asked].filter((id) => !ids.has(id) && !made.has(id));
 check(asked.size + ' ids asked for, all defined', missing.length === 0,
       'missing: ' + missing.join(', '));
 
 console.log('the transport is wired before anything that can throw');
 const st = fn('sceneTransport');
-const playAt = st.indexOf('btn.onchange');
+const playAt = st.indexOf('btn.onclick');
 // the call that runs while building, not the one inside the button handler
 const ps2At = st.indexOf('setPs2(V.ps2');
 check('playBtn gets its handler', playAt > 0);
 check('and it gets it before setPs2 runs', playAt > 0 && ps2At > playAt,
-      'setPs2 at ' + ps2At + ', btn.onchange at ' + playAt);
+      'setPs2 at ' + ps2At + ', btn.onclick at ' + playAt);
 check('seek and cam are wired too',
-      st.includes('seek.oninput') && st.includes('cam.onchange'));
+      st.includes('seek.oninput') && st.includes('cam.onclick'));
 
 console.log('nothing assumes the post pass has run yet');
 check('ensureViewer creates it', fn('ensureViewer').includes('ensurePost()'));
