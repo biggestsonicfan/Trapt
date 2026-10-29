@@ -2326,3 +2326,25 @@ bottom 11 levels. 03_h's ratio stays at 0.90-0.93 over that range, while
 01_h's goes from 1.18 to 0.87. A function of texel B does not mark the
 ratio. R and G agree: 03_h's gap is 1.5 times 01_h's on R and 1.6 times on G.
 05_h is reported only. Nothing was changed.
+
+### 10.26 01_h and 03_h sample the same way; the sample kind does not explain 03_h's flat ratio
+
+Same frame, sets and texel halves as §10.21 (re-rendered; the normal pass
+matches byte for byte, halves 1270/1264, 957/948, 149/149). Read from each
+draw's material and its `map` texture as the page builds them (`model.js`
+`makeTexture`, `gs.js` FRAG). Every mesh covering the set is listed; each set
+has one texture.
+
+| texture | draws (pixels) | texture id | wrap S/T | filter min/mag | mip | vertex colour before the light |
+|---|---|---|---|---|---|---|
+| c01f_a_01_h | mesh15-19 (2428) | three id 17, 256x256 | repeat/repeat | linear/linear | none (0 levels, no generated mips) | no: `lit`=1, `vC.rgb` unused; `vC.a` scales alpha only |
+| c01f_a_03_h | mesh13-14 (1905) | three id 16, 256x256 | repeat/repeat | linear/linear | none (0 levels, no generated mips) | no: `lit`=1, as 01_h |
+| c01f_a_05_h | mesh27 (297), mesh26 (1) | three id 12, 256x256 | repeat/repeat | linear/linear | none (0 levels, no generated mips) | no: `lit`=1, as 01_h |
+
+The texture's file name is not recorded on the draw (the `THREE.DataTexture`
+has no name); the three ids are distinct. The draw does not carry the TIM2's
+TEX0/TEX1 or a GS CLAMP: the page sets repeat and linear for every texture.
+01_h and 03_h record the same wrap, filter, mip choice and vertex-colour
+handling, so the sample kind does not explain why 03_h's ratio stays flat.
+05_h agrees and is reported only. (03_h arms the alpha test and 01_h does
+not; that test discards nothing here, §10.23.) Nothing was changed.
