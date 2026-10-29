@@ -43,6 +43,18 @@ const JA = {
   'Play a route': 'ルートを通して再生',
   'Cutscenes on the disc': 'ディスク上のカットシーン',
   'Gallery': 'ギャラリー',
+  'Cutscenes': 'カットシーン',
+  'Stages': 'ステージ',
+  'Routes': 'ルート',
+  'Disc': 'ディスク',
+  'Pick a cutscene, a stage or a route on the left.': '左の一覧からカットシーン、ステージ、ルートを選んでください。',
+  'Search cutscenes: name, room, speaker, line': 'カットシーンを検索: 名前、ルーム、話者、台詞',
+  'assets': '素材',
+  'every model, clip and texture in this bundle': 'このアーカイブのモデル、モーション、テクスチャをすべて表示',
+  'cutscenes': 'カットシーン',
+  '{0} of {1} have data': '{1} 本中 {0} 本にデータあり',
+  'Elsewhere in the tables': 'その他の表から',
+  'In the registry, no data on this disc': '登録表にあるが、このディスクにデータがないもの',
 
   // ------------------------------------------------------- the disc's rows
   'page build': 'ページのビルド',

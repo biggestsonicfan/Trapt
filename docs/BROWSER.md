@@ -70,11 +70,21 @@ disc data. They work under two loaders — `require` in the tests and a classic
 
 ## 3. What the page does
 
-* **Gallery** — a card per cutscene in story order under chapter headings:
-  a still, the name, where the game plays it, the first line and the cast.
-  The text comes from `catalog.js`, which reads only the `.ssc` tracks —
-  about 35 KB of a 5 MB bundle. The still is rendered on demand by
-  `poster.js` when a card scrolls into view.
+* **Layout** — after [noclip](https://noclip.website): once a disc is open,
+  a sidebar picks and the player has the rest of the window. The sidebar has
+  a search box and four tabs: Cutscenes, Stages, Routes and the Disc report.
+  Narrower than 820 px, the sidebar stacks above the player.
+* **Cutscenes** — one row per cutscene, all 154 registry names: story order
+  under chapter headings, then the other two finales and the ending flows,
+  each scene under the first heading that plays it, then the 16 nothing
+  reaches, then (greyed) the ones with no bundle on the disc. A row is a
+  still, the name, the length, cues, room and where the game plays it, and
+  the first line; clicking it plays the scene, and its **assets** button opens
+  the bundle's models, clips and textures. The text comes from `catalog.js`,
+  which reads only the `.ssc` tracks, about 35 KB of a 5 MB bundle. The still
+  is rendered on demand by `poster.js` when a row scrolls into view, while
+  nothing is playing. The search keeps rows whose name, room, cast or opening
+  line holds every word typed.
 * **Route** — the game's own chapter cards (`DATA/TWO_D/SLD`, with the
   chapter name already in the art) and then that chapter's cutscenes, in the
   order the tables give, unattended — and it now hands over to the stage half

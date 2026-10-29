@@ -113,15 +113,16 @@ check('playScene exposes an end hook', fn('routeNext').includes('S.onEnd'));
 check('and tick fires it instead of looping',
       /if \(S\.onEnd\)/.test(fn('tick')));
 
-console.log('the player comes before the things that choose what it plays');
-const body = html.slice(html.indexOf('<div id="stage">'), html.indexOf('<div class="note">'));
-const at = (s) => body.indexOf(s);
-check('#detail is above the route, list and gallery sections',
-      at('<div id="detail">') > 0
-      && at('<div id="detail">') < at('Play a route')
-      && at('Play a route') < at('id="listHead"')
-      && at('id="listHead"') < at('id="cards"'),
-      'otherwise you scroll past three lists to reach what you just opened');
+console.log('the picker and the player sit side by side');
+const body = html.slice(html.indexOf('<div id="stage">'), html.indexOf('</main>'));
+const side = body.slice(body.indexOf('<aside id="side">'), body.indexOf('</aside>'));
+check('the cutscenes, stages, routes and disc report are tabs of one sidebar',
+      ['id="cards"', 'id="stages"', 'id="routes"', 'id="rows"'].every((x) => side.includes(x)),
+      'anything left below the player is a scroll away from what it plays');
+check('#detail is the sidebar\'s sibling, not under it',
+      body.indexOf('</aside>') < body.indexOf('<section id="detail">'));
+check('the old name-only list is gone; every cutscene row has its still',
+      !html.includes('id="list"') && !html.includes('id="listHead"'));
 
 // It used to be positioned over the canvas with pointer-events: none, which
 // made it unreadable against a bright frame and impossible to select.
